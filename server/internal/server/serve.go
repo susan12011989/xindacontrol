@@ -27,6 +27,7 @@ import (
 	"server/internal/server/router/project"
 	"server/internal/server/router/utils"
 	"server/internal/server/static"
+	"server/pkg/consts"
 	"server/pkg/dbs"
 	"server/pkg/entity"
 	"server/pkg/gostapi"
@@ -113,8 +114,8 @@ func Serve(ctx context.Context) {
 	fsys := static.FS()
 	spa := static.NewSPAHandler(fsys, "index.html")
 
-	// 上传资源的静态文件服务（Logo等）
-	ge.Static("/assets", "./assets")
+	// 上传资源的静态文件服务（Logo等）- 支持环境变量 ASSETS_DIR 覆盖
+	ge.Static("/assets", consts.AssetsDir)
 
 	// 非 API 的其它路径走 SPA 回退；API 仍返回 JSON 404
 	ge.NoRoute(func(c *gin.Context) {

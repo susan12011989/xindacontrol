@@ -1,0 +1,40 @@
+# Docker 环境配置模板
+# 所有配置都可以通过环境变量覆盖
+
+Name: controlserver
+ListenOn: 0.0.0.0:58181
+
+Log:
+  ServiceName: controlserver
+  KeepDays: 7
+  Mode: file
+  Path: /app/logs
+  Level: info
+
+Mysql:
+  Addr: 127.0.0.1:3306
+  UserName: root
+  Password: ""
+  DB: control
+  CharSet: utf8mb4
+  Maxopen: 10
+  Maxidle: 5
+  MaxIdleTime: 30s
+  MaxLifeTime: 60s
+
+Redis:
+  Addr: 127.0.0.1:6379
+  UserName: ""
+  Password: ""
+  DB: 10
+  PoolSize: 5
+
+# 商户API认证配置（供商户服务调用）
+MerchantAPI:
+  Username: "merchant_api"
+  Password: ""
+
+# IP隐写上传配置（可选，根据实际需要配置）
+# IpEmbed:
+#   SourceDir: "/app/ipsources"
+#   Targets: []

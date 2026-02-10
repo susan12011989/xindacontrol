@@ -9,6 +9,7 @@ import (
 	"server/internal/server/middleware"
 	"server/internal/server/service/audit"
 	"server/internal/server/service/merchant"
+	"server/pkg/consts"
 	"server/pkg/entity"
 	"server/pkg/result"
 	"strconv"
@@ -525,9 +526,6 @@ func batchSyncMerchantGostIP(c *gin.Context) {
 
 // ========== 资源上传 ==========
 
-// 资源上传目录
-const assetsDir = "./assets"
-
 // uploadAsset 上传资源文件（Logo等）到本地
 func uploadAsset(c *gin.Context) {
 	// 获取上传类型（logo, icon 等）
@@ -568,7 +566,7 @@ func uploadAsset(c *gin.Context) {
 	filename := fmt.Sprintf("%s_%d_%s%s", assetType, time.Now().UnixNano(), randString(6), ext)
 
 	// 确保目录存在
-	uploadDir := filepath.Join(assetsDir, assetType)
+	uploadDir := filepath.Join(consts.AssetsDir, assetType)
 	if err := os.MkdirAll(uploadDir, 0755); err != nil {
 		result.GErr(c, fmt.Errorf("创建目录失败: %v", err))
 		return

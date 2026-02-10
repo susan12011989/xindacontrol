@@ -8,14 +8,15 @@ import (
 	"os"
 	"path"
 	"server/internal/server/model"
+	"server/pkg/consts"
 	"server/pkg/dbs"
 	"server/pkg/entity"
 	"sync"
 	"time"
 )
 
-// 版本文件存储目录
-const VersionsDir = "/opt/control/versions"
+// VersionsDir 版本文件存储目录（支持环境变量 VERSIONS_DIR 覆盖）
+var VersionsDir = consts.VersionsDir
 
 // ListVersions 获取版本列表
 func ListVersions(req model.ListVersionsReq) (model.ListVersionsResp, error) {

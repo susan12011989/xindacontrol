@@ -1,0 +1,108 @@
+version: '3.8'
+
+services:
+  # Control Server 控制面板
+  control-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: control-server
+    restart: unless-stopped
+    ports:
+      - "58181:58181"
+    environment:
+      # 数据库配置
+      - DB_HOST=mysql:3306
+      - DB_USER=root
+      - DB_PASSWORD=${DB_PASSWORD:-your_mysql_password}
+      - DB_NAME=control
+      # Redis 配置
+      - REDIS_HOST=redis:6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_DB=10
+      # 服务配置
+      - LISTEN_ADDR=0.0.0.0:58181
+      - ASSETS_DIR=/app/assets
+      - VERSIONS_DIR=/app/versions
+      # 商户API配置
+      - MERCHANT_API_USER=merchant_api
+      - MERCHANT_API_PASSWORD=${MERCHANT_API_PASSWORD:-MerchantAPI@2026}
+    volumes:
+      # 持久化数据
+      - control-logs:/app/logs
+      - control-assets:/app/assets
+      - control-versions:/app/versions
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - control-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:58181/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # MySQL 数据库
+  mysql:
+    image: mysql:8.0
+    container_name: control-mysql
+    restart: unless-stopped
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DB_PASSWORD:-your_mysql_password}
+      - MYSQL_DATABASE=control
+      - MYSQL_CHARACTER_SET_SERVER=utf8mb4
+      - MYSQL_COLLATION_SERVER=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+      # 初始化脚本（可选）
+      # - ./server/migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "3306:3306"
+    networks:
+      - control-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_PASSWORD:-your_mysql_password}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Redis 缓存
+  redis:
+    image: redis:7-alpine
+    container_name: control-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - control-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# 数据卷
+volumes:
+  mysql-data:
+    driver: local
+  redis-data:
+    driver: local
+  control-logs:
+    driver: local
+  control-assets:
+    driver: local
+  control-versions:
+    driver: local
+
+# 网络
+networks:
+  control-network:
+    driver: bridge
