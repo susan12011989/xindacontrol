@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"fmt"
+	"server/internal/server/model"
 	"server/pkg/dbs"
 	"server/pkg/entity"
 	"server/pkg/gostapi"
@@ -246,4 +247,94 @@ func deriveServiceNameFromChain(chainName string) string {
 	}
 
 	return ""
+}
+
+// ========== GOST 转发一键配置 ==========
+
+// SetupGostForward 配置 GOST 转发目标
+// mode: "tls"(加密，默认) 或 "tcp"(直连)
+func SetupGostForward(req model.SetupGostForwardReq) error {
+	// 获取服务器信息
+	host, err := getServerHostById(req.ServerId)
+	if err != nil {
+		return err
+	}
+
+	// 根据模式选择加密或直连
+	useTLS := req.Mode != "tcp" // 默认使用 TLS 加密
+
+	if useTLS {
+		// relay+tls 加密转发
+		if len(req.Ports) > 0 {
+			return gostapi.SetupForwardTargetWithPorts(host, req.TargetIP, req.Ports)
+		}
+		return gostapi.SetupForwardTarget(host, req.TargetIP)
+	} else {
+		// TCP 直连转发（不加密）
+		if len(req.Ports) > 0 {
+			return gostapi.SetupDirectForwardTargetWithPorts(host, req.TargetIP, req.Ports)
+		}
+		return gostapi.SetupDirectForwardTarget(host, req.TargetIP)
+	}
+}
+
+// ClearGostForward 清除 GOST 转发规则
+// 同时清除 TLS 加密和 TCP 直连两种规则
+func ClearGostForward(req model.ClearGostForwardReq) error {
+	host, err := getServerHostById(req.ServerId)
+	if err != nil {
+		return err
+	}
+
+	// 同时清除两种模式的规则（因为可能不知道当前是哪种模式）
+	if len(req.Ports) > 0 {
+		_ = gostapi.ClearForwardTargetWithPorts(host, req.Ports)       // TLS
+		_ = gostapi.ClearDirectForwardTargetWithPorts(host, req.Ports) // TCP
+	} else {
+		_ = gostapi.ClearForwardTarget(host)       // TLS
+		_ = gostapi.ClearDirectForwardTarget(host) // TCP
+	}
+	return nil
+}
+
+// GetGostForwardStatus 获取 GOST 转发状态
+func GetGostForwardStatus(serverId int) (*model.GostForwardStatusResp, error) {
+	// 获取服务器信息
+	var server entity.Servers
+	has, err := dbs.DBAdmin.ID(serverId).Get(&server)
+	if err != nil {
+		return nil, fmt.Errorf("查询服务器失败: %v", err)
+	}
+	if !has {
+		return nil, fmt.Errorf("服务器不存在: %d", serverId)
+	}
+
+	// 获取转发状态
+	forwardMap, err := gostapi.GetForwardStatus(server.Host)
+	if err != nil {
+		return nil, fmt.Errorf("获取转发状态失败: %v", err)
+	}
+
+	// 构建响应
+	forwards := make([]model.GostForwardItem, 0, len(forwardMap))
+	for port, target := range forwardMap {
+		// 解析目标 IP
+		targetIP := target
+		if idx := strings.Index(target, ":"); idx > 0 {
+			targetIP = target[:idx]
+		}
+		forwards = append(forwards, model.GostForwardItem{
+			Port:     port,
+			TargetIP: targetIP,
+			Status:   "active",
+		})
+	}
+
+	return &model.GostForwardStatusResp{
+		ServerId:   serverId,
+		ServerName: server.Name,
+		ServerIP:   server.Host,
+		Forwards:   forwards,
+		TotalCount: len(forwards),
+	}, nil
 }

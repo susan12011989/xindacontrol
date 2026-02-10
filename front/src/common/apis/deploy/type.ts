@@ -615,3 +615,37 @@ export interface DeployTSDDWithAMIResp {
 }
 
 export type DeployTSDDWithAMIResponseData = ApiResponseData<DeployTSDDWithAMIResp>
+
+// ========== GOST 转发配置（一键部署） ==========
+
+// 配置 GOST 转发请求
+export interface SetupGostForwardReq {
+  server_id: number // GOST 服务器ID
+  target_ip: string // 转发目标IP
+  ports?: number[] // 转发端口列表（可选，为空使用默认）
+  mode?: "tls" | "tcp" // 连接模式：tls(加密，默认) 或 tcp(直连)
+}
+
+// 清除 GOST 转发请求
+export interface ClearGostForwardReq {
+  server_id: number // GOST 服务器ID
+  ports?: number[] // 要清除的端口列表（可选，为空清除所有）
+}
+
+// 单个转发项
+export interface GostForwardItem {
+  port: number // 监听端口
+  target_ip: string // 目标IP
+  status: string // 状态：active/inactive
+}
+
+// GOST 转发状态响应
+export interface GostForwardStatusResp {
+  server_id: number
+  server_name: string
+  server_ip: string
+  forwards: GostForwardItem[]
+  total_count: number
+}
+
+export type GostForwardStatusResponseData = ApiResponseData<GostForwardStatusResp>

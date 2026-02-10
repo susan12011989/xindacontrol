@@ -257,26 +257,9 @@ func waitForSSH(host, password string, progressCallback func(string)) error {
 	return fmt.Errorf("SSH 连接超时")
 }
 
-// installGostViaSSH 通过 SSH 安装 GOST
-func installGostViaSSH(host, password string, progressCallback func(string)) error {
-	// SSH 配置
-	config := &ssh.ClientConfig{
-		User: "root",
-		Auth: []ssh.AuthMethod{
-			ssh.Password(password),
-		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         30 * time.Second,
-	}
-
-	// 连接 SSH
-	client, err := ssh.Dial("tcp", host+":22", config)
-	if err != nil {
-		return fmt.Errorf("SSH 连接失败: %w", err)
-	}
-	defer client.Close()
-
-	// GOST 安装脚本
+// installGostViaSSHClient 通过已有 SSH 客户端安装 GOST
+func installGostViaSSHClient(client *ssh.Client, progressCallback func(string)) error {
+	// GOST 安装脚本 - 支持 root 和非 root 用户（自动使用 sudo）
 	installScript := fmt.Sprintf(`#!/bin/bash
 set -e
 
@@ -285,15 +268,24 @@ API_USER="%s"
 API_PASS="%s"
 API_PORT="%d"
 
+# 检测是否需要 sudo
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+else
+    SUDO="sudo"
+fi
+
 echo ">>> 下载 GOST..."
 cd /tmp
 wget -q "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_amd64.tar.gz" -O gost.tar.gz
-tar -xzf gost.tar.gz && mv gost /usr/local/bin/ && chmod +x /usr/local/bin/gost
+tar -xzf gost.tar.gz
+$SUDO mv gost /usr/local/bin/
+$SUDO chmod +x /usr/local/bin/gost
 rm -f gost.tar.gz
 
 echo ">>> 创建配置..."
-mkdir -p /etc/gost /var/log/gost
-cat > /etc/gost/config.yaml << EOF
+$SUDO mkdir -p /etc/gost /var/log/gost
+$SUDO tee /etc/gost/config.yaml > /dev/null << EOF
 api:
   addr: ":${API_PORT}"
   auth:
@@ -312,7 +304,7 @@ chains: []
 EOF
 
 echo ">>> 创建服务..."
-cat > /etc/systemd/system/gost.service << EOF
+$SUDO tee /etc/systemd/system/gost.service > /dev/null << EOF
 [Unit]
 Description=GOST
 After=network.target
@@ -328,18 +320,18 @@ WantedBy=multi-user.target
 EOF
 
 echo ">>> 启动服务..."
-systemctl daemon-reload
-systemctl enable gost --now
+$SUDO systemctl daemon-reload
+$SUDO systemctl enable gost --now
 
 echo ">>> 优化网络..."
-cat >> /etc/sysctl.conf << 'SYSCTL'
+$SUDO tee -a /etc/sysctl.conf > /dev/null << 'SYSCTL'
 net.core.somaxconn=65535
 net.ipv4.tcp_max_syn_backlog=65535
 net.ipv4.ip_local_port_range=1024 65535
 net.ipv4.tcp_tw_reuse=1
 fs.file-max=1048576
 SYSCTL
-sysctl -p > /dev/null 2>&1 || true
+$SUDO sysctl -p > /dev/null 2>&1 || true
 
 echo ">>> GOST 安装完成!"
 `, GostAPIUser, GostAPIPass, DefaultGostAPIPort)
@@ -367,6 +359,28 @@ echo ">>> GOST 安装完成!"
 	}
 
 	return nil
+}
+
+// installGostViaSSH 通过 SSH 安装 GOST（兼容旧接口，使用 root 用户）
+func installGostViaSSH(host, password string, progressCallback func(string)) error {
+	// SSH 配置
+	config := &ssh.ClientConfig{
+		User: "root",
+		Auth: []ssh.AuthMethod{
+			ssh.Password(password),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         30 * time.Second,
+	}
+
+	// 连接 SSH
+	client, err := ssh.Dial("tcp", host+":22", config)
+	if err != nil {
+		return fmt.Errorf("SSH 连接失败: %w", err)
+	}
+	defer client.Close()
+
+	return installGostViaSSHClient(client, progressCallback)
 }
 
 // verifyGostAPI 验证 GOST API 是否可用
@@ -464,8 +478,8 @@ func InstallGostToExistingServer(req *model.InstallGostReq, progressCallback fun
 
 	progressCallback("SSH 连接成功，开始安装 GOST...")
 
-	// 执行安装
-	err = installGostViaSSH(host, password, progressCallback)
+	// 执行安装 - 使用已有的 SSH 客户端，支持非 root 用户
+	err = installGostViaSSHClient(client, progressCallback)
 	if err != nil {
 		return err
 	}
@@ -481,7 +495,23 @@ func InstallGostToExistingServer(req *model.InstallGostReq, progressCallback fun
 		progressCallback("GOST API 验证成功")
 	}
 
+	// 配置商户本地转发规则（relay+tls 监听 → 本地业务端口）
+	progressCallback("配置商户本地转发规则...")
+	progressCallback(fmt.Sprintf("  10010(TCP) → 127.0.0.1:10000"))
+	progressCallback(fmt.Sprintf("  10011(WS)  → 127.0.0.1:10001"))
+	progressCallback(fmt.Sprintf("  10012(HTTP) → 127.0.0.1:10002"))
+
+	err = gostapi.CreateMerchantLocalForwards(host)
+	if err != nil {
+		progressCallback(fmt.Sprintf("警告: 配置本地转发失败: %s", err))
+		progressCallback("请稍后手动配置或重试安装")
+	} else {
+		progressCallback("商户本地转发配置成功")
+	}
+
 	progressCallback(fmt.Sprintf("✓ GOST 安装完成! API: http://%s:%d", host, DefaultGostAPIPort))
+	progressCallback("  监听端口: 10010(TCP), 10011(WS), 10012(HTTP) - relay+tls")
+	progressCallback("  转发到: 127.0.0.1:10000, 10001, 10002")
 
 	return nil
 }

@@ -83,6 +83,11 @@ func Routes(gi gin.IRouter) {
 	group.GET("gost/deploy/config", getGostDeployConfig) // 获取部署默认配置
 	group.POST("gost/install", installGostToServer)      // 在已有服务器上安装 GOST（流式API）
 
+	// GOST 转发配置（一键部署）
+	group.POST("gost/forward/setup", setupGostForward)     // 配置转发目标
+	group.DELETE("gost/forward/clear", clearGostForward)   // 清除转发规则
+	group.GET("gost/forward/status", getGostForwardStatus) // 获取转发状态
+
 	// 一键部署 TSDD 服务
 	group.POST("tsdd/deploy", deployTSDD)              // 部署到已注册服务器 (Docker方式)
 	group.POST("tsdd/deploy-by-ip", deployTSDDByIP)    // 通过IP部署（新服务器，Docker方式）
@@ -1080,6 +1085,59 @@ func getDeploymentHistory(ctx *gin.Context) {
 	}
 
 	data, err := deployService.GetDeploymentHistory(req)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// ========== GOST 转发配置（一键部署） ==========
+
+// setupGostForward 配置 GOST 转发目标
+func setupGostForward(ctx *gin.Context) {
+	var req model.SetupGostForwardReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	err := deployService.SetupGostForward(req)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, gin.H{"message": "转发配置成功"})
+}
+
+// clearGostForward 清除 GOST 转发规则
+func clearGostForward(ctx *gin.Context) {
+	var req model.ClearGostForwardReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	err := deployService.ClearGostForward(req)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, gin.H{"message": "转发规则已清除"})
+}
+
+// getGostForwardStatus 获取 GOST 转发状态
+func getGostForwardStatus(ctx *gin.Context) {
+	serverID, _ := strconv.Atoi(ctx.Query("server_id"))
+	if serverID == 0 {
+		result.GParamErr(ctx, fmt.Errorf("server_id 不能为空"))
+		return
+	}
+
+	data, err := deployService.GetGostForwardStatus(serverID)
 	if err != nil {
 		result.GErr(ctx, err)
 		return

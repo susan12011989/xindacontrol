@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"server/internal/dbhelper"
 	"server/pkg/dbs"
 	"server/pkg/entity"
@@ -14,6 +15,7 @@ import (
 	util "github.com/alibabacloud-go/tea-utils/v2/service"
 	"github.com/alibabacloud-go/tea/tea"
 	"github.com/zeromicro/go-zero/core/logx"
+	"golang.org/x/crypto/ssh"
 )
 
 type CreateInstanceRequest struct {
@@ -358,6 +360,15 @@ func createAfterAuthorizeSecurityGroupAndRegister(merchantId int, cloudAccountId
 		return
 	}
 	logx.Infof("server registered to database: %s (%s)", instanceName, publicIp)
+
+	// 自动安装 GOST 服务
+	logx.Infof("starting GOST installation on %s", publicIp)
+	err = autoInstallGost(publicIp, authInfo)
+	if err != nil {
+		logx.Errorf("auto install GOST failed: %v (server still registered, GOST can be installed manually)", err)
+		return
+	}
+	logx.Infof("GOST installed successfully on %s", publicIp)
 }
 
 // registerServerToDatabase 将新创建的实例注册到服务器表
@@ -1299,4 +1310,159 @@ func getInstanceAllPublicIPs(client *ecs20140526.Client, regionId, instanceId st
 	}
 
 	return publicIPs
+}
+
+// GOST 配置常量
+const (
+	GostAPIPort  = 9394
+	GostAPIUser  = "tsdd"
+	GostAPIPass  = "Oa21isSdaiuwhq"
+)
+
+// autoInstallGost 自动安装 GOST 服务
+func autoInstallGost(host string, authInfo *ServerAuthInfo) error {
+	// 等待 SSH 服务可用
+	logx.Infof("waiting for SSH service on %s...", host)
+	if err := waitForSSHReady(host, 30); err != nil {
+		return fmt.Errorf("SSH service not ready: %w", err)
+	}
+	logx.Infof("SSH service ready on %s", host)
+
+	// 建立 SSH 连接
+	var sshConfig *ssh.ClientConfig
+	if authInfo.AuthType == 2 && authInfo.PrivateKey != "" {
+		// 密钥认证
+		signer, err := ssh.ParsePrivateKey([]byte(authInfo.PrivateKey))
+		if err != nil {
+			return fmt.Errorf("parse private key failed: %w", err)
+		}
+		sshConfig = &ssh.ClientConfig{
+			User: "root",
+			Auth: []ssh.AuthMethod{
+				ssh.PublicKeys(signer),
+			},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         30 * time.Second,
+		}
+	} else {
+		// 密码认证
+		sshConfig = &ssh.ClientConfig{
+			User: "root",
+			Auth: []ssh.AuthMethod{
+				ssh.Password(authInfo.Password),
+			},
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			Timeout:         30 * time.Second,
+		}
+	}
+
+	client, err := ssh.Dial("tcp", host+":22", sshConfig)
+	if err != nil {
+		return fmt.Errorf("SSH dial failed: %w", err)
+	}
+	defer client.Close()
+
+	// GOST 安装脚本
+	installScript := fmt.Sprintf(`#!/bin/bash
+set -e
+
+GOST_VERSION="3.0.0-rc10"
+API_USER="%s"
+API_PASS="%s"
+API_PORT="%d"
+
+echo ">>> Downloading GOST..."
+cd /tmp
+wget -q "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_amd64.tar.gz" -O gost.tar.gz || {
+    echo ">>> wget failed, trying curl..."
+    curl -sL "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_amd64.tar.gz" -o gost.tar.gz
+}
+tar -xzf gost.tar.gz && mv gost /usr/local/bin/ && chmod +x /usr/local/bin/gost
+rm -f gost.tar.gz
+
+echo ">>> Creating config..."
+mkdir -p /etc/gost /var/log/gost
+cat > /etc/gost/config.yaml << EOF
+api:
+  addr: ":${API_PORT}"
+  auth:
+    username: ${API_USER}
+    password: ${API_PASS}
+  pathPrefix: ""
+  accesslog: false
+
+log:
+  level: info
+  format: json
+  output: /var/log/gost/gost.log
+
+services: []
+chains: []
+EOF
+
+echo ">>> Creating systemd service..."
+cat > /etc/systemd/system/gost.service << EOF
+[Unit]
+Description=GOST
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gost -C /etc/gost/config.yaml
+Restart=always
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+echo ">>> Starting GOST service..."
+systemctl daemon-reload
+systemctl enable gost --now
+
+echo ">>> Optimizing network..."
+cat >> /etc/sysctl.conf << 'SYSCTL'
+net.core.somaxconn=65535
+net.ipv4.tcp_max_syn_backlog=65535
+net.ipv4.ip_local_port_range=1024 65535
+net.ipv4.tcp_tw_reuse=1
+fs.file-max=1048576
+SYSCTL
+sysctl -p > /dev/null 2>&1 || true
+
+echo ">>> GOST installation completed!"
+`, GostAPIUser, GostAPIPass, GostAPIPort)
+
+	// 执行安装脚本
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("create SSH session failed: %w", err)
+	}
+	defer session.Close()
+
+	logx.Infof("executing GOST installation script on %s...", host)
+	output, err := session.CombinedOutput(installScript)
+	if err != nil {
+		logx.Errorf("GOST installation output: %s", string(output))
+		return fmt.Errorf("execute install script failed: %w", err)
+	}
+	logx.Infof("GOST installation output: %s", string(output))
+
+	return nil
+}
+
+// waitForSSHReady 等待 SSH 服务就绪
+func waitForSSHReady(host string, maxRetries int) error {
+	for i := 0; i < maxRetries; i++ {
+		conn, err := net.DialTimeout("tcp", host+":22", 5*time.Second)
+		if err == nil {
+			conn.Close()
+			// 再等待几秒确保 SSH 服务完全就绪
+			time.Sleep(5 * time.Second)
+			return nil
+		}
+		logx.Infof("waiting for SSH... attempt %d/%d", i+1, maxRetries)
+		time.Sleep(10 * time.Second)
+	}
+	return fmt.Errorf("SSH connection timeout after %d attempts", maxRetries)
 }

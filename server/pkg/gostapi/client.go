@@ -39,6 +39,12 @@ const (
 	TargetPortHTTP = MerchantGostPortHTTP
 )
 
+// ========== 简化转发配置 ==========
+
+// ForwardPorts 固定转发端口列表（监听端口=目标端口，对称转发）
+// 默认使用商户 GOST 监听端口: TCP/WS/HTTP
+var ForwardPorts = []int{10010, 10011, 10012}
+
 // MerchantPortConfig 商户端口配置（用于系统服务器转发）
 type MerchantPortConfig struct {
 	Offset     int
@@ -1020,4 +1026,266 @@ func (c *Client) UpdateMerchantDirectForwards(gostServerIP string, basePort int,
 
 	// 再创建新的
 	return c.CreateMerchantDirectForwards(gostServerIP, basePort, targetIP)
+}
+
+// ========== 一键部署：简化转发配置 ==========
+
+// SetupForwardTarget 一键配置 GOST 转发到目标服务器（使用 relay+tls 加密）
+// 监听 ForwardPorts 中的端口，通过 relay+tls 转发到 targetIP 的相同端口（对称转发）
+//
+// 流量路径：客户端 → 系统GOST:10010 → [relay+tls加密] → 商户GOST:10010
+//
+// 示例：
+//
+//	SetupForwardTarget("1.2.3.4", "5.6.7.8")
+//	结果：1.2.3.4:10010 → relay+tls → 5.6.7.8:10010
+//	      1.2.3.4:10011 → relay+tls → 5.6.7.8:10011
+//	      1.2.3.4:10012 → relay+tls → 5.6.7.8:10012
+func SetupForwardTarget(gostServerIP, targetIP string) error {
+	return defaultClient.SetupForwardTarget(gostServerIP, targetIP)
+}
+
+// SetupForwardTarget 一键配置转发（使用 relay+tls 加密）
+func (c *Client) SetupForwardTarget(gostServerIP, targetIP string) error {
+	var createdPorts []int
+
+	for _, port := range ForwardPorts {
+		// 使用 relay+tls 加密转发，而不是普通 TCP
+		_, err := c.CreateRelayTLSForward(gostServerIP, port, targetIP, port)
+		if err != nil {
+			// 回滚已创建的
+			for _, p := range createdPorts {
+				_ = c.DeleteRelayTLSForward(gostServerIP, p)
+			}
+			return fmt.Errorf("创建端口 %d 转发失败: %w", port, err)
+		}
+		createdPorts = append(createdPorts, port)
+	}
+
+	return nil
+}
+
+// SetupForwardTargetWithPorts 一键配置转发（自定义端口列表，使用 relay+tls 加密）
+func SetupForwardTargetWithPorts(gostServerIP, targetIP string, ports []int) error {
+	return defaultClient.SetupForwardTargetWithPorts(gostServerIP, targetIP, ports)
+}
+
+// SetupForwardTargetWithPorts 一键配置转发（自定义端口列表，使用 relay+tls 加密）
+func (c *Client) SetupForwardTargetWithPorts(gostServerIP, targetIP string, ports []int) error {
+	var createdPorts []int
+
+	for _, port := range ports {
+		// 使用 relay+tls 加密转发
+		_, err := c.CreateRelayTLSForward(gostServerIP, port, targetIP, port)
+		if err != nil {
+			// 回滚已创建的
+			for _, p := range createdPorts {
+				_ = c.DeleteRelayTLSForward(gostServerIP, p)
+			}
+			return fmt.Errorf("创建端口 %d 转发失败: %w", port, err)
+		}
+		createdPorts = append(createdPorts, port)
+	}
+
+	return nil
+}
+
+// ClearForwardTarget 清除所有转发规则
+func ClearForwardTarget(gostServerIP string) error {
+	return defaultClient.ClearForwardTarget(gostServerIP)
+}
+
+// ClearForwardTarget 清除所有转发规则
+func (c *Client) ClearForwardTarget(gostServerIP string) error {
+	for _, port := range ForwardPorts {
+		_ = c.DeleteRelayTLSForward(gostServerIP, port)
+	}
+	return nil
+}
+
+// ClearForwardTargetWithPorts 清除指定端口的转发规则
+func ClearForwardTargetWithPorts(gostServerIP string, ports []int) error {
+	return defaultClient.ClearForwardTargetWithPorts(gostServerIP, ports)
+}
+
+// ClearForwardTargetWithPorts 清除指定端口的转发规则
+func (c *Client) ClearForwardTargetWithPorts(gostServerIP string, ports []int) error {
+	for _, port := range ports {
+		_ = c.DeleteRelayTLSForward(gostServerIP, port)
+	}
+	return nil
+}
+
+// UpdateForwardTarget 更新转发目标（先清除再创建）
+func UpdateForwardTarget(gostServerIP, targetIP string) error {
+	return defaultClient.UpdateForwardTarget(gostServerIP, targetIP)
+}
+
+// UpdateForwardTarget 更新转发目标
+func (c *Client) UpdateForwardTarget(gostServerIP, targetIP string) error {
+	_ = c.ClearForwardTarget(gostServerIP)
+	return c.SetupForwardTarget(gostServerIP, targetIP)
+}
+
+// ========== TCP 直连转发（不加密） ==========
+
+// SetupDirectForwardTarget 一键配置 TCP 直连转发（不加密）
+// 适用于内网或不需要加密的场景
+func SetupDirectForwardTarget(gostServerIP, targetIP string) error {
+	return defaultClient.SetupDirectForwardTarget(gostServerIP, targetIP)
+}
+
+// SetupDirectForwardTarget 一键配置 TCP 直连转发
+func (c *Client) SetupDirectForwardTarget(gostServerIP, targetIP string) error {
+	var createdPorts []int
+
+	for _, port := range ForwardPorts {
+		_, err := c.createSimpleForward(gostServerIP, port, targetIP, port)
+		if err != nil {
+			// 回滚已创建的
+			for _, p := range createdPorts {
+				_ = c.deleteSimpleForward(gostServerIP, p)
+			}
+			return fmt.Errorf("创建端口 %d 转发失败: %w", port, err)
+		}
+		createdPorts = append(createdPorts, port)
+	}
+
+	return nil
+}
+
+// SetupDirectForwardTargetWithPorts 一键配置 TCP 直连转发（自定义端口列表）
+func SetupDirectForwardTargetWithPorts(gostServerIP, targetIP string, ports []int) error {
+	return defaultClient.SetupDirectForwardTargetWithPorts(gostServerIP, targetIP, ports)
+}
+
+// SetupDirectForwardTargetWithPorts 一键配置 TCP 直连转发（自定义端口列表）
+func (c *Client) SetupDirectForwardTargetWithPorts(gostServerIP, targetIP string, ports []int) error {
+	var createdPorts []int
+
+	for _, port := range ports {
+		_, err := c.createSimpleForward(gostServerIP, port, targetIP, port)
+		if err != nil {
+			// 回滚已创建的
+			for _, p := range createdPorts {
+				_ = c.deleteSimpleForward(gostServerIP, p)
+			}
+			return fmt.Errorf("创建端口 %d 转发失败: %w", port, err)
+		}
+		createdPorts = append(createdPorts, port)
+	}
+
+	return nil
+}
+
+// ClearDirectForwardTarget 清除 TCP 直连转发规则
+func ClearDirectForwardTarget(gostServerIP string) error {
+	return defaultClient.ClearDirectForwardTarget(gostServerIP)
+}
+
+// ClearDirectForwardTarget 清除 TCP 直连转发规则
+func (c *Client) ClearDirectForwardTarget(gostServerIP string) error {
+	for _, port := range ForwardPorts {
+		_ = c.deleteSimpleForward(gostServerIP, port)
+	}
+	return nil
+}
+
+// ClearDirectForwardTargetWithPorts 清除指定端口的 TCP 直连转发规则
+func ClearDirectForwardTargetWithPorts(gostServerIP string, ports []int) error {
+	return defaultClient.ClearDirectForwardTargetWithPorts(gostServerIP, ports)
+}
+
+// ClearDirectForwardTargetWithPorts 清除指定端口的 TCP 直连转发规则
+func (c *Client) ClearDirectForwardTargetWithPorts(gostServerIP string, ports []int) error {
+	for _, port := range ports {
+		_ = c.deleteSimpleForward(gostServerIP, port)
+	}
+	return nil
+}
+
+// createSimpleForward 创建简单的 TCP 直连转发（内部方法）
+func (c *Client) createSimpleForward(gostServerIP string, listenPort int, targetIP string, targetPort int) (string, error) {
+	serviceName := fmt.Sprintf("fwd-%d", listenPort)
+	targetAddr := fmt.Sprintf("%s:%d", targetIP, targetPort)
+	listenAddr := fmt.Sprintf(":%d", listenPort)
+
+	service := &ServiceConfig{
+		Name: serviceName,
+		Addr: listenAddr,
+		Handler: &HandlerConfig{
+			Type: "tcp",
+		},
+		Listener: &ListenerConfig{
+			Type: "tcp",
+		},
+		Forwarder: &ForwarderConfig{
+			Nodes: []ForwardNodeConfig{
+				{
+					Name: fmt.Sprintf("target-%d", targetPort),
+					Addr: targetAddr,
+				},
+			},
+		},
+	}
+
+	_, err := c.CreateService(gostServerIP, service)
+	if err != nil && !isAlreadyExistsError(err) {
+		return "", fmt.Errorf("创建 Service 失败: %w", err)
+	}
+
+	// 保存配置
+	_, err = c.SaveConfig(gostServerIP, "yaml", "")
+	if err != nil {
+		return serviceName, fmt.Errorf("服务创建成功，但保存配置失败: %w", err)
+	}
+
+	return serviceName, nil
+}
+
+// deleteSimpleForward 删除简单转发（内部方法）
+func (c *Client) deleteSimpleForward(gostServerIP string, listenPort int) error {
+	serviceName := fmt.Sprintf("fwd-%d", listenPort)
+
+	_, err := c.DeleteService(gostServerIP, serviceName)
+	if err != nil && !isNotFoundError(err) {
+		return fmt.Errorf("删除 Service 失败: %w", err)
+	}
+
+	_, err = c.SaveConfig(gostServerIP, "yaml", "")
+	if err != nil {
+		return fmt.Errorf("删除成功，但保存配置失败: %w", err)
+	}
+
+	return nil
+}
+
+// GetForwardStatus 获取转发状态
+func GetForwardStatus(gostServerIP string) (map[int]string, error) {
+	return defaultClient.GetForwardStatus(gostServerIP)
+}
+
+// GetForwardStatus 获取转发状态
+// 返回：端口 → 目标地址 的映射
+func (c *Client) GetForwardStatus(gostServerIP string) (map[int]string, error) {
+	result := make(map[int]string)
+
+	config, err := c.GetConfig(gostServerIP, "")
+	if err != nil {
+		return nil, err
+	}
+
+	for _, svc := range config.Services {
+		// 匹配 fwd-XXXX 格式的服务名
+		if strings.HasPrefix(svc.Name, "fwd-") {
+			var port int
+			if _, err := fmt.Sscanf(svc.Name, "fwd-%d", &port); err == nil {
+				if svc.Forwarder != nil && len(svc.Forwarder.Nodes) > 0 {
+					result[port] = svc.Forwarder.Nodes[0].Addr
+				}
+			}
+		}
+	}
+
+	return result, nil
 }

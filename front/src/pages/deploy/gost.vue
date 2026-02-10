@@ -3,7 +3,7 @@ import type { DeployGostServerReq, InstallGostReq, ServerResp } from "@@/apis/de
 import type { MerchantResp } from "@@/apis/merchant/type"
 import type { Instance } from "@/pages/cloud/aliyun/instances/apis/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
-import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail } from "@@/apis/deploy"
+import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus } from "@@/apis/deploy"
 import { getMerchantList } from "@@/apis/merchant"
 import { getCloudAccountList } from "@@/apis/cloud_account"
 import { getInstanceList } from "@/pages/cloud/aliyun/instances/apis"
@@ -632,6 +632,91 @@ watch(selectedServerId, () => {
   }
 })
 
+// ========== GOST 转发配置（一键部署） ==========
+const forwardDialogVisible = ref(false)
+const forwardStatusDialogVisible = ref(false)
+const forwardForm = reactive({
+  target_ip: "",
+  portsStr: "", // 用字符串输入，提交时解析
+  mode: "tls" as "tls" | "tcp" // 连接模式：tls(加密) 或 tcp(直连)
+})
+const forwardStatus = ref<any>(null)
+const isSettingForward = ref(false)
+
+// 打开配置转发弹窗
+function openForwardDialog() {
+  if (!selectedServerId.value) {
+    ElMessage.warning("请先选择服务器")
+    return
+  }
+  forwardForm.target_ip = ""
+  forwardForm.portsStr = ""
+  forwardDialogVisible.value = true
+}
+
+// 解析端口字符串
+function parsePorts(str: string): number[] {
+  if (!str.trim()) return []
+  return str.split(",").map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0 && n <= 65535)
+}
+
+// 执行配置转发
+async function doSetupForward() {
+  if (!forwardForm.target_ip) {
+    ElMessage.warning("请输入目标服务器IP")
+    return
+  }
+  isSettingForward.value = true
+  const ports = parsePorts(forwardForm.portsStr)
+  try {
+    await setupGostForward({
+      server_id: selectedServerId.value,
+      target_ip: forwardForm.target_ip,
+      ports: ports.length > 0 ? ports : undefined,
+      mode: forwardForm.mode
+    })
+    ElMessage.success(`转发配置成功! (${forwardForm.mode === "tls" ? "TLS加密" : "TCP直连"})`)
+    forwardDialogVisible.value = false
+    loadRecords()
+  } catch (e: any) {
+    ElMessage.error(e?.message || "配置失败")
+  } finally {
+    isSettingForward.value = false
+  }
+}
+
+// 清除转发规则
+async function doClearForward() {
+  if (!selectedServerId.value) {
+    ElMessage.warning("请先选择服务器")
+    return
+  }
+  const ok = await ElMessageBox.confirm("确认清除所有转发规则吗？", "提示", { type: "warning" }).catch(() => false)
+  if (!ok) return
+  try {
+    await clearGostForward({ server_id: selectedServerId.value })
+    ElMessage.success("转发规则已清除")
+    loadRecords()
+  } catch (e: any) {
+    ElMessage.error(e?.message || "清除失败")
+  }
+}
+
+// 查看转发状态
+async function openForwardStatusDialog() {
+  if (!selectedServerId.value) {
+    ElMessage.warning("请先选择服务器")
+    return
+  }
+  try {
+    const res = await getGostForwardStatus(selectedServerId.value)
+    forwardStatus.value = res.data
+    forwardStatusDialogVisible.value = true
+  } catch (e: any) {
+    ElMessage.error(e?.message || "获取状态失败")
+  }
+}
+
 // ========== 生命周期 ==========
 onMounted(() => {
   loadServerList()
@@ -671,6 +756,10 @@ onMounted(() => {
         </div>
 
         <el-button type="primary" icon="Refresh" @click="loadRecords">刷新列表</el-button>
+        <el-divider direction="vertical" />
+        <el-button type="info" icon="Connection" @click="openForwardDialog">配置转发</el-button>
+        <el-button type="info" icon="View" @click="openForwardStatusDialog">转发状态</el-button>
+        <el-button type="danger" icon="Delete" @click="doClearForward">清除转发</el-button>
         <el-divider direction="vertical" />
         <el-button type="success" icon="Plus" @click="openDeployDialog">一键部署 GOST 服务器</el-button>
         <el-button type="warning" icon="Download" @click="openInstallDialog">在已有服务器安装</el-button>
@@ -778,6 +867,65 @@ onMounted(() => {
         <el-button type="primary" @click="startDeploy" :loading="isDeploying">
           {{ isDeploying ? '部署中...' : '开始部署' }}
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 配置转发弹窗 -->
+    <el-dialog v-model="forwardDialogVisible" title="配置 GOST 转发" width="500px" :close-on-click-modal="false">
+      <el-form :model="forwardForm" label-width="120px">
+        <el-alert type="info" :closable="false" style="margin-bottom: 16px">
+          配置后，GOST 将监听指定端口并转发到目标服务器的相同端口（对称转发）。<br/>
+          默认端口: 10010(TCP), 10011(WS), 10012(HTTP)
+        </el-alert>
+        <el-form-item label="目标服务器IP" required>
+          <el-input v-model="forwardForm.target_ip" placeholder="例如: 1.2.3.4" />
+        </el-form-item>
+        <el-form-item label="连接模式" required>
+          <el-radio-group v-model="forwardForm.mode">
+            <el-radio value="tls">
+              <span>TLS 加密</span>
+              <span class="text-xs text-gray-400 ml-1">(推荐，防运营商屏蔽)</span>
+            </el-radio>
+            <el-radio value="tcp">
+              <span>TCP 直连</span>
+              <span class="text-xs text-gray-400 ml-1">(更快，但可能被屏蔽)</span>
+            </el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="自定义端口">
+          <el-input v-model="forwardForm.portsStr" placeholder="留空使用默认端口(10010,10011,10012)，多个端口用逗号分隔" />
+          <div class="text-xs text-gray-400 mt-1">例如: 10010,10011,10012 或 20000,20001,20002</div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="forwardDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="doSetupForward" :loading="isSettingForward">确认配置</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 转发状态弹窗 -->
+    <el-dialog v-model="forwardStatusDialogVisible" title="转发状态" width="600px">
+      <template v-if="forwardStatus">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="服务器名称">{{ forwardStatus.server_name }}</el-descriptions-item>
+          <el-descriptions-item label="服务器IP">{{ forwardStatus.server_ip }}</el-descriptions-item>
+          <el-descriptions-item label="转发规则数">{{ forwardStatus.total_count }}</el-descriptions-item>
+        </el-descriptions>
+        <el-table :data="forwardStatus.forwards" style="margin-top: 16px" max-height="300">
+          <el-table-column prop="port" label="监听端口" width="120" />
+          <el-table-column prop="target_ip" label="转发目标" />
+          <el-table-column prop="status" label="状态" width="100">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'active' ? 'success' : 'danger'" size="small">
+                {{ row.status === 'active' ? '活跃' : '异常' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="forwardStatus.forwards?.length === 0" description="暂无转发规则" />
+      </template>
+      <template #footer>
+        <el-button @click="forwardStatusDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 

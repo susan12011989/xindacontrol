@@ -296,3 +296,35 @@ type InstallGostReq struct {
 	Password   string `json:"password"`    // SSH密码
 	PrivateKey string `json:"private_key"` // SSH私钥（二选一）
 }
+
+// ========== GOST 转发配置（一键部署） ==========
+
+// 配置 GOST 转发请求
+type SetupGostForwardReq struct {
+	ServerId int    `json:"server_id" binding:"required"` // GOST 服务器ID
+	TargetIP string `json:"target_ip" binding:"required"` // 转发目标IP
+	Ports    []int  `json:"ports"`                        // 转发端口列表（可选，为空使用默认）
+	Mode     string `json:"mode"`                         // 连接模式：tls(加密，默认) 或 tcp(直连)
+}
+
+// 清除 GOST 转发请求
+type ClearGostForwardReq struct {
+	ServerId int   `json:"server_id" binding:"required"` // GOST 服务器ID
+	Ports    []int `json:"ports"`                        // 要清除的端口列表（可选，为空清除所有）
+}
+
+// GOST 转发状态响应
+type GostForwardStatusResp struct {
+	ServerId    int                `json:"server_id"`
+	ServerName  string             `json:"server_name"`
+	ServerIP    string             `json:"server_ip"`
+	Forwards    []GostForwardItem  `json:"forwards"`
+	TotalCount  int                `json:"total_count"`
+}
+
+// 单个转发项
+type GostForwardItem struct {
+	Port     int    `json:"port"`      // 监听端口
+	TargetIP string `json:"target_ip"` // 目标IP
+	Status   string `json:"status"`    // 状态：active/inactive
+}

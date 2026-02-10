@@ -392,3 +392,32 @@ export function deployTSDDWithAMI(data: Deploy.DeployTSDDWithAMIReq) {
     timeout: 600000 // 10分钟超时，AMI 部署需要时间
   })
 }
+
+// ========== GOST 转发配置（一键部署） ==========
+
+/** 配置 GOST 转发目标 */
+export function setupGostForward(data: Deploy.SetupGostForwardReq) {
+  return request<{ code: number; data: { message: string }; message: string }>({
+    url: "deploy/gost/forward/setup",
+    method: "post",
+    data
+  })
+}
+
+/** 清除 GOST 转发规则 */
+export function clearGostForward(data: Deploy.ClearGostForwardReq) {
+  return request<{ code: number; data: { message: string }; message: string }>({
+    url: "deploy/gost/forward/clear",
+    method: "delete",
+    data
+  })
+}
+
+/** 获取 GOST 转发状态 */
+export function getGostForwardStatus(server_id: number) {
+  return request<Deploy.GostForwardStatusResponseData>({
+    url: "deploy/gost/forward/status",
+    method: "get",
+    params: { server_id }
+  })
+}
