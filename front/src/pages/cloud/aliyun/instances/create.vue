@@ -16,6 +16,7 @@ import {
   DocumentCopy,
   Key,
   Location,
+  Lock,
   Picture,
   Plus,
   Timer,
@@ -158,8 +159,9 @@ function createDefaultInstance(): CreateInstanceData {
     disk_category: "cloud_essd", // 默认ESSD云盘
     disk_size: 40, // 默认40GB
     period_unit: "Month",
-    period: 1
-    // SSH密钥对将由后端自动创建
+    period: 1,
+    use_password: false, // 默认使用SSH密钥对
+    password: ""
   }
 }
 
@@ -559,9 +561,44 @@ watch(() => selectedCloudAccount.value, (newVal) => {
             </el-col>
           </el-row>
 
+          <!-- SSH认证方式 -->
+          <el-row :gutter="20">
+            <el-col :span="8">
+              <el-form-item label="认证方式">
+                <el-radio-group v-model="instance.use_password">
+                  <el-radio :value="false">
+                    <el-icon><Key /></el-icon> SSH密钥对
+                  </el-radio>
+                  <el-radio :value="true">
+                    <el-icon><Lock /></el-icon> 密码认证
+                  </el-radio>
+                </el-radio-group>
+              </el-form-item>
+            </el-col>
+            <el-col :span="8" v-if="instance.use_password">
+              <el-form-item label="登录密码">
+                <el-input
+                  v-model="instance.password"
+                  type="password"
+                  placeholder="留空则自动生成安全密码"
+                  show-password
+                >
+                  <template #prefix>
+                    <el-icon><Lock /></el-icon>
+                  </template>
+                </el-input>
+                <div class="form-tip">
+                  8-30个字符，需包含大小写字母和数字
+                </div>
+              </el-form-item>
+            </el-col>
+          </el-row>
+
           <!-- SSH认证说明 -->
           <el-alert
-            title="SSH认证：系统将自动创建SSH密钥对，创建完成后服务器会自动注册到服务器列表"
+            :title="instance.use_password
+              ? 'SSH认证：使用密码登录，创建完成后服务器会自动注册到服务器列表'
+              : 'SSH认证：系统将自动创建SSH密钥对，创建完成后服务器会自动注册到服务器列表'"
             type="info"
             :closable="false"
             show-icon

@@ -38,8 +38,9 @@ type CreateInstanceRequest struct {
 	*/
 	DiskCategory  string `json:"disk_category"`
 	DiskSize      int32  `json:"disk_size"`       // 系统盘大小 40G
-	Password      string `json:"password"`        // SSH登录密码，8-30个字符，必须包含大小写字母、数字（可选，优先使用密钥）
-	KeyPairName   string `json:"key_pair_name"`   // SSH密钥对名称（阿里云密钥对名称）
+	Password      string `json:"password"`        // SSH登录密码，8-30个字符，必须包含大小写字母、数字
+	UsePassword   bool   `json:"use_password"`    // 是否使用密码认证（true=密码认证，false=自动创建密钥对）
+	KeyPairName   string `json:"key_pair_name"`   // SSH密钥对名称（阿里云密钥对名称，可选）
 	SshPrivateKey string `json:"ssh_private_key"` // SSH私钥内容（PEM格式，用于保存到数据库）
 }
 
@@ -141,13 +142,11 @@ func CreateInstance(req *CreateInstanceRequest) (*CreateInstanceResult, error) {
 		},
 	}
 
-	// 认证信息 - 自动创建SSH密钥对
+	// 认证信息 - 根据用户选择决定使用密码还是密钥
 	var authInfo *ServerAuthInfo
-	keyPairName := fmt.Sprintf("control-auto-%s-%d", req.Region, time.Now().Unix())
-	privateKey, err := CreateKeyPair(client, req.Region, keyPairName)
-	if err != nil {
-		logx.Errorf("create key pair failed, fallback to password: %v", err)
-		// 如果创建密钥对失败，回退到密码认证
+
+	if req.UsePassword {
+		// 用户选择密码认证
 		password := req.Password
 		if password == "" {
 			password = generateSecurePassword()
@@ -157,16 +156,34 @@ func CreateInstance(req *CreateInstanceRequest) (*CreateInstanceResult, error) {
 			AuthType: 1, // 密码认证
 			Password: password,
 		}
-		logx.Infof("creating instance with password authentication (fallback)")
+		logx.Infof("creating instance with password authentication (user selected)")
 	} else {
-		// 使用自动创建的密钥对
-		request.KeyPairName = tea.String(keyPairName)
-		authInfo = &ServerAuthInfo{
-			AuthType:   2, // 密钥认证
-			KeyName:    keyPairName,
-			PrivateKey: privateKey,
+		// 默认使用SSH密钥对
+		keyPairName := fmt.Sprintf("control-auto-%s-%d", req.Region, time.Now().Unix())
+		privateKey, err := CreateKeyPair(client, req.Region, keyPairName)
+		if err != nil {
+			logx.Errorf("create key pair failed, fallback to password: %v", err)
+			// 如果创建密钥对失败，回退到密码认证
+			password := req.Password
+			if password == "" {
+				password = generateSecurePassword()
+			}
+			request.Password = tea.String(password)
+			authInfo = &ServerAuthInfo{
+				AuthType: 1, // 密码认证
+				Password: password,
+			}
+			logx.Infof("creating instance with password authentication (fallback)")
+		} else {
+			// 使用自动创建的密钥对
+			request.KeyPairName = tea.String(keyPairName)
+			authInfo = &ServerAuthInfo{
+				AuthType:   2, // 密钥认证
+				KeyName:    keyPairName,
+				PrivateKey: privateKey,
+			}
+			logx.Infof("creating instance with auto-created SSH key pair: %s", keyPairName)
 		}
-		logx.Infof("creating instance with auto-created SSH key pair: %s", keyPairName)
 	}
 
 	if req.InstanceChargeType == "PrePaid" {
