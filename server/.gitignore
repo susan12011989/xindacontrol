@@ -1,0 +1,7 @@
+*.log
+apps/server/logs/
+.idea
+.vscode
+apps/admin/admin
+apps/admin/logs
+apps/admin/GeoLite2-City.mmdb

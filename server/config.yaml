@@ -1,0 +1,68 @@
+Name: controlserver
+ListenOn: 0.0.0.0:58181
+Log:
+  ServiceName: controlserver
+  KeepDays: 7
+  Mode: file
+  Path: ./logs
+  Level: debug
+Mysql:
+  Addr: 127.0.0.1:3306
+  UserName: root
+  Password: i0TYyoszzLaFq0HyKheE
+  DB: control
+  CharSet: utf8mb4
+  Maxopen: 5
+  Maxidle: 3
+  MaxIdleTime: 30s
+  MaxLifeTime: 60s
+Redis:
+  Addr: 127.0.0.1:6379
+  UserName:
+  Password:
+  DB: 10
+  PoolSize: 3
+# 商户API认证配置（供商户服务调用）
+MerchantAPI:
+  Username: "merchant_api"
+  Password: "MerchantAPI@2026"
+
+# IP隐写上传配置
+IpEmbed:
+  SourceDir: "./ipsources"  # 源文件目录
+  Targets:
+    - Name: "阿里云"
+      CloudType: "aliyun"
+      CloudAccountId: 23
+      RegionId: "cn-shenzhen"
+      Bucket: "aliyunx"
+      ObjectPrefix: ""
+      Enabled: true
+    - Name: "阿里云"
+      CloudType: "aliyun"
+      CloudAccountId: 23
+      RegionId: "cn-shenzhen"
+      Bucket: "aliyunxx2"
+      ObjectPrefix: ""
+      Enabled: true
+    - Name: "腾讯云"
+      CloudType: "tencent"
+      CloudAccountId: 24
+      RegionId: "ap-guangzhou"
+      Bucket: "guangzhou-1380183459"
+      ObjectPrefix: ""
+      Enabled: true
+    - Name: "腾讯云"
+      CloudType: "tencent"
+      CloudAccountId: 24
+      RegionId: "ap-guangzhou"
+      Bucket: "icons-1380183459"
+      ObjectPrefix: ""
+      Enabled: true
+    - Name: "AWS"
+      CloudType: "aws"
+      CloudAccountId: 25
+      RegionId: "ap-east-1"
+      Bucket: "jtdicons"
+      ObjectPrefix: ""
+      Enabled: true

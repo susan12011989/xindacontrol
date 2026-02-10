@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build:*)",
+      "Bash(pnpm run build:*)",
+      "Bash(git restore:*)",
+      "Bash(pnpm build:*)",
+      "Bash(go get:*)",
+      "Bash(GOPROXY=https://goproxy.cn,direct go get:*)",
+      "Bash(GOPROXY=https://goproxy.cn,direct go mod tidy:*)",
+      "Bash(go doc:*)",
+      "Bash(go list:*)"
+    ]
+  }
+}

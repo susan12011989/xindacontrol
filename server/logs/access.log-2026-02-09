@@ -1,0 +1,23 @@
+{"@timestamp":"2026-02-06T18:53:28.221+07:00","caller":"dbs/mysql.go:29","content":"mysql config: &{Addr:127.0.0.1:3306 UserName:root Password:i0TYyoszzLaFq0HyKheE DB:control CharSet:utf8mb4 Maxopen:5 Maxidle:3 MaxIdleTime:30s MaxLifeTime:60s}","level":"info"}
+{"@timestamp":"2026-02-06T18:53:28.225+07:00","caller":"dbs/redis.go:35","content":"redis config: &{Addr:127.0.0.1:6379 UserName: Password: DB:10 PoolSize:3}","level":"info"}
+{"@timestamp":"2026-02-06T18:53:28.229+07:00","caller":"gostapi/task_queue.go:108","content":"GOST 任务队列已清除，删除 key 数: 0","level":"info"}
+{"@timestamp":"2026-02-06T18:53:28.229+07:00","caller":"gostapi/task_queue.go:116","content":"GOST 任务版本号已清除，删除 key 数: 0","level":"info"}
+{"@timestamp":"2026-02-06T18:53:28.229+07:00","caller":"gostapi/task_queue.go:132","content":"GOST task queue consumer started","level":"info"}
+{"@timestamp":"2026-02-06T18:53:28.324+07:00","caller":"server/serve.go:109","content":"Started admin server on 0.0.0.0:58181","level":"info"}
+{"@timestamp":"2026-02-09T23:49:48.251+07:00","caller":"dbs/mysql.go:29","content":"mysql config: &{Addr:127.0.0.1:3306 UserName:root Password:i0TYyoszzLaFq0HyKheE DB:control CharSet:utf8mb4 Maxopen:5 Maxidle:3 MaxIdleTime:30s MaxLifeTime:60s}","level":"info"}
+{"@timestamp":"2026-02-09T23:49:48.254+07:00","caller":"dbs/redis.go:35","content":"redis config: &{Addr:127.0.0.1:6379 UserName: Password: DB:10 PoolSize:3}","level":"info"}
+{"@timestamp":"2026-02-09T23:49:48.264+07:00","caller":"gostapi/task_queue.go:108","content":"GOST 任务队列已清除，删除 key 数: 0","level":"info"}
+{"@timestamp":"2026-02-09T23:49:48.264+07:00","caller":"gostapi/task_queue.go:116","content":"GOST 任务版本号已清除，删除 key 数: 0","level":"info"}
+{"@timestamp":"2026-02-09T23:49:48.264+07:00","caller":"gostapi/task_queue.go:132","content":"GOST task queue consumer started","level":"info"}
+{"@timestamp":"2026-02-09T23:49:48.353+07:00","caller":"server/serve.go:103","content":"Started admin server on 0.0.0.0:58181","level":"info"}
+{"@timestamp":"2026-02-09T23:51:05.140+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 POST /server/v1/auth/login? 200 206.208µs","level":"info"}
+{"@timestamp":"2026-02-09T23:51:16.154+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 GET /server/v1/auth/challenge? 200 54.176083ms","level":"info"}
+{"@timestamp":"2026-02-09T23:52:03.225+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 GET /server/v1/ping? 200 16.709µs","level":"info"}
+{"@timestamp":"2026-02-09T23:54:48.880+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 GET /server/v1/auth/challenge? 200 124.792µs","level":"info"}
+{"@timestamp":"2026-02-09T23:54:48.918+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 POST /server/v1/auth/login? 200 25.354542ms","level":"info"}
+{"@timestamp":"2026-02-09T23:55:49.880+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 GET /server/v1/ping? 200 15.209µs","level":"info"}
+{"@timestamp":"2026-02-09T23:56:01.249+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 GET /server/v1/ping? 200 18.209µs","level":"info"}
+{"@timestamp":"2026-02-09T23:56:09.366+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 GET /server/v1/ping? 200 14.292µs","level":"info"}
+{"@timestamp":"2026-02-09T23:57:36.880+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 GET /server/v1/ping? 200 20µs","level":"info"}
+{"@timestamp":"2026-02-09T23:58:13.334+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 GET /server/v1/auth/challenge? 200 104.75µs","level":"info"}
+{"@timestamp":"2026-02-09T23:58:13.355+07:00","caller":"middleware/middleware.go:109","content":"[admin] ::1 POST /server/v1/auth/login? 200 16.341375ms","level":"info"}

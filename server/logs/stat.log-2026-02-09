@@ -1,0 +1,10 @@
+{"@timestamp":"2026-02-09T23:50:48.247+07:00","caller":"stat/usage.go:61","content":"CPU: 0m, MEMORY: Alloc=2.3Mi, TotalAlloc=2.9Mi, Sys=13.3Mi, NumGC=1","level":"stat"}
+{"@timestamp":"2026-02-09T23:51:48.248+07:00","caller":"stat/usage.go:61","content":"CPU: 0m, MEMORY: Alloc=3.2Mi, TotalAlloc=3.8Mi, Sys=13.3Mi, NumGC=1","level":"stat"}
+{"@timestamp":"2026-02-09T23:52:48.248+07:00","caller":"stat/usage.go:61","content":"CPU: 0m, MEMORY: Alloc=2.1Mi, TotalAlloc=3.8Mi, Sys=13.9Mi, NumGC=2","level":"stat"}
+{"@timestamp":"2026-02-09T23:53:48.249+07:00","caller":"stat/usage.go:61","content":"CPU: 0m, MEMORY: Alloc=2.1Mi, TotalAlloc=3.8Mi, Sys=14.1Mi, NumGC=2","level":"stat"}
+{"@timestamp":"2026-02-09T23:54:48.249+07:00","caller":"stat/usage.go:61","content":"CPU: 0m, MEMORY: Alloc=2.0Mi, TotalAlloc=3.8Mi, Sys=14.1Mi, NumGC=3","level":"stat"}
+{"@timestamp":"2026-02-09T23:55:48.249+07:00","caller":"stat/usage.go:61","content":"CPU: 0m, MEMORY: Alloc=2.1Mi, TotalAlloc=3.9Mi, Sys=14.1Mi, NumGC=3","level":"stat"}
+{"@timestamp":"2026-02-09T23:56:48.249+07:00","caller":"stat/usage.go:61","content":"CPU: 0m, MEMORY: Alloc=2.1Mi, TotalAlloc=4.0Mi, Sys=14.1Mi, NumGC=4","level":"stat"}
+{"@timestamp":"2026-02-09T23:57:48.249+07:00","caller":"stat/usage.go:61","content":"CPU: 0m, MEMORY: Alloc=2.1Mi, TotalAlloc=4.0Mi, Sys=14.1Mi, NumGC=4","level":"stat"}
+{"@timestamp":"2026-02-09T23:58:48.249+07:00","caller":"stat/usage.go:61","content":"CPU: 0m, MEMORY: Alloc=2.1Mi, TotalAlloc=4.1Mi, Sys=14.1Mi, NumGC=5","level":"stat"}
+{"@timestamp":"2026-02-09T23:59:48.250+07:00","caller":"stat/usage.go:61","content":"CPU: 0m, MEMORY: Alloc=2.1Mi, TotalAlloc=4.1Mi, Sys=14.1Mi, NumGC=5","level":"stat"}

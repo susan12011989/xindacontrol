@@ -1,0 +1,1 @@
+import{v as t,ay as r,az as a,x as o,y as s}from"./vue-DBMOEVZ-.js";const m=t({__name:"index",setup(n){const e=r();return a().replace({path:`/${e.params.path}`,query:e.query}),(c,p)=>(s(),o("div"))}});export{m as default};

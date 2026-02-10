@@ -1,0 +1,1 @@
+import"./index-BD6fjmNW.js";/* empty css                   */import{ai as o}from"./element-CeHA8Iz3.js";const a={lock:!0,text:"加载中..."},c=(e,r={})=>{let t;return async(...n)=>{try{return t=o.service({...a,...r}),await e(...n)}finally{t.close()}}};export{c as u};

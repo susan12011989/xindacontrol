@@ -1,0 +1,298 @@
+package model
+
+// ========== 服务器管理 ==========
+
+// 查询服务器请求
+type QueryServersReq struct {
+	Pagination
+	Name       string `json:"name" form:"name"`
+	Host       string `json:"host" form:"host"`
+	Status     *int   `json:"status" form:"status"`
+	ServerType *int   `json:"server_type" form:"server_type"` // 1-商户服务器 2-系统服务器
+	MerchantId *int   `json:"merchant_id" form:"merchant_id"` // 按商户ID筛选
+}
+
+// 创建服务器请求
+type CreateServerReq struct {
+	Name        string `json:"name" binding:"required"`
+	Host        string `json:"host" binding:"required"`
+	AuxiliaryIP string `json:"auxiliary_ip"` // 辅助IP，仅系统服务器使用
+	Port        int    `json:"port" binding:"required"`
+	Username    string `json:"username" binding:"required"`
+	AuthType    int    `json:"auth_type" binding:"required,oneof=1 2"`
+	Password    string `json:"password"`
+	PrivateKey  string `json:"private_key"`
+	ServerType  int    `json:"server_type"`  // 1-商户服务器 2-系统服务器
+	ForwardType int    `json:"forward_type"` // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
+	Description string `json:"description"`
+}
+
+// 更新服务器请求
+type UpdateServerReq struct {
+	Name        string  `json:"name"`
+	Host        string  `json:"host"`
+	AuxiliaryIP *string `json:"auxiliary_ip"` // 辅助IP，仅系统服务器使用
+	Port        *int    `json:"port"`
+	Username    string  `json:"username"`
+	AuthType    *int    `json:"auth_type"`
+	Password    string  `json:"password"`
+	PrivateKey  string  `json:"private_key"`
+	ServerType  *int    `json:"server_type"`  // 1-商户服务器 2-系统服务器
+	ForwardType *int    `json:"forward_type"` // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
+	Status      *int    `json:"status"`
+	Description string  `json:"description"`
+}
+
+// 服务器响应
+type ServerResp struct {
+	Id           int    `json:"id"`
+	Name         string `json:"name"`
+	Host         string `json:"host"`
+	AuxiliaryIP  string `json:"auxiliary_ip"` // 辅助IP，仅系统服务器使用
+	Port         int    `json:"port"`
+	Username     string `json:"username"`
+	AuthType     int    `json:"auth_type"`
+	ServerType   int    `json:"server_type"`  // 1-商户服务器 2-系统服务器
+	ForwardType  int    `json:"forward_type"` // 转发类型：1-加密(relay+tls) 2-直连(tcp)
+	Status       int    `json:"status"`
+	Description  string `json:"description"`
+	MerchantId   int    `json:"merchant_id"`   // 关联的商户ID
+	MerchantName string `json:"merchant_name"` // 关联的商户名称
+	MerchantNo   string `json:"merchant_no"`   // 商户号
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
+// 服务器列表响应
+type QueryServersResponse struct {
+	List  []ServerResp `json:"list"`
+	Total int          `json:"total"`
+}
+
+// 测试连接请求
+type TestConnectionReq struct {
+	Host       string `json:"host" binding:"required"`
+	Port       int    `json:"port" binding:"required"`
+	Username   string `json:"username" binding:"required"`
+	AuthType   int    `json:"auth_type" binding:"required"`
+	Password   string `json:"password"`
+	PrivateKey string `json:"private_key"`
+}
+
+// ========== 服务操作（systemctl） ==========
+
+// 支持的服务列表：server, wukongim, gost
+var SupportedServices = []string{"server", "wukongim", "gost"}
+
+// 服务上传路径映射
+var ServiceUploadPaths = map[string]string{
+	"server":   "/root/server/",
+	"wukongim": "/root/wukongim/",
+}
+
+// 服务可执行文件名映射（实际的二进制文件名）
+var ServiceBinaryNames = map[string]string{
+	"server":   "server",
+	"wukongim": "WuKongIM", // 注意大小写，要与 systemd 配置中的 ExecStart 一致
+}
+
+// 服务操作请求
+type ServiceActionReq struct {
+	ServerId    int    `json:"server_id" binding:"required"`
+	ServiceName string `json:"service_name" binding:"required"` // server, wukongim, gost
+	Action      string `json:"action" binding:"required,oneof=start stop restart"`
+}
+
+// 服务操作响应
+type ServiceActionResp struct {
+	Success  bool   `json:"success"`
+	Message  string `json:"message"`
+	Output   string `json:"output"`
+	ErrorMsg string `json:"error_msg"`
+}
+
+// 服务状态请求
+type ServiceStatusReq struct {
+	ServerId    int    `json:"server_id" form:"server_id" binding:"required"`
+	ServiceName string `json:"service_name" form:"service_name"` // 可选，为空则查询所有服务
+}
+
+// 服务状态响应
+type ServiceStatusResp struct {
+	ServiceName string `json:"service_name"`
+	Status      string `json:"status"` // running/stopped/unknown
+	Pid         int    `json:"pid"`
+	Uptime      string `json:"uptime"`
+	CPU         string `json:"cpu"`
+	Memory      string `json:"memory"`
+}
+
+// 服务状态列表响应
+type ServiceStatusListResp struct {
+	Services []ServiceStatusResp `json:"services"`
+}
+
+// 服务日志请求
+type ServiceLogsReq struct {
+	ServerId    int    `json:"server_id" form:"server_id" binding:"required"`
+	ServiceName string `json:"service_name" form:"service_name" binding:"required"`
+	Lines       int    `json:"lines" form:"lines"` // 显示行数，默认100
+}
+
+// 服务日志响应
+type ServiceLogsResp struct {
+	Logs        string `json:"logs"`
+	TotalLines  int    `json:"total_lines"`
+	ServiceName string `json:"service_name"`
+}
+
+// ========== 服务器资源 ==========
+
+// 服务器资源响应
+type ServerStatsResp struct {
+	CPUUsage    string `json:"cpu_usage"`
+	MemoryUsage string `json:"memory_usage"`
+	MemoryTotal string `json:"memory_total"`
+	DiskUsage   string `json:"disk_usage"`
+	DiskTotal   string `json:"disk_total"`
+	LoadAvg     string `json:"load_avg"`
+}
+
+// 获取服务器资源请求
+type GetServerStatsReq struct {
+	ServerId int `json:"server_id" form:"server_id" binding:"required"`
+}
+
+// 批量获取服务器资源请求
+type GetServerStatsBatchReq struct {
+	ServerIds []int `json:"server_ids" binding:"required"`
+}
+
+// 批量服务器基础资源
+type ServerBasicStat struct {
+	ServerId    int    `json:"server_id"`
+	CPUUsage    string `json:"cpu_usage"`
+	MemoryUsage string `json:"memory_usage"`
+	MemoryTotal string `json:"memory_total"`
+	Error       string `json:"error,omitempty"`
+}
+
+// 批量获取服务器资源响应
+type GetServerStatsBatchResp struct {
+	Stats []ServerBasicStat `json:"stats"`
+}
+
+// ========== 配置文件 ==========
+
+// 获取配置文件请求
+type GetConfigFileReq struct {
+	ServerId    int    `json:"server_id" form:"server_id" binding:"required"`
+	ServiceName string `json:"service_name" form:"service_name" binding:"required"`
+}
+
+// 配置文件响应
+type ConfigFileResp struct {
+	ServiceName string `json:"service_name"`
+	ConfigPath  string `json:"config_path"`
+	Content     string `json:"content"`
+}
+
+// 更新配置文件请求
+type UpdateConfigFileReq struct {
+	ServerId    int    `json:"server_id" binding:"required"`
+	ServiceName string `json:"service_name" binding:"required"`
+	Content     string `json:"content" binding:"required"`
+}
+
+// ========== GOST API 代理 ==========
+
+// 创建 GOST 服务请求
+type CreateGostServiceReq struct {
+	ServerId    int    `json:"server_id" binding:"required"`
+	ListenPort  int    `json:"listen_port" binding:"required"`
+	ForwardHost string `json:"forward_host" binding:"required"`
+	ForwardPort int    `json:"forward_port" binding:"required"`
+}
+
+// 更新 GOST 服务请求
+type UpdateGostServiceReq struct {
+	Config interface{} `json:"config" binding:"required"`
+}
+
+// ========== 批量分发 ==========
+
+// 批量分发请求（从本地服务器分发到目标服务器）
+type DistributeFileReq struct {
+	ServiceName     string `json:"service_name" binding:"required"`      // 服务名：server 或 wukongim
+	TargetServerIds []int  `json:"target_server_ids" binding:"required"` // 目标服务器ID列表（商户服务器）
+	RestartAfter    bool   `json:"restart_after"`                        // 分发后是否重启服务
+}
+
+// 本地上传路径（控制后台所在服务器）
+var LocalUploadDir = "/tmp/deploy_uploads"
+
+// 单个服务器分发结果
+type DistributeResult struct {
+	ServerId   int    `json:"server_id"`
+	ServerName string `json:"server_name"`
+	Success    bool   `json:"success"`
+	Message    string `json:"message"`
+}
+
+// ========== Docker 容器状态 ==========
+
+// Docker 容器状态请求
+type DockerContainersReq struct {
+	ServerId int `json:"server_id" form:"server_id" binding:"required"`
+}
+
+// Docker 容器状态
+type DockerContainerStatus struct {
+	ContainerId string `json:"container_id"` // 容器ID（短）
+	Name        string `json:"name"`         // 容器名称
+	Image       string `json:"image"`        // 镜像名
+	Status      string `json:"status"`       // 状态（Up/Exited等）
+	Ports       string `json:"ports"`        // 端口映射
+	Created     string `json:"created"`      // 创建时间
+	RunningFor  string `json:"running_for"`  // 运行时长
+	CPUPercent  string `json:"cpu_percent"`  // CPU 使用率
+	MemUsage    string `json:"mem_usage"`    // 内存使用
+	MemPercent  string `json:"mem_percent"`  // 内存使用率
+}
+
+// Docker 容器状态响应
+type DockerContainersResp struct {
+	Containers []DockerContainerStatus `json:"containers"`
+}
+
+// 批量分发响应
+type DistributeFileResp struct {
+	TotalCount   int                `json:"total_count"`
+	SuccessCount int                `json:"success_count"`
+	FailCount    int                `json:"fail_count"`
+	Results      []DistributeResult `json:"results"`
+}
+
+// ========== GOST 服务器一键部署 ==========
+
+// 部署 GOST 服务器请求
+type DeployGostServerReq struct {
+	CloudAccountId int64  `json:"cloud_account_id" binding:"required"` // 云账号ID
+	RegionId       string `json:"region_id" binding:"required"`        // 地区ID
+	InstanceType   string `json:"instance_type"`                       // 实例类型，为空使用默认
+	ImageId        string `json:"image_id"`                            // 镜像ID，为空使用默认Ubuntu
+	ServerName     string `json:"server_name"`                         // 服务器名称
+	GroupId        int    `json:"group_id"`                            // 服务器分组ID
+	Password       string `json:"password"`                            // SSH 密码（可选，不填则自动生成密钥）
+	Bandwidth      string `json:"bandwidth"`                           // EIP 带宽，默认 5Mbps
+}
+
+// 在已有服务器上安装 GOST 请求
+type InstallGostReq struct {
+	ServerId   int    `json:"server_id"`   // 服务器ID（二选一）
+	Host       string `json:"host"`        // 服务器IP（二选一）
+	Port       int    `json:"port"`        // SSH端口，默认22
+	Username   string `json:"username"`    // SSH用户名，默认root
+	Password   string `json:"password"`    // SSH密码
+	PrivateKey string `json:"private_key"` // SSH私钥（二选一）
+}

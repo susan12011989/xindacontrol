@@ -1,0 +1,42 @@
+import type * as Types from "./type"
+
+// 阿里云区域静态数据
+const ALIYUN_REGIONS: Types.Region[] = [
+  { Status: "available", RegionId: "cn-shenzhen", LocalName: "华南1（深圳）", RegionEndpoint: "ecs.cn-shenzhen.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-hangzhou", LocalName: "华东1（杭州）", RegionEndpoint: "ecs.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-guangzhou", LocalName: "华南3（广州）", RegionEndpoint: "ecs.cn-guangzhou.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-shanghai", LocalName: "华东2（上海）", RegionEndpoint: "ecs.cn-shanghai.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-beijing", LocalName: "华北2（北京）", RegionEndpoint: "ecs.cn-beijing.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-hongkong", LocalName: "香港", RegionEndpoint: "ecs.cn-hongkong.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-qingdao", LocalName: "华北1（青岛）", RegionEndpoint: "ecs.cn-qingdao.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-zhangjiakou", LocalName: "华北3（张家口）", RegionEndpoint: "ecs.cn-zhangjiakou.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-huhehaote", LocalName: "华北5（呼和浩特）", RegionEndpoint: "ecs.cn-huhehaote.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-wulanchabu", LocalName: "华北6（乌兰察布）", RegionEndpoint: "ecs.cn-wulanchabu.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-nanjing", LocalName: "华东5（南京-本地地域）", RegionEndpoint: "ecs.cn-nanjing.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-heyuan", LocalName: "华南2（河源）", RegionEndpoint: "ecs.cn-heyuan.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-fuzhou", LocalName: "华东6（福州-本地地域）", RegionEndpoint: "ecs.cn-fuzhou.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-wuhan-lr", LocalName: "华中1（武汉-本地地域）", RegionEndpoint: "ecs.cn-wuhan-lr.aliyuncs.com" },
+  { Status: "available", RegionId: "cn-chengdu", LocalName: "西南1（成都）", RegionEndpoint: "ecs.cn-chengdu.aliyuncs.com" },
+  { Status: "available", RegionId: "ap-northeast-1", LocalName: "日本（东京）", RegionEndpoint: "ecs.ap-northeast-1.aliyuncs.com" },
+  { Status: "available", RegionId: "ap-northeast-2", LocalName: "韩国（首尔）", RegionEndpoint: "ecs.ap-northeast-2.aliyuncs.com" },
+  { Status: "available", RegionId: "ap-southeast-1", LocalName: "新加坡", RegionEndpoint: "ecs.ap-southeast-1.aliyuncs.com" },
+  { Status: "available", RegionId: "ap-southeast-3", LocalName: "马来西亚（吉隆坡）", RegionEndpoint: "ecs.ap-southeast-3.aliyuncs.com" },
+  { Status: "available", RegionId: "ap-southeast-6", LocalName: "菲律宾（马尼拉）", RegionEndpoint: "ecs.ap-southeast-6.aliyuncs.com" },
+  { Status: "available", RegionId: "ap-southeast-5", LocalName: "印度尼西亚（雅加达）", RegionEndpoint: "ecs.ap-southeast-5.aliyuncs.com" },
+  { Status: "available", RegionId: "ap-southeast-7", LocalName: "泰国（曼谷）", RegionEndpoint: "ecs.ap-southeast-7.aliyuncs.com" },
+  { Status: "available", RegionId: "us-east-1", LocalName: "美国（弗吉尼亚）", RegionEndpoint: "ecs.us-east-1.aliyuncs.com" },
+  { Status: "available", RegionId: "us-west-1", LocalName: "美国（硅谷）", RegionEndpoint: "ecs.us-west-1.aliyuncs.com" },
+  { Status: "available", RegionId: "na-south-1", LocalName: "墨西哥", RegionEndpoint: "ecs.na-south-1.aliyuncs.com" },
+  { Status: "available", RegionId: "eu-west-1", LocalName: "英国（伦敦）", RegionEndpoint: "ecs.eu-west-1.aliyuncs.com" },
+  { Status: "available", RegionId: "me-east-1", LocalName: "阿联酋（迪拜）", RegionEndpoint: "ecs.me-east-1.aliyuncs.com" },
+  { Status: "available", RegionId: "eu-central-1", LocalName: "德国（法兰克福）", RegionEndpoint: "ecs.eu-central-1.aliyuncs.com" }
+]
+
+/** 查看region列表（使用静态数据） */
+export function regionListApi(): Promise<Types.RegionList> {
+  return Promise.resolve({
+    code: 200,
+    data: ALIYUN_REGIONS,
+    message: ""
+  })
+}
