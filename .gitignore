@@ -1,0 +1,22 @@
+# Compiled binaries
+server/server
+server/server-*
+server/server_*
+server/control-server
+server/control-server-*
+server/controlserver
+server/controlserver-*
+server/apps/server/server
+server/apps/server/control-server-linux
+server/bin/control-server
+
+# Logs
+server/logs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
