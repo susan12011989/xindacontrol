@@ -11,6 +11,7 @@ import (
 	"server/pkg/consts"
 	"server/pkg/dbs"
 	"server/pkg/entity"
+	"strings"
 	"sync"
 	"time"
 )
@@ -351,10 +352,23 @@ func deployToServer(server entity.Servers, version entity.ServiceVersions, opera
 	// 设置可执行权限
 	client.ExecuteCommand(fmt.Sprintf("chmod +x '%s'", remotePath))
 
-	// 重启服务
-	systemdName := serviceSystemdNames[version.ServiceName]
-	restartCmd := fmt.Sprintf("systemctl restart %s", systemdName)
-	restartOutput, restartErr := client.ExecuteCommand(restartCmd)
+	// 重启服务：优先 Docker，回退 systemd
+	var restartOutput string
+	var restartErr error
+	dockerName := model.ServiceDockerNames[version.ServiceName]
+	if dockerName != "" {
+		checkCmd := fmt.Sprintf("docker inspect %s >/dev/null 2>&1 && echo 'exists'", dockerName)
+		checkOutput, _ := client.ExecuteCommand(checkCmd)
+		if strings.TrimSpace(checkOutput) == "exists" {
+			restartOutput, restartErr = client.ExecuteCommand(fmt.Sprintf("docker restart %s", dockerName))
+		} else {
+			systemdName := serviceSystemdNames[version.ServiceName]
+			restartOutput, restartErr = client.ExecuteCommand(fmt.Sprintf("systemctl restart %s", systemdName))
+		}
+	} else {
+		systemdName := serviceSystemdNames[version.ServiceName]
+		restartOutput, restartErr = client.ExecuteCommand(fmt.Sprintf("systemctl restart %s", systemdName))
+	}
 	if restartErr != nil {
 		result.Success = true
 		result.Message = fmt.Sprintf("部署成功，但重启失败: %v (output: %s)", restartErr, restartOutput)

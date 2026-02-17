@@ -1,6 +1,7 @@
 package merchant
 
 import (
+	"fmt"
 	"server/internal/dbhelper"
 	"server/internal/server/middleware"
 	merchantService "server/internal/server/service/merchant"
@@ -202,6 +203,21 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 		result.GOK(c, gin.H{"updated": successCount, "total": len(req.MerchantNos)})
 	})
 
+	// 读取商户短信配置
+	group.GET("sms", func(c *gin.Context) {
+		merchantNo := c.Query("merchant_no")
+		if merchantNo == "" {
+			result.GParamErr(c, fmt.Errorf("merchant_no不能为空"))
+			return
+		}
+		config, err := merchantService.GetAdminmSmsConfig(merchantNo)
+		if err != nil {
+			result.GErr(c, err)
+			return
+		}
+		result.GOK(c, config)
+	})
+
 	// 保存短信配置：支持单个、批量或全部
 	type smsSaveReq struct {
 		MerchantNo  string            `json:"merchant_no"`
@@ -276,5 +292,25 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 			}
 		}
 		result.GOK(c, gin.H{"updated": successCount, "total": len(req.MerchantNos)})
+	})
+
+	// 清除商户数据
+	group.POST("clear_data", func(c *gin.Context) {
+		var req struct {
+			MerchantNo string `json:"merchant_no"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			result.GParamErr(c, err)
+			return
+		}
+		if req.MerchantNo == "" {
+			result.GResult(c, 601, nil, "merchant_no不能为空")
+			return
+		}
+		if err := merchantService.ClearMerchantData(req.MerchantNo); err != nil {
+			result.GErr(c, err)
+			return
+		}
+		result.GOK(c, gin.H{"cleared": true})
 	})
 }

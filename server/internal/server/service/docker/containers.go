@@ -24,7 +24,12 @@ func executeDockerCommand(client *utils.PooledSSHClient, dockerCmd string) (stri
 		return output, nil
 	}
 
-	// 方案2: 尝试使用 sudo（如果用户有sudo权限）
+	// 如果docker未安装，直接返回明确错误，不再尝试其他方案
+	if strings.Contains(output, "command not found") || strings.Contains(err.Error(), "command not found") {
+		return "", errors.New("该服务器未安装Docker")
+	}
+
+	// 方案2: 尝试使用 sudo（如果用户有sudo权限，例如权限不足时）
 	sudoCmd := fmt.Sprintf("bash -l -c \"sudo %s\"", dockerCmd)
 	sudoOutput, sudoErr := client.ExecuteCommand(sudoCmd)
 	if sudoErr == nil {
@@ -91,7 +96,7 @@ func QueryContainers(req model.QueryDockerContainersReq) (model.QueryDockerConta
 	dockerCmd := fmt.Sprintf("docker ps %s --format '{{.ID}}|{{.Names}}|{{.Image}}|{{.Status}}|{{.State}}|{{.Ports}}|{{.CreatedAt}}'", statusFlag)
 	output, err := executeDockerCommand(client, dockerCmd)
 	if err != nil {
-		return resp, fmt.Errorf("执行docker ps命令失败: %v", err)
+		return resp, err
 	}
 
 	// 解析输出
@@ -142,7 +147,7 @@ func GetContainerStats(serverId int) ([]model.DockerContainerStatsResp, error) {
 	dockerCmd := "docker stats --no-stream --format '{{.Container}}|{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}|{{.NetIO}}|{{.BlockIO}}|{{.PIDs}}'"
 	output, err := executeDockerCommand(client, dockerCmd)
 	if err != nil {
-		return stats, fmt.Errorf("执行docker stats命令失败: %v", err)
+		return stats, err
 	}
 
 	// 解析输出

@@ -199,6 +199,9 @@ func DeployGostServer(config *GostDeployConfig, progressCallback func(message st
 	result.ServerId = server.Id
 	progressCallback(fmt.Sprintf("服务器注册成功，ID: %d", result.ServerId))
 
+	// 自动部署 TLS 证书（如果已生成）
+	deployTlsCertsIfAvailable(*server, progressCallback)
+
 	progressCallback("========================================")
 	progressCallback(fmt.Sprintf("✓ GOST 服务器部署完成!"))
 	progressCallback(fmt.Sprintf("  公网IP: %s", publicIP))
@@ -358,6 +361,14 @@ echo ">>> GOST 安装完成!"
 		}
 	}
 
+	// GOST 安装完成后，安装 Nginx 缓存服务（失败不影响 GOST）
+	progressCallback(">>> 安装 Nginx 缓存服务...")
+	if err := installNginxViaSSH(client); err != nil {
+		progressCallback(fmt.Sprintf("警告: Nginx 安装失败: %s (缓存功能不可用)", err))
+	} else {
+		progressCallback(">>> Nginx 缓存服务安装成功")
+	}
+
 	return nil
 }
 
@@ -381,6 +392,43 @@ func installGostViaSSH(host, password string, progressCallback func(string)) err
 	defer client.Close()
 
 	return installGostViaSSHClient(client, progressCallback)
+}
+
+// deployTlsCertsIfAvailable 如果数据库中有有效 TLS 证书，自动推送到新服务器
+// 返回 true 表示已部署证书
+func deployTlsCertsIfAvailable(server entity.Servers, progressCallback func(string)) bool {
+	var caCert entity.TlsCertificates
+	has, err := dbs.DBAdmin.Where("name = 'gost-ca' AND status = 1").Get(&caCert)
+	if err != nil || !has {
+		return false
+	}
+
+	var serverCert entity.TlsCertificates
+	has, err = dbs.DBAdmin.Where("name = 'gost-server' AND status = 1").Get(&serverCert)
+	if err != nil || !has {
+		return false
+	}
+
+	progressCallback("检测到有效 TLS 证书，自动部署...")
+	err = pushCertsToServer(server, caCert, serverCert)
+	if err != nil {
+		progressCallback(fmt.Sprintf("警告: TLS 证书部署失败: %s", err))
+		return false
+	}
+
+	// 更新数据库 TLS 状态
+	now := time.Now()
+	_, err = dbs.DBAdmin.Where("id = ?", server.Id).Cols("tls_enabled", "tls_deployed_at", "updated_at").Update(&entity.Servers{
+		TlsEnabled:    1,
+		TlsDeployedAt: &now,
+		UpdatedAt:     now,
+	})
+	if err != nil {
+		progressCallback(fmt.Sprintf("警告: 更新 TLS 状态失败: %s", err))
+	}
+
+	progressCallback("TLS 证书部署成功")
+	return true
 }
 
 // verifyGostAPI 验证 GOST API 是否可用
@@ -507,6 +555,14 @@ func InstallGostToExistingServer(req *model.InstallGostReq, progressCallback fun
 		progressCallback("请稍后手动配置或重试安装")
 	} else {
 		progressCallback("商户本地转发配置成功")
+	}
+
+	// 如果是已注册的系统服务器，自动部署 TLS 证书
+	if req.ServerId > 0 {
+		var serverEntity entity.Servers
+		if has, err := dbs.DBAdmin.ID(req.ServerId).Get(&serverEntity); err == nil && has && serverEntity.ServerType == 2 {
+			deployTlsCertsIfAvailable(serverEntity, progressCallback)
+		}
 	}
 
 	progressCallback(fmt.Sprintf("✓ GOST 安装完成! API: http://%s:%d", host, DefaultGostAPIPort))

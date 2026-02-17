@@ -120,11 +120,19 @@ const xFormOpt: VxeFormProps = reactive({
     app_package_name: "",
     app_name: "",
     sms_config: {
+      provider: "aliyun",
       region_id: "",
       access_key: "",
       secret_key: "",
       sign_name: "",
-      template_code: ""
+      template_code: "",
+      unisms_access_key_id: "",
+      unisms_access_key_secret: "",
+      unisms_signature: "",
+      unisms_template_id: "",
+      smsbao_account: "",
+      smsbao_api_key: "",
+      smsbao_template: ""
     },
     push_config: {
       push_hms: { app_id: "", app_secret: "" },
@@ -216,12 +224,20 @@ const crudStore = reactive({
       xFormOpt.data = {
         app_package_name: row.app_package_name,
         app_name: row.app_name,
-        sms_config: row.sms_config || {
-          region_id: "",
-          access_key: "",
-          secret_key: "",
-          sign_name: "",
-          template_code: ""
+        sms_config: {
+          provider: row.sms_config?.provider || "aliyun",
+          region_id: row.sms_config?.region_id || "",
+          access_key: row.sms_config?.access_key || "",
+          secret_key: row.sms_config?.secret_key || "",
+          sign_name: row.sms_config?.sign_name || "",
+          template_code: row.sms_config?.template_code || "",
+          unisms_access_key_id: row.sms_config?.unisms_access_key_id || "",
+          unisms_access_key_secret: row.sms_config?.unisms_access_key_secret || "",
+          unisms_signature: row.sms_config?.unisms_signature || "",
+          unisms_template_id: row.sms_config?.unisms_template_id || "",
+          smsbao_account: row.sms_config?.smsbao_account || "",
+          smsbao_api_key: row.sms_config?.smsbao_api_key || "",
+          smsbao_template: row.sms_config?.smsbao_template || ""
         },
         push_config: row.push_config
           ? {
@@ -304,7 +320,7 @@ const crudStore = reactive({
       <!-- 配置状态列 -->
       <template #config-status="{ row }">
         <div style="display: flex; flex-direction: column; gap: 4px;">
-          <el-tag v-if="row.sms_config" type="success" size="small"> SMS已配 </el-tag>
+          <el-tag v-if="row.sms_config" type="success" size="small"> SMS已配({{ row.sms_config.provider || 'aliyun' }}) </el-tag>
           <el-tag v-else type="info" size="small"> SMS未配 </el-tag>
           <el-tag v-if="row.push_config" type="success" size="small"> 推送已配 </el-tag>
           <el-tag v-else type="info" size="small"> 推送未配 </el-tag>
@@ -329,21 +345,58 @@ const crudStore = reactive({
             <!-- SMS配置 -->
             <el-collapse-item title="短信配置 (SMS Config)" name="sms">
               <el-form label-width="120px" size="default">
-                <el-form-item label="区域ID">
-                  <el-input v-model="xFormOpt.data.sms_config.region_id" placeholder="如：cn-hangzhou" clearable />
+                <el-form-item label="短信通道">
+                  <el-select v-model="xFormOpt.data.sms_config.provider" placeholder="选择短信通道" style="width: 100%;">
+                    <el-option label="阿里云 (Aliyun)" value="aliyun" />
+                    <el-option label="联合短信 (UniSMS)" value="unisms" />
+                    <el-option label="短信宝 (SmsBao)" value="smsbao" />
+                  </el-select>
                 </el-form-item>
-                <el-form-item label="AccessKey">
-                  <el-input v-model="xFormOpt.data.sms_config.access_key" placeholder="请输入AccessKey" clearable />
-                </el-form-item>
-                <el-form-item label="SecretKey">
-                  <el-input v-model="xFormOpt.data.sms_config.secret_key" type="password" show-password placeholder="请输入SecretKey" clearable />
-                </el-form-item>
-                <el-form-item label="签名">
-                  <el-input v-model="xFormOpt.data.sms_config.sign_name" placeholder="短信签名" clearable />
-                </el-form-item>
-                <el-form-item label="模板代码">
-                  <el-input v-model="xFormOpt.data.sms_config.template_code" placeholder="短信模板代码" clearable />
-                </el-form-item>
+                <!-- 阿里云配置 -->
+                <template v-if="xFormOpt.data.sms_config.provider === 'aliyun' || !xFormOpt.data.sms_config.provider">
+                  <el-form-item label="区域ID">
+                    <el-input v-model="xFormOpt.data.sms_config.region_id" placeholder="如：cn-hangzhou" clearable />
+                  </el-form-item>
+                  <el-form-item label="AccessKey">
+                    <el-input v-model="xFormOpt.data.sms_config.access_key" placeholder="阿里云 AccessKeyID" clearable />
+                  </el-form-item>
+                  <el-form-item label="SecretKey">
+                    <el-input v-model="xFormOpt.data.sms_config.secret_key" type="password" show-password placeholder="阿里云 AccessSecret" clearable />
+                  </el-form-item>
+                  <el-form-item label="签名">
+                    <el-input v-model="xFormOpt.data.sms_config.sign_name" placeholder="短信签名" clearable />
+                  </el-form-item>
+                  <el-form-item label="模板代码">
+                    <el-input v-model="xFormOpt.data.sms_config.template_code" placeholder="短信模板代码" clearable />
+                  </el-form-item>
+                </template>
+                <!-- UniSMS 配置 -->
+                <template v-if="xFormOpt.data.sms_config.provider === 'unisms'">
+                  <el-form-item label="AccessKeyID">
+                    <el-input v-model="xFormOpt.data.sms_config.unisms_access_key_id" placeholder="UniSMS AccessKeyID" clearable />
+                  </el-form-item>
+                  <el-form-item label="AccessKeySecret">
+                    <el-input v-model="xFormOpt.data.sms_config.unisms_access_key_secret" type="password" show-password placeholder="UniSMS AccessKeySecret（可选）" clearable />
+                  </el-form-item>
+                  <el-form-item label="签名">
+                    <el-input v-model="xFormOpt.data.sms_config.unisms_signature" placeholder="UniSMS 签名" clearable />
+                  </el-form-item>
+                  <el-form-item label="模板ID">
+                    <el-input v-model="xFormOpt.data.sms_config.unisms_template_id" placeholder="UniSMS 模板ID" clearable />
+                  </el-form-item>
+                </template>
+                <!-- 短信宝配置 -->
+                <template v-if="xFormOpt.data.sms_config.provider === 'smsbao'">
+                  <el-form-item label="账号">
+                    <el-input v-model="xFormOpt.data.sms_config.smsbao_account" placeholder="短信宝账号" clearable />
+                  </el-form-item>
+                  <el-form-item label="API Key">
+                    <el-input v-model="xFormOpt.data.sms_config.smsbao_api_key" type="password" show-password placeholder="短信宝 API Key（原文密码）" clearable />
+                  </el-form-item>
+                  <el-form-item label="模板">
+                    <el-input v-model="xFormOpt.data.sms_config.smsbao_template" type="textarea" :rows="2" placeholder="模板内容，用 {code} 作为验证码占位符" clearable />
+                  </el-form-item>
+                </template>
               </el-form>
             </el-collapse-item>
 

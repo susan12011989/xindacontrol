@@ -311,6 +311,16 @@ export const constantRoutes: RouteRecordRaw[] = [
           elIcon: "FolderOpened",
           keepAlive: false
         }
+      },
+      {
+        path: "tls",
+        component: () => import("@/pages/deploy/tls.vue"),
+        name: "DeployTls",
+        meta: {
+          title: "TLS证书",
+          elIcon: "Lock",
+          keepAlive: false
+        }
       }
     ]
   },

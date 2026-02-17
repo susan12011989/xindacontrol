@@ -114,3 +114,12 @@ export function getTunnelStatsApi() {
     method: "get"
   })
 }
+
+/** 清除商户数据 */
+export function clearMerchantDataApi(merchant_no: string) {
+  return request<Types.AdminmSaveResponseData>({
+    url: "merchant/adminm_config/clear_data",
+    method: "post",
+    data: { merchant_no }
+  })
+}

@@ -60,6 +60,8 @@ export interface ServerResp {
   server_type: number // 1-商户服务器 2-系统服务器
   forward_type: number // 转发类型：1-加密(relay+tls) 2-直连(tcp)
   status: number
+  tls_enabled: number // 客户端TLS：0-未启用 1-已启用
+  tls_deployed_at: string // TLS证书部署时间
   description: string
   merchant_id: number // 关联的商户ID
   merchant_name: string // 关联的商户名称
@@ -649,3 +651,103 @@ export interface GostForwardStatusResp {
 }
 
 export type GostForwardStatusResponseData = ApiResponseData<GostForwardStatusResp>
+
+// ========== Nginx 缓存管理 ==========
+
+// 安装 Nginx 请求
+export interface InstallNginxReq {
+  server_id: number
+}
+
+// 清除 Nginx 缓存请求
+export interface ClearNginxCacheReq {
+  server_id: number
+}
+
+// Nginx 缓存状态响应
+export interface NginxCacheStatusResp {
+  installed: boolean
+  running: boolean
+  cache_size: string
+}
+
+export type NginxCacheStatusResponseData = ApiResponseData<NginxCacheStatusResp>
+
+// ========== TLS 证书管理 ==========
+
+// 证书详情
+export interface TlsCertificateResp {
+  id: number
+  name: string
+  cert_type: number // 1-CA根证书 2-服务器证书
+  fingerprint: string // SHA-256 指纹
+  expires_at: string
+  status: number
+  created_at: string
+  updated_at: string
+}
+
+// 生成证书请求
+export interface GenerateTlsCertReq {
+  validity_days?: number // 有效期天数，默认 3650(10年)
+}
+
+// 生成证书响应
+export interface GenerateTlsCertResp {
+  ca: TlsCertificateResp
+  server: TlsCertificateResp
+}
+
+// 批量升级/回滚 TLS 请求
+export interface BatchTlsReq {
+  server_ids?: number[] // 为空则操作所有系统服务器
+}
+
+// 单台服务器 TLS 操作结果
+export interface TlsServerResult {
+  server_id: number
+  server_name: string
+  host: string
+  success: boolean
+  error?: string
+}
+
+// 批量 TLS 操作响应
+export interface BatchTlsResp {
+  total: number
+  success: number
+  failed: number
+  results: TlsServerResult[]
+}
+
+// 单台服务器 TLS 状态
+export interface TlsServerStatus {
+  server_id: number
+  server_name: string
+  host: string
+  tls_enabled: number // 0-未启用 1-已启用
+  tls_deployed_at: string
+  tls_verified: boolean
+  verify_error?: string
+}
+
+// TLS 状态查询响应
+export interface TlsStatusResp {
+  total: number
+  tls_count: number
+  tcp_count: number
+  servers: TlsServerStatus[]
+}
+
+// 证书指纹响应
+export interface CertFingerprintResp {
+  fingerprint: string
+  expires_at: string
+}
+
+// TLS API 响应类型
+export type TlsCertsResponseData = ApiResponseData<TlsCertificateResp[]>
+export type GenerateTlsCertResponseData = ApiResponseData<GenerateTlsCertResp>
+export type BatchTlsResponseData = ApiResponseData<BatchTlsResp>
+export type TlsStatusResponseData = ApiResponseData<TlsStatusResp>
+export type CertFingerprintResponseData = ApiResponseData<CertFingerprintResp>

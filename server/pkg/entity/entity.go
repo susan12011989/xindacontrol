@@ -88,11 +88,13 @@ type Servers struct {
 	Password    string    `xorm:"default '' comment('SSH密码') VARCHAR(128)"`
 	PrivateKey  string    `xorm:"comment('SSH私钥') TEXT"`
 	DeployPath  string    `xorm:"default '/opt/teamgram/bin' comment('部署目录') VARCHAR(255)"`
-	Status      int       `xorm:"not null default 1 comment('状态:0-停用 1-启用') TINYINT"`
-	Description string    `xorm:"default '' comment('描述') VARCHAR(255)"`
-	Tags        string    `xorm:"default '' comment('标签') VARCHAR(255)"`
-	CreatedAt   time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
-	UpdatedAt   time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+	Status        int        `xorm:"not null default 1 comment('状态:0-停用 1-启用') TINYINT"`
+	TlsEnabled    int        `xorm:"not null default 0 comment('客户端TLS:0-未启用 1-已启用') TINYINT"`
+	TlsDeployedAt *time.Time `xorm:"comment('TLS证书部署时间') DATETIME"`
+	Description   string     `xorm:"default '' comment('描述') VARCHAR(255)"`
+	Tags          string     `xorm:"default '' comment('标签') VARCHAR(255)"`
+	CreatedAt     time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+	UpdatedAt     time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 }
 
 // 转发类型常量
@@ -100,6 +102,20 @@ const (
 	ForwardTypeEncrypted = 1 // 加密转发 (relay+tls) -> 商户GOST 10010/11/12 -> 业务程序 10000/01/02
 	ForwardTypeDirect    = 2 // 直连转发 (tcp) -> 商户业务程序 10000/01/02
 )
+
+// TLS 证书
+type TlsCertificates struct {
+	Id          int       `xorm:"not null pk autoincr INT"`
+	Name        string    `xorm:"not null unique comment('证书名称') VARCHAR(64)"`
+	CertType    int       `xorm:"not null default 1 comment('证书类型:1-CA根证书 2-服务器证书') TINYINT"`
+	CertPem     string    `xorm:"not null comment('证书内容PEM') TEXT"`
+	KeyPem      string    `xorm:"not null comment('私钥内容PEM') TEXT"`
+	Fingerprint string    `xorm:"not null default '' comment('SHA-256指纹') VARCHAR(128)"`
+	ExpiresAt   time.Time `xorm:"not null comment('过期时间') DATETIME"`
+	Status      int       `xorm:"not null default 1 comment('状态:0-停用 1-启用') TINYINT"`
+	CreatedAt   time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+	UpdatedAt   time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+}
 
 // 部署配置
 type DeployConfigs struct {
@@ -189,11 +205,22 @@ type GlobalOssUrl struct {
 }
 
 type SmsConfig struct {
+	Provider string `json:"provider"` // "aliyun"(默认), "unisms", "smsbao"
+	// 阿里云
 	RegionId     string `json:"region_id"`
 	AccessKey    string `json:"access_key"`
 	SecretKey    string `json:"secret_key"`
 	SignName     string `json:"sign_name"`
 	TemplateCode string `json:"template_code"`
+	// UniSMS (联合短信)
+	UnismsAccessKeyID     string `json:"unisms_access_key_id"`
+	UnismsAccessKeySecret string `json:"unisms_access_key_secret"`
+	UnismsSignature       string `json:"unisms_signature"`
+	UnismsTemplateId      string `json:"unisms_template_id"`
+	// 短信宝
+	SmsbaoAccount  string `json:"smsbao_account"`
+	SmsbaoApiKey   string `json:"smsbao_api_key"`
+	SmsbaoTemplate string `json:"smsbao_template"`
 }
 type PushHMS struct {
 	AppId     string `json:"app_id"`

@@ -75,8 +75,9 @@ function createInstance() {
           return Promise.reject(new Error("Unauthorized"))
         default:
           // 不是正确的 code
+          console.error("[API Error]", response.config?.method?.toUpperCase(), response.config?.url, "→ code:", code, "message:", apiData.message, "data:", apiData)
           ElMessage.error(apiData.message || "Error")
-          return Promise.reject(new Error("Error"))
+          return Promise.reject(new Error(apiData.message || "Error"))
       }
     },
     (error) => {
@@ -179,17 +180,16 @@ export function createStreamRequest(config: AxiosRequestConfig, onData: (data: a
     base = window.location.origin
   }
 
+  // 如果 base 是相对路径（如 /server/v1），拼接 origin 使其成为完整 URL
+  if (base && !base.startsWith("http")) {
+    base = window.location.origin + base
+  }
+
   // 确保 base 是有效的 URL
   if (base) {
-    try {
-      const baseURL = base.endsWith("/") ? base : `${base}/`
-      const path = url.startsWith("/") ? url.slice(1) : url
-      url = new URL(path, baseURL).toString()
-    } catch (error) {
-      console.error("构建URL失败:", error, "base:", base, "path:", url)
-      // 如果构建失败，尝试使用相对路径
-      url = base + (base.endsWith("/") ? "" : "/") + (url.startsWith("/") ? url.slice(1) : url)
-    }
+    const baseURL = base.endsWith("/") ? base : `${base}/`
+    const path = url.startsWith("/") ? url.slice(1) : url
+    url = new URL(path, baseURL).toString()
   }
 
   // 添加查询参数

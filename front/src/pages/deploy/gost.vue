@@ -1,12 +1,10 @@
 <script lang="ts" setup>
-import type { DeployGostServerReq, InstallGostReq, ServerResp } from "@@/apis/deploy/type"
+import type { DeployGostServerReq, ServerResp } from "@@/apis/deploy/type"
 import type { MerchantResp } from "@@/apis/merchant/type"
-import type { Instance } from "@/pages/cloud/aliyun/instances/apis/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
-import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus } from "@@/apis/deploy"
+import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus, getProgramConfig, updateProgramConfig, getNginxCacheStatus, clearNginxCache } from "@@/apis/deploy"
 import { getMerchantList } from "@@/apis/merchant"
 import { getCloudAccountList } from "@@/apis/cloud_account"
-import { getInstanceList } from "@/pages/cloud/aliyun/instances/apis"
 import { createStreamRequest } from "@/http/axios"
 
 defineOptions({
@@ -15,7 +13,6 @@ defineOptions({
 
 // ========== GOST 一键部署 ==========
 const deployDialogVisible = ref(false)
-const installDialogVisible = ref(false)
 const deployLogs = ref<string[]>([])
 const isDeploying = ref(false)
 const deployLogRef = ref<HTMLDivElement>()
@@ -35,84 +32,6 @@ const deployForm = reactive<DeployGostServerReq>({
   bandwidth: "5"
 })
 
-// 安装表单（在已有服务器上安装）
-const installForm = reactive<InstallGostReq>({
-  server_id: 0,
-  host: "",
-  port: 22,
-  username: "root",
-  password: "",
-  private_key: ""
-})
-
-// 安装模式: server=从已有服务器选择, cloud=从云实例选择, manual=手动填写
-const installMode = ref<"server" | "cloud" | "manual">("server")
-
-// 云实例相关
-const cloudInstanceList = ref<Instance[]>([])
-const cloudInstanceLoading = ref(false)
-const selectedCloudAccountId = ref<number>(0)
-const selectedRegionId = ref<string>("cn-hongkong")
-
-// 获取云实例公网IP
-function getInstancePublicIP(instance: Instance): string {
-  // 优先使用 EIP
-  if (instance.EipAddress?.IpAddress) {
-    return instance.EipAddress.IpAddress
-  }
-  // 其次使用 PublicIpAddress
-  if (instance.PublicIpAddress?.IpAddress?.length > 0) {
-    return instance.PublicIpAddress.IpAddress[0]
-  }
-  // 最后检查网卡的公网IP
-  const nics = instance.NetworkInterfaces?.NetworkInterface || []
-  for (const nic of nics) {
-    const ipSets = nic.PrivateIpSets?.PrivateIpSet || []
-    for (const ipSet of ipSets) {
-      if (ipSet.AssociatedPublicIp?.PublicIpAddress) {
-        return ipSet.AssociatedPublicIp.PublicIpAddress
-      }
-    }
-  }
-  return ""
-}
-
-// 加载云实例列表
-async function loadCloudInstances() {
-  if (!selectedCloudAccountId.value) {
-    ElMessage.warning("请先选择云账号")
-    return
-  }
-  cloudInstanceLoading.value = true
-  try {
-    const res = await getInstanceList({
-      page: 1,
-      size: 100,
-      cloud_account_id: selectedCloudAccountId.value,
-      region_id: selectedRegionId.value
-    } as any)
-    cloudInstanceList.value = Array.isArray(res.data?.list) ? res.data.list : []
-  } catch (e) {
-    console.error("加载云实例失败:", e)
-  } finally {
-    cloudInstanceLoading.value = false
-  }
-}
-
-// 选择云实例时自动填充IP
-function onSelectCloudInstance(instanceId: string) {
-  const instance = cloudInstanceList.value.find(i => i.InstanceId === instanceId)
-  if (instance) {
-    const publicIP = getInstancePublicIP(instance)
-    if (publicIP) {
-      installForm.host = publicIP
-      installForm.server_id = 0 // 清除服务器选择
-    } else {
-      ElMessage.warning("该实例没有公网IP")
-    }
-  }
-}
-
 // 加载云账号列表
 async function loadCloudAccounts() {
   try {
@@ -130,13 +49,6 @@ function openDeployDialog() {
   deployForm.region_id = "ap-southeast-1"
   deployForm.server_name = `gost-${Date.now()}`
   deployDialogVisible.value = true
-}
-
-// 打开安装弹窗
-function openInstallDialog() {
-  deployLogs.value = []
-  installForm.server_id = selectedServerId.value || 0
-  installDialogVisible.value = true
 }
 
 // 执行一键部署
@@ -180,43 +92,6 @@ function startDeploy() {
   )
 }
 
-// 执行安装 GOST
-function startInstall() {
-  if (!installForm.server_id && !installForm.host) {
-    ElMessage.warning("请选择服务器或填写IP地址")
-    return
-  }
-
-  isDeploying.value = true
-  deployLogs.value = ["开始安装 GOST..."]
-
-  const cancel = createStreamRequest(
-    {
-      url: "deploy/gost/install",
-      method: "POST",
-      data: installForm
-    },
-    (data: any, isComplete?: boolean) => {
-      if (data?.message) {
-        deployLogs.value.push(data.message)
-        scrollToBottom()
-      }
-      if (isComplete) {
-        isDeploying.value = false
-        if (data?.success) {
-          ElMessage.success("安装完成!")
-          loadServerList()
-        }
-      }
-    },
-    (error: any) => {
-      isDeploying.value = false
-      deployLogs.value.push(`错误: ${error?.message || error}`)
-      ElMessage.error("安装失败")
-    }
-  )
-}
-
 // 滚动到日志底部
 function scrollToBottom() {
   nextTick(() => {
@@ -235,58 +110,6 @@ const regionOptions = [
   { value: "us-east-1", label: "美东(弗吉尼亚)" },
   { value: "eu-west-1", label: "欧洲(爱尔兰)" }
 ]
-
-// 阿里云地区列表（用于云实例选择）
-const aliyunRegionOptions = [
-  { value: "cn-hongkong", label: "香港" },
-  { value: "cn-shanghai", label: "上海" },
-  { value: "cn-hangzhou", label: "杭州" },
-  { value: "cn-shenzhen", label: "深圳" },
-  { value: "cn-beijing", label: "北京" },
-  { value: "ap-southeast-1", label: "新加坡" },
-  { value: "ap-northeast-1", label: "东京" },
-  { value: "ap-southeast-5", label: "雅加达" },
-  { value: "us-west-1", label: "美西(硅谷)" },
-  { value: "us-east-1", label: "美东(弗吉尼亚)" },
-  { value: "eu-central-1", label: "德国(法兰克福)" }
-]
-
-// 腾讯云地区列表
-const tencentRegionOptions = [
-  { value: "ap-hongkong", label: "香港" },
-  { value: "ap-singapore", label: "新加坡" },
-  { value: "ap-tokyo", label: "东京" },
-  { value: "ap-seoul", label: "首尔" },
-  { value: "ap-bangkok", label: "曼谷" },
-  { value: "na-siliconvalley", label: "美西(硅谷)" },
-  { value: "na-ashburn", label: "美东(弗吉尼亚)" },
-  { value: "eu-frankfurt", label: "德国(法兰克福)" }
-]
-
-// 云供应商选项
-const cloudTypeOptions = [
-  { value: "aliyun", label: "阿里云" },
-  { value: "aws", label: "AWS" },
-  { value: "tencent", label: "腾讯云" }
-]
-const selectedCloudType = ref<string>("aliyun")
-
-// 根据选择的云供应商筛选云账号
-const filteredCloudAccountList = computed(() => {
-  return (cloudAccountList.value || []).filter(acc => acc.cloud_type === selectedCloudType.value)
-})
-
-// 根据选择的云供应商获取对应的区域选项
-const currentRegionOptions = computed(() => {
-  switch (selectedCloudType.value) {
-    case "aws":
-      return regionOptions
-    case "tencent":
-      return tencentRegionOptions
-    default:
-      return aliyunRegionOptions
-  }
-})
 
 // ========== 服务器选择（仅系统服务器） ==========
 const allServerList = ref<ServerResp[]>([])
@@ -415,8 +238,20 @@ async function loadRecords() {
       ;(xGridOpt.pagerConfig as any).currentPage = pagination.currentPage
       ;(xGridOpt.pagerConfig as any).pageSize = pagination.pageSize
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error("查询列表失败:", error)
+    // 检查是否是连接被拒绝的错误
+    const errMsg = error?.message || String(error)
+    if (errMsg.includes("connection refused") || errMsg.includes("connect:")) {
+      ElMessage.error("GOST 服务未运行或端口未开放，请先安装 GOST")
+    } else if (errMsg.includes("timeout")) {
+      ElMessage.error("连接超时，请检查服务器网络")
+    } else {
+      ElMessage.error("查询失败: " + errMsg)
+    }
+    // 清空列表
+    records.value = []
+    pagination.total = 0
   } finally {
     xGridOpt.loading = false
   }
@@ -566,14 +401,18 @@ const crudStore = reactive({
         name: row.name,
         jsonText: JSON.stringify(res.data, null, 2)
       }
-    } catch (error) {
-      console.error("获取详情失败:", error)
-      xFormOpt.data = { name: row.name, jsonText: "" }
+      xModalDom.value?.open()
+      nextTick(() => {
+        xFormDom.value?.clearValidate()
+      })
+    } catch (error: any) {
+      const errMsg = error?.message || String(error)
+      // axios 拦截器已弹 ElMessage，如果是通用 "Error" 则补充提示
+      if (errMsg === "Error" || !errMsg) {
+        ElMessage.error(`获取 ${row.name} 详情失败，请检查 GOST 服务是否正常运行`)
+      }
+      console.error("获取详情失败:", row.name, error)
     }
-    xModalDom.value?.open()
-    nextTick(() => {
-      xFormDom.value?.clearValidate()
-    })
   },
   onSubmitForm: () => {
     if (xFormOpt.loading) return
@@ -642,6 +481,12 @@ const forwardForm = reactive({
 })
 const forwardStatus = ref<any>(null)
 const isSettingForward = ref(false)
+
+// 获取当前选中的服务器信息
+const selectedServer = computed(() => {
+  if (!selectedServerId.value) return null
+  return serverList.value.find(s => s.id === selectedServerId.value) || null
+})
 
 // 打开配置转发弹窗
 function openForwardDialog() {
@@ -717,6 +562,126 @@ async function openForwardStatusDialog() {
   }
 }
 
+// ========== GOST 配置文件查看/编辑 ==========
+const configDialogVisible = ref(false)
+const configContent = ref("")
+const configPath = ref("")
+const isConfigLoading = ref(false)
+const isConfigSaving = ref(false)
+
+async function openConfigDialog() {
+  if (!selectedServerId.value) {
+    ElMessage.warning("请先选择服务器")
+    return
+  }
+  isConfigLoading.value = true
+  configDialogVisible.value = true
+  try {
+    const res = await getProgramConfig({ server_id: selectedServerId.value, service_name: "gost" })
+    configContent.value = res.data?.content || ""
+    configPath.value = res.data?.config_path || ""
+  } catch (e: any) {
+    ElMessage.error(e?.message || "获取 GOST 配置失败")
+    configContent.value = ""
+  } finally {
+    isConfigLoading.value = false
+  }
+}
+
+async function saveConfig() {
+  if (!selectedServerId.value) return
+  isConfigSaving.value = true
+  try {
+    await updateProgramConfig({ server_id: selectedServerId.value, service_name: "gost", content: configContent.value })
+    ElMessage.success("配置文件保存成功")
+    configDialogVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.message || "保存失败")
+  } finally {
+    isConfigSaving.value = false
+  }
+}
+
+// ========== Nginx 缓存管理 ==========
+const cacheDialogVisible = ref(false)
+const cacheStatus = ref<{ installed: boolean; running: boolean; cache_size: string } | null>(null)
+const isCacheLoading = ref(false)
+const isCacheClearing = ref(false)
+const isNginxInstalling = ref(false)
+const installLogs = ref<string[]>([])
+const installLogRef = ref<HTMLDivElement>()
+
+async function openCacheDialog() {
+  if (!selectedServerId.value) {
+    ElMessage.warning("请先选择服务器")
+    return
+  }
+  cacheDialogVisible.value = true
+  await loadCacheStatus()
+}
+
+async function loadCacheStatus() {
+  isCacheLoading.value = true
+  try {
+    const res = await getNginxCacheStatus(selectedServerId.value)
+    cacheStatus.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e?.message || "获取缓存状态失败")
+    cacheStatus.value = null
+  } finally {
+    isCacheLoading.value = false
+  }
+}
+
+async function doClearCache() {
+  if (!selectedServerId.value) return
+  const ok = await ElMessageBox.confirm("确认清除所有 Nginx 缓存吗？", "提示", { type: "warning" }).catch(() => false)
+  if (!ok) return
+  isCacheClearing.value = true
+  try {
+    await clearNginxCache({ server_id: selectedServerId.value })
+    ElMessage.success("缓存已清除")
+    await loadCacheStatus()
+  } catch (e: any) {
+    ElMessage.error(e?.message || "清除失败")
+  } finally {
+    isCacheClearing.value = false
+  }
+}
+
+function startInstallNginx() {
+  if (!selectedServerId.value) return
+  isNginxInstalling.value = true
+  installLogs.value = ["开始安装 Nginx..."]
+
+  createStreamRequest(
+    {
+      url: "deploy/nginx/install",
+      method: "POST",
+      data: { server_id: selectedServerId.value }
+    },
+    (data: any, isComplete?: boolean) => {
+      if (data?.message) {
+        installLogs.value.push(data.message)
+        nextTick(() => {
+          if (installLogRef.value) {
+            installLogRef.value.scrollTop = installLogRef.value.scrollHeight
+          }
+        })
+      }
+      if (isComplete) {
+        isNginxInstalling.value = false
+        loadCacheStatus()
+      }
+    },
+    (error: any) => {
+      isNginxInstalling.value = false
+      installLogs.value.push(`错误: ${error?.message || error}`)
+      ElMessage.error("安装失败")
+    }
+  )
+}
+
 // ========== 生命周期 ==========
 onMounted(() => {
   loadServerList()
@@ -761,8 +726,11 @@ onMounted(() => {
         <el-button type="info" icon="View" @click="openForwardStatusDialog">转发状态</el-button>
         <el-button type="danger" icon="Delete" @click="doClearForward">清除转发</el-button>
         <el-divider direction="vertical" />
+        <el-button type="warning" icon="Document" @click="openConfigDialog">配置文件</el-button>
+        <el-divider direction="vertical" />
+        <el-button type="info" icon="Box" @click="openCacheDialog">缓存管理</el-button>
+        <el-divider direction="vertical" />
         <el-button type="success" icon="Plus" @click="openDeployDialog">一键部署 GOST 服务器</el-button>
-        <el-button type="warning" icon="Download" @click="openInstallDialog">在已有服务器安装</el-button>
       </div>
     </el-card>
 
@@ -871,14 +839,21 @@ onMounted(() => {
     </el-dialog>
 
     <!-- 配置转发弹窗 -->
-    <el-dialog v-model="forwardDialogVisible" title="配置 GOST 转发" width="500px" :close-on-click-modal="false">
+    <el-dialog v-model="forwardDialogVisible" title="配置 GOST 转发" width="540px" :close-on-click-modal="false">
       <el-form :model="forwardForm" label-width="120px">
+        <!-- 当前服务器信息 -->
+        <el-descriptions :column="1" border size="small" style="margin-bottom: 16px">
+          <el-descriptions-item label="系统服务器">
+            <el-tag type="primary">{{ selectedServer?.name }}</el-tag>
+            <span class="ml-2 text-gray-500">{{ selectedServer?.host }}</span>
+          </el-descriptions-item>
+        </el-descriptions>
         <el-alert type="info" :closable="false" style="margin-bottom: 16px">
-          配置后，GOST 将监听指定端口并转发到目标服务器的相同端口（对称转发）。<br/>
+          配置后，此服务器的 GOST 将监听指定端口并转发到目标商户服务器（对称转发）。<br/>
           默认端口: 10010(TCP), 10011(WS), 10012(HTTP)
         </el-alert>
-        <el-form-item label="目标服务器IP" required>
-          <el-input v-model="forwardForm.target_ip" placeholder="例如: 1.2.3.4" />
+        <el-form-item label="目标商户IP" required>
+          <el-input v-model="forwardForm.target_ip" placeholder="商户服务器IP，例如: 1.2.3.4" />
         </el-form-item>
         <el-form-item label="连接模式" required>
           <el-radio-group v-model="forwardForm.mode">
@@ -900,6 +875,23 @@ onMounted(() => {
       <template #footer>
         <el-button @click="forwardDialogVisible = false">取消</el-button>
         <el-button type="primary" @click="doSetupForward" :loading="isSettingForward">确认配置</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- GOST 配置文件弹窗 -->
+    <el-dialog v-model="configDialogVisible" title="GOST 配置文件" width="800px" :close-on-click-modal="false">
+      <div v-if="configPath" class="text-sm text-gray-400 mb-2">路径: {{ configPath }}</div>
+      <el-input
+        v-model="configContent"
+        type="textarea"
+        :rows="22"
+        :loading="isConfigLoading"
+        placeholder="加载中..."
+        style="font-family: 'Consolas', 'Monaco', monospace; font-size: 13px;"
+      />
+      <template #footer>
+        <el-button @click="configDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="saveConfig" :loading="isConfigSaving">保存</el-button>
       </template>
     </el-dialog>
 
@@ -929,109 +921,58 @@ onMounted(() => {
       </template>
     </el-dialog>
 
-    <!-- 在已有服务器安装 GOST 弹窗 -->
-    <el-dialog v-model="installDialogVisible" title="在已有服务器安装 GOST" width="750px" :close-on-click-modal="false">
-      <el-form :model="installForm" label-width="120px">
-        <!-- 安装模式选择 -->
-        <el-form-item label="服务器来源">
-          <el-radio-group v-model="installMode" @change="() => { installForm.server_id = 0; installForm.host = '' }">
-            <el-radio value="server">已有服务器</el-radio>
-            <el-radio value="cloud">云实例</el-radio>
-            <el-radio value="manual">手动填写</el-radio>
-          </el-radio-group>
-        </el-form-item>
+    <!-- Nginx 缓存管理弹窗 -->
+    <el-dialog v-model="cacheDialogVisible" title="Nginx 缓存管理" width="600px" :close-on-click-modal="false">
+      <div v-loading="isCacheLoading">
+        <!-- 状态信息 -->
+        <template v-if="cacheStatus">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="Nginx 状态">
+              <el-tag v-if="!cacheStatus.installed" type="info" size="small">未安装</el-tag>
+              <el-tag v-else-if="cacheStatus.running" type="success" size="small">运行中</el-tag>
+              <el-tag v-else type="danger" size="small">已停止</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="缓存大小">
+              {{ cacheStatus.installed ? cacheStatus.cache_size : '-' }}
+            </el-descriptions-item>
+          </el-descriptions>
 
-        <!-- 模式1: 从已有服务器选择 -->
-        <template v-if="installMode === 'server'">
-          <el-form-item label="选择服务器">
-            <el-select v-model="installForm.server_id" placeholder="选择已有服务器" style="width: 100%" filterable>
-              <el-option v-for="s in allServerList" :key="s.id" :label="`${s.name} (${s.host})`" :value="s.id" />
-            </el-select>
-          </el-form-item>
+          <!-- 未安装时显示安装按钮 -->
+          <div v-if="!cacheStatus.installed" style="margin-top: 16px">
+            <el-alert type="warning" :closable="false" style="margin-bottom: 12px">
+              Nginx 未安装，HTTP 文件请求不会被缓存。安装后，配置转发时会自动启用缓存。
+            </el-alert>
+            <el-button type="primary" @click="startInstallNginx" :loading="isNginxInstalling">
+              {{ isNginxInstalling ? '安装中...' : '安装 Nginx' }}
+            </el-button>
+          </div>
+
+          <!-- 已安装时显示操作按钮 -->
+          <div v-else style="margin-top: 16px">
+            <el-alert type="info" :closable="false" style="margin-bottom: 12px">
+              Nginx 会自动缓存通过 HTTP 端口传输的图片、视频、音频等媒体文件（7天有效期）。API 请求不受影响。
+            </el-alert>
+            <el-button type="danger" @click="doClearCache" :loading="isCacheClearing">
+              {{ isCacheClearing ? '清除中...' : '清除所有缓存' }}
+            </el-button>
+            <el-button @click="loadCacheStatus">刷新状态</el-button>
+          </div>
         </template>
 
-        <!-- 模式2: 从云实例选择 -->
-        <template v-if="installMode === 'cloud'">
-          <el-form-item label="云供应商">
-            <el-radio-group v-model="selectedCloudType" @change="() => { selectedCloudAccountId = 0; cloudInstanceList = [] }">
-              <el-radio-button v-for="opt in cloudTypeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</el-radio-button>
-            </el-radio-group>
-          </el-form-item>
-          <el-form-item label="云账号">
-            <el-select v-model="selectedCloudAccountId" placeholder="选择云账号" style="width: 100%" @change="cloudInstanceList = []">
-              <el-option v-for="acc in filteredCloudAccountList" :key="acc.id" :label="acc.name" :value="acc.id" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="区域">
-            <div class="flex items-center gap-2" style="width: 100%">
-              <el-select v-model="selectedRegionId" placeholder="选择区域" style="flex: 1">
-                <el-option v-for="r in currentRegionOptions" :key="r.value" :label="r.label" :value="r.value" />
-              </el-select>
-              <el-button type="primary" @click="loadCloudInstances" :loading="cloudInstanceLoading">
-                加载实例
-              </el-button>
-            </div>
-          </el-form-item>
-          <el-form-item label="选择实例">
-            <el-select
-              v-model="installForm.host"
-              placeholder="选择云实例"
-              style="width: 100%"
-              filterable
-              :loading="cloudInstanceLoading"
-              @change="(val: string) => onSelectCloudInstance(cloudInstanceList.find(i => getInstancePublicIP(i) === val)?.InstanceId || '')"
-            >
-              <el-option
-                v-for="inst in cloudInstanceList"
-                :key="inst.InstanceId"
-                :label="`${inst.InstanceName} (${getInstancePublicIP(inst) || '无公网IP'})`"
-                :value="getInstancePublicIP(inst)"
-                :disabled="!getInstancePublicIP(inst)"
-              >
-                <div class="flex items-center justify-between">
-                  <span>{{ inst.InstanceName }}</span>
-                  <span class="text-sm text-gray-400">{{ getInstancePublicIP(inst) || '无公网IP' }}</span>
-                </div>
-              </el-option>
-            </el-select>
-          </el-form-item>
-          <el-form-item label="SSH密码">
-            <el-input v-model="installForm.password" type="password" placeholder="实例的SSH密码" show-password />
-          </el-form-item>
-        </template>
-
-        <!-- 模式3: 手动填写 -->
-        <template v-if="installMode === 'manual'">
-          <el-form-item label="服务器IP">
-            <el-input v-model="installForm.host" placeholder="例如: 1.2.3.4" />
-          </el-form-item>
-          <el-form-item label="SSH端口">
-            <el-input-number v-model="installForm.port" :min="1" :max="65535" />
-          </el-form-item>
-          <el-form-item label="用户名">
-            <el-input v-model="installForm.username" placeholder="默认 root" />
-          </el-form-item>
-          <el-form-item label="SSH密码">
-            <el-input v-model="installForm.password" type="password" placeholder="SSH密码" show-password />
-          </el-form-item>
-        </template>
-      </el-form>
-
-      <!-- 安装日志 -->
-      <div v-if="deployLogs.length > 0" class="deploy-log-container">
-        <div class="deploy-log-title">安装日志:</div>
-        <div ref="deployLogRef" class="deploy-log-content">
-          <div v-for="(log, idx) in deployLogs" :key="idx" class="deploy-log-line">{{ log }}</div>
+        <!-- 安装日志 -->
+        <div v-if="installLogs.length > 0" class="deploy-log-container" style="margin-top: 16px">
+          <div class="deploy-log-title">安装日志:</div>
+          <div ref="installLogRef" class="deploy-log-content">
+            <div v-for="(log, idx) in installLogs" :key="idx" class="deploy-log-line">{{ log }}</div>
+          </div>
         </div>
       </div>
 
       <template #footer>
-        <el-button @click="installDialogVisible = false" :disabled="isDeploying">取消</el-button>
-        <el-button type="primary" @click="startInstall" :loading="isDeploying">
-          {{ isDeploying ? '安装中...' : '开始安装' }}
-        </el-button>
+        <el-button @click="cacheDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
+
   </div>
 </template>
 

@@ -114,6 +114,9 @@ func Serve(ctx context.Context) {
 	fsys := static.FS()
 	spa := static.NewSPAHandler(fsys, "index.html")
 
+	// 前端 publicPath 前缀（对应 VITE_PUBLIC_PATH）
+	const spaPrefix = "/jdt-admin"
+
 	// 上传资源的静态文件服务（Logo等）- 支持环境变量 ASSETS_DIR 覆盖
 	ge.Static("/assets", consts.AssetsDir)
 
@@ -122,6 +125,18 @@ func Serve(ctx context.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/server/v1") {
 			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "API接口不存在"})
 			return
+		}
+		// 根路径重定向到前端 publicPath
+		if c.Request.URL.Path == "/" {
+			c.Redirect(http.StatusFound, spaPrefix+"/")
+			return
+		}
+		// 剥离前端 publicPath 前缀后查找嵌入的静态资源
+		if strings.HasPrefix(c.Request.URL.Path, spaPrefix) {
+			c.Request.URL.Path = strings.TrimPrefix(c.Request.URL.Path, spaPrefix)
+			if c.Request.URL.Path == "" {
+				c.Request.URL.Path = "/"
+			}
 		}
 		spa.ServeHTTP(c.Writer, c.Request)
 	})

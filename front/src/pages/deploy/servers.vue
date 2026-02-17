@@ -2,7 +2,8 @@
 import type { DistributeResult, ServerResp } from "@@/apis/deploy/type"
 import type { MerchantResp } from "@@/apis/merchant/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
-import { createServer, deleteServer, distributeFile, getServerList, getServerStatsBatch, testConnection, toggleServerStatus, updateServer, uploadToLocal } from "@@/apis/deploy"
+import { createServer, deleteServer, distributeFile, getServerList, getServerStatsBatch, testConnection, toggleServerStatus, updateServer, uploadToLocal, batchUpgradeTls, batchRollbackTls, getTlsStatus, verifyTlsStatus } from "@@/apis/deploy"
+import type { TlsServerResult, TlsStatusResp } from "@@/apis/deploy/type"
 import { getMerchantList } from "@@/apis/merchant"
 
 defineOptions({
@@ -45,9 +46,10 @@ function getColumns() {
     baseColumns.push({ title: "商户", width: "140px", slots: { default: "merchant-slot" } })
   }
 
-  // 系统服务器显示辅助IP，商户服务器显示SSH端口、用户名
+  // 系统服务器显示辅助IP和TLS状态，商户服务器显示SSH端口、用户名
   if (serverType.value === 2) {
     baseColumns.push({ field: "auxiliary_ip", title: "辅助IP", width: "140px" })
+    baseColumns.push({ title: "TLS", width: "100px", slots: { default: "tls-slot" } })
   } else {
     baseColumns.push({ field: "port", title: "SSH端口", width: "80px" })
     baseColumns.push({ field: "username", title: "用户名", width: "110px", showOverflow: true })
@@ -436,6 +438,89 @@ async function executeBatchUpdate() {
   }
 }
 
+// ========== TLS 管理 ==========
+const tlsDialogVisible = ref(false)
+const tlsLoading = ref(false)
+const tlsStatus = ref<TlsStatusResp | null>(null)
+const tlsResults = ref<TlsServerResult[]>([])
+const tlsStep = ref<"status" | "result">("status")
+
+async function openTlsDialog() {
+  tlsStep.value = "status"
+  tlsResults.value = []
+  tlsDialogVisible.value = true
+  await loadTlsStatus()
+}
+
+async function loadTlsStatus() {
+  tlsLoading.value = true
+  try {
+    const res = await getTlsStatus()
+    tlsStatus.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e.message || "获取 TLS 状态失败")
+  } finally {
+    tlsLoading.value = false
+  }
+}
+
+async function handleTlsUpgrade() {
+  ElMessageBox.confirm("确定将所有系统服务器升级为 TLS 模式？", "批量升级 TLS", { type: "warning" }).then(async () => {
+    tlsLoading.value = true
+    try {
+      const res = await batchUpgradeTls({})
+      tlsResults.value = res.data.results || []
+      tlsStep.value = "result"
+      const { success, failed } = res.data
+      if (failed === 0) {
+        ElMessage.success(`升级完成，全部成功 (${success}/${res.data.total})`)
+      } else {
+        ElMessage.warning(`升级完成，成功 ${success}，失败 ${failed}`)
+      }
+      crudStore.commitQuery()
+    } catch (e: any) {
+      ElMessage.error(e.message || "TLS 升级失败")
+    } finally {
+      tlsLoading.value = false
+    }
+  })
+}
+
+async function handleTlsRollback() {
+  ElMessageBox.confirm("确定将所有系统服务器回滚为 TCP 模式？", "批量回滚 TLS", { type: "warning" }).then(async () => {
+    tlsLoading.value = true
+    try {
+      const res = await batchRollbackTls({})
+      tlsResults.value = res.data.results || []
+      tlsStep.value = "result"
+      const { success, failed } = res.data
+      if (failed === 0) {
+        ElMessage.success(`回滚完成，全部成功 (${success}/${res.data.total})`)
+      } else {
+        ElMessage.warning(`回滚完成，成功 ${success}，失败 ${failed}`)
+      }
+      crudStore.commitQuery()
+    } catch (e: any) {
+      ElMessage.error(e.message || "TLS 回滚失败")
+    } finally {
+      tlsLoading.value = false
+    }
+  })
+}
+
+async function handleTlsVerify() {
+  tlsLoading.value = true
+  try {
+    const res = await verifyTlsStatus()
+    tlsStatus.value = res.data
+    ElMessage.success("验证完成")
+  } catch (e: any) {
+    ElMessage.error(e.message || "TLS 验证失败")
+  } finally {
+    tlsLoading.value = false
+  }
+}
+
 // ========== CRUD 操作 ==========
 const crudStore = reactive({
   isUpdate: false,
@@ -630,6 +715,9 @@ onMounted(() => {
           <el-button v-if="serverType === 1" type="warning" @click="openBatchUpdate()">
             批量更新程序
           </el-button>
+          <el-button v-if="serverType === 2" type="success" @click="openTlsDialog()">
+            TLS 管理
+          </el-button>
         </div>
       </div>
 
@@ -668,6 +756,12 @@ onMounted(() => {
             <span>
               {{ statMap[row.id] ? `${statMap[row.id].memory_usage} / ${statMap[row.id].memory_total}` : '-' }}
             </span>
+          </template>
+
+          <!-- TLS状态列 -->
+          <template #tls-slot="{ row }">
+            <el-tag v-if="row.tls_enabled === 1" type="success" size="small">TLS</el-tag>
+            <el-tag v-else type="info" size="small">TCP</el-tag>
           </template>
 
           <!-- 操作列 -->
@@ -798,6 +892,90 @@ onMounted(() => {
         </div>
       </template>
     </el-dialog>
+
+    <!-- TLS 管理弹窗 -->
+    <el-dialog
+      v-model="tlsDialogVisible"
+      title="TLS 证书管理"
+      width="750px"
+      :close-on-click-modal="false"
+    >
+      <div v-loading="tlsLoading">
+        <!-- 状态视图 -->
+        <template v-if="tlsStep === 'status'">
+          <div v-if="tlsStatus" class="tls-summary">
+            <el-descriptions :column="3" border size="small">
+              <el-descriptions-item label="系统服务器总数">{{ tlsStatus.total }}</el-descriptions-item>
+              <el-descriptions-item label="已启用 TLS">
+                <el-tag type="success" size="small">{{ tlsStatus.tls_count }}</el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="未启用 (TCP)">
+                <el-tag type="info" size="small">{{ tlsStatus.tcp_count }}</el-tag>
+              </el-descriptions-item>
+            </el-descriptions>
+
+            <el-table :data="tlsStatus.servers" max-height="350" style="margin-top: 16px">
+              <el-table-column prop="server_name" label="服务器" width="160" />
+              <el-table-column prop="host" label="IP" width="140" />
+              <el-table-column label="TLS状态" width="100">
+                <template #default="{ row }">
+                  <el-tag :type="row.tls_enabled === 1 ? 'success' : 'info'" size="small">
+                    {{ row.tls_enabled === 1 ? 'TLS' : 'TCP' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="验证" width="100">
+                <template #default="{ row }">
+                  <el-tag v-if="row.tls_verified" type="success" size="small">通过</el-tag>
+                  <el-tag v-else-if="row.tls_enabled === 1" type="danger" size="small">
+                    {{ row.verify_error || '未验证' }}
+                  </el-tag>
+                  <span v-else class="text-gray-400">-</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="tls_deployed_at" label="部署时间" width="160" />
+            </el-table>
+          </div>
+          <el-empty v-else description="暂无数据" />
+        </template>
+
+        <!-- 操作结果视图 -->
+        <template v-else>
+          <el-table :data="tlsResults" max-height="400">
+            <el-table-column prop="server_name" label="服务器" width="160" />
+            <el-table-column prop="host" label="IP" width="140" />
+            <el-table-column label="状态" width="80">
+              <template #default="{ row }">
+                <el-tag :type="row.success ? 'success' : 'danger'" size="small">
+                  {{ row.success ? '成功' : '失败' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="error" label="错误信息" show-overflow-tooltip />
+          </el-table>
+        </template>
+      </div>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="tlsDialogVisible = false">关闭</el-button>
+          <template v-if="tlsStep === 'status'">
+            <el-button type="info" :loading="tlsLoading" @click="handleTlsVerify">
+              验证连接
+            </el-button>
+            <el-button type="warning" :loading="tlsLoading" @click="handleTlsRollback">
+              批量回滚 TCP
+            </el-button>
+            <el-button type="success" :loading="tlsLoading" @click="handleTlsUpgrade">
+              批量升级 TLS
+            </el-button>
+          </template>
+          <el-button v-else type="primary" @click="tlsStep = 'status'; loadTlsStatus()">
+            返回状态
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -874,5 +1052,11 @@ onMounted(() => {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+
+.tls-summary {
+  :deep(.el-descriptions) {
+    margin-bottom: 0;
+  }
 }
 </style>

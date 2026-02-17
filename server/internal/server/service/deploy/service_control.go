@@ -22,20 +22,23 @@ var serviceSystemdNames = map[string]string{
 	"gost":     "gost.service",
 }
 
-// 服务配置文件路径映射
+// serviceDockerNames 使用 model 中的统一映射
+var serviceDockerNames = model.ServiceDockerNames
+
+// 服务配置文件路径映射（Docker 部署：宿主机上的路径）
 var serviceConfigPaths = map[string]string{
-	"server":   "/root/server/configs/tsdd.yaml",
-	"wukongim": "/root/wukongim/wk.yaml",
+	"server":   "/opt/tsdd/configs/tsdd.yaml",
+	"wukongim": "/var/lib/docker/volumes/tsdd_wukongim_data/_data/wk.yaml",
 	"gost":     "/root/gost/gost.yaml",
 }
 
 // ServiceAction 执行服务操作（start/stop/restart）
+// 优先使用 Docker，回退到 systemd
 func ServiceAction(req model.ServiceActionReq, operator string) (model.ServiceActionResp, error) {
 	var resp model.ServiceActionResp
 
 	// 验证服务名
-	systemdName, ok := serviceSystemdNames[req.ServiceName]
-	if !ok {
+	if _, ok := serviceSystemdNames[req.ServiceName]; !ok {
 		return resp, fmt.Errorf("不支持的服务: %s，仅支持 server/wukongim/gost", req.ServiceName)
 	}
 
@@ -45,9 +48,29 @@ func ServiceAction(req model.ServiceActionReq, operator string) (model.ServiceAc
 		return resp, err
 	}
 
-	// 构建 systemctl 命令
-	cmd := fmt.Sprintf("systemctl %s %s", req.Action, systemdName)
-	output, execErr := client.ExecuteCommand(cmd)
+	// 优先尝试 Docker
+	var output string
+	var execErr error
+	dockerName := serviceDockerNames[req.ServiceName]
+	if dockerName != "" {
+		// 检查 Docker 容器是否存在
+		checkCmd := fmt.Sprintf("docker inspect %s >/dev/null 2>&1 && echo 'exists'", dockerName)
+		checkOutput, _ := client.ExecuteCommand(checkCmd)
+		if strings.TrimSpace(checkOutput) == "exists" {
+			cmd := fmt.Sprintf("docker %s %s", req.Action, dockerName)
+			output, execErr = client.ExecuteCommand(cmd)
+		} else {
+			// Docker 容器不存在，回退到 systemd
+			systemdName := serviceSystemdNames[req.ServiceName]
+			cmd := fmt.Sprintf("systemctl %s %s", req.Action, systemdName)
+			output, execErr = client.ExecuteCommand(cmd)
+		}
+	} else {
+		// 无 Docker 映射，直接用 systemd
+		systemdName := serviceSystemdNames[req.ServiceName]
+		cmd := fmt.Sprintf("systemctl %s %s", req.Action, systemdName)
+		output, execErr = client.ExecuteCommand(cmd)
+	}
 
 	// 构造响应
 	resp.Output = output
@@ -101,7 +124,7 @@ func GetServiceStatus(req model.ServiceStatusReq) (model.ServiceStatusListResp, 
 	// 查询每个服务的状态
 	for _, svc := range services {
 		systemdName := serviceSystemdNames[svc]
-		status := queryServiceStatus(client.SSHClient, systemdName)
+		status := queryServiceStatusWithName(client.SSHClient, systemdName, svc)
 		status.ServiceName = svc
 		resp.Services = append(resp.Services, status)
 	}
@@ -109,11 +132,16 @@ func GetServiceStatus(req model.ServiceStatusReq) (model.ServiceStatusListResp, 
 	return resp, nil
 }
 
-// queryServiceStatus 查询单个服务的状态
+// queryServiceStatus 查询单个服务的状态（支持 systemd 和 Docker 两种部署方式）
 func queryServiceStatus(client *utils.SSHClient, systemdName string) model.ServiceStatusResp {
+	return queryServiceStatusWithName(client, systemdName, "")
+}
+
+// queryServiceStatusWithName 查询单个服务的状态，serviceName 用于 Docker 回退检查
+func queryServiceStatusWithName(client *utils.SSHClient, systemdName string, serviceName string) model.ServiceStatusResp {
 	var status model.ServiceStatusResp
 
-	// 检查服务是否运行
+	// 1. 先尝试 systemctl 检查
 	cmd := fmt.Sprintf("systemctl is-active %s 2>/dev/null || echo 'inactive'", systemdName)
 	output, _ := client.ExecuteCommand(cmd)
 	output = strings.TrimSpace(output)
@@ -143,11 +171,63 @@ func queryServiceStatus(client *utils.SSHClient, systemdName string) model.Servi
 				}
 			}
 		}
-	} else {
-		status.Status = "stopped"
+		return status
 	}
 
+	// 2. systemd 未运行，回退检查 Docker 容器
+	dockerName := serviceDockerNames[serviceName]
+	if dockerName != "" {
+		dockerCmd := fmt.Sprintf(`docker inspect --format '{{.State.Status}}|{{.State.Pid}}|{{.State.StartedAt}}' %s 2>/dev/null`, dockerName)
+		dockerOutput, dockerErr := client.ExecuteCommand(dockerCmd)
+		dockerOutput = strings.TrimSpace(dockerOutput)
+		if dockerErr == nil && dockerOutput != "" {
+			parts := strings.SplitN(dockerOutput, "|", 3)
+			if len(parts) >= 1 && parts[0] == "running" {
+				status.Status = "running"
+				if len(parts) >= 2 {
+					if pid, err := strconv.Atoi(parts[1]); err == nil && pid > 0 {
+						status.Pid = pid
+						// 获取容器资源使用
+						statsCmd := fmt.Sprintf(`docker stats --no-stream --format '{{.CPUPerc}}|{{.MemUsage}}' %s 2>/dev/null`, dockerName)
+						statsOutput, _ := client.ExecuteCommand(statsCmd)
+						statsOutput = strings.TrimSpace(statsOutput)
+						if statsOutput != "" {
+							statsParts := strings.SplitN(statsOutput, "|", 2)
+							if len(statsParts) >= 2 {
+								status.CPU = statsParts[0]
+								status.Memory = statsParts[1]
+							}
+						}
+					}
+				}
+				if len(parts) >= 3 {
+					// 计算运行时间
+					startedAt, err := time.Parse(time.RFC3339Nano, parts[2])
+					if err == nil {
+						status.Uptime = formatDuration(time.Since(startedAt))
+					}
+				}
+				return status
+			}
+		}
+	}
+
+	status.Status = "stopped"
 	return status
+}
+
+// formatDuration 格式化持续时间为可读字符串
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours()) / 24
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+	return fmt.Sprintf("%dm", minutes)
 }
 
 // formatMemorySize 格式化内存（KB 转可读格式）
@@ -254,6 +334,17 @@ func GetConfigFile(serverId int, serviceName string) (model.ConfigFileResp, erro
 	client, err := GetSSHClient(serverId)
 	if err != nil {
 		return resp, err
+	}
+
+	// 先检查文件是否存在
+	checkCmd := fmt.Sprintf("test -f '%s' && echo 'exists'", configPath)
+	checkOutput, _ := client.ExecuteCommand(checkCmd)
+	if strings.TrimSpace(checkOutput) != "exists" {
+		// 文件不存在，返回空内容（允许用户创建）
+		resp.ServiceName = serviceName
+		resp.ConfigPath = configPath
+		resp.Content = ""
+		return resp, nil
 	}
 
 	cmd := fmt.Sprintf("cat '%s'", configPath)

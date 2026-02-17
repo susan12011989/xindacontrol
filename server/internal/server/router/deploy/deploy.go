@@ -88,6 +88,11 @@ func Routes(gi gin.IRouter) {
 	group.DELETE("gost/forward/clear", clearGostForward)   // 清除转发规则
 	group.GET("gost/forward/status", getGostForwardStatus) // 获取转发状态
 
+	// Nginx 缓存管理
+	group.POST("nginx/install", installNginx)           // 安装 Nginx（流式API）
+	group.GET("nginx/cache/status", getNginxCacheStatus) // 获取缓存状态
+	group.POST("nginx/cache/clear", clearNginxCache)     // 清除缓存
+
 	// 一键部署 TSDD 服务
 	group.POST("tsdd/deploy", deployTSDD)              // 部署到已注册服务器 (Docker方式)
 	group.POST("tsdd/deploy-by-ip", deployTSDDByIP)    // 通过IP部署（新服务器，Docker方式）
@@ -101,6 +106,16 @@ func Routes(gi gin.IRouter) {
 
 	// ========== 日志管理 ==========
 	group.POST("logs/query", queryLogs)   // 统一日志查询
+
+	// ========== TLS 证书管理 ==========
+	group.GET("tls/certs", getTlsCerts)                       // 获取当前证书
+	group.POST("tls/certs/generate", generateTlsCerts)        // 生成 CA + 服务器证书
+	group.POST("tls/certs/disable", disableTlsCerts)          // 停用证书（允许重新生成）
+	group.GET("tls/certs/fingerprint", getTlsCertFingerprint) // 获取证书指纹（供 App Pinning）
+	group.GET("tls/status", getTlsStatus)                     // 查看所有服务器 TLS 状态
+	group.POST("tls/verify", verifyTlsStatus)                 // 验证所有服务器 TLS 连接
+	group.POST("tls/upgrade", batchUpgradeTls)                // 批量升级为 TLS
+	group.POST("tls/rollback", batchRollbackTls)              // 批量回滚为 TCP
 
 	// ========== 版本管理 ==========
 	group.GET("versions", listVersions)                    // 版本列表
@@ -1144,4 +1159,64 @@ func getGostForwardStatus(ctx *gin.Context) {
 	}
 
 	result.GOK(ctx, data)
+}
+
+// ========== Nginx 缓存管理 ==========
+
+// installNginx 在系统服务器上安装 Nginx（流式API）
+func installNginx(ctx *gin.Context) {
+	var req model.InstallNginxReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GStreamEnd(ctx, true, err.Error())
+		return
+	}
+
+	result.GStream(ctx)
+
+	err := deployService.InstallNginxToServer(req.ServerId, func(message string) {
+		result.GStreamData(ctx, gin.H{
+			"message": message,
+		})
+	})
+
+	if err != nil {
+		result.GStreamEnd(ctx, true, err.Error())
+		return
+	}
+
+	result.GStreamEnd(ctx, true, "Nginx 安装成功!")
+}
+
+// getNginxCacheStatus 获取 Nginx 缓存状态
+func getNginxCacheStatus(ctx *gin.Context) {
+	serverID, _ := strconv.Atoi(ctx.Query("server_id"))
+	if serverID == 0 {
+		result.GParamErr(ctx, fmt.Errorf("server_id 不能为空"))
+		return
+	}
+
+	data, err := deployService.GetNginxCacheStatus(serverID)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// clearNginxCache 清除 Nginx 缓存
+func clearNginxCache(ctx *gin.Context) {
+	var req model.ClearNginxCacheReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	err := deployService.ClearNginxCache(req.ServerId)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, gin.H{"message": "缓存已清除"})
 }

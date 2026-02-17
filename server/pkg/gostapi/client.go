@@ -473,7 +473,7 @@ func (c *Client) CreateRelayTLSForward(gostServerIP string, listenPort int, targ
 		return "", fmt.Errorf("创建 Chain 失败: %w", err)
 	}
 
-	// 2. 创建 Service
+	// 2. 创建 Service（必须包含 forwarder 指定目标地址，否则 dst 为 :0）
 	service := &ServiceConfig{
 		Name: serviceName,
 		Addr: listenAddr,
@@ -483,6 +483,14 @@ func (c *Client) CreateRelayTLSForward(gostServerIP string, listenPort int, targ
 		},
 		Listener: &ListenerConfig{
 			Type: "tcp",
+		},
+		Forwarder: &ForwarderConfig{
+			Nodes: []ForwardNodeConfig{
+				{
+					Name: fmt.Sprintf("target-%d", targetPort),
+					Addr: targetAddr,
+				},
+			},
 		},
 	}
 
@@ -539,6 +547,14 @@ func (c *Client) DeleteRelayTLSForward(gostServerIP string, listenPort int) erro
 	return nil
 }
 
+// ========== TLS Listener 支持 ==========
+
+// 系统服务器 TLS 证书默认路径
+const (
+	TlsCertPath = "/etc/gost/certs/server.crt"
+	TlsKeyPath  = "/etc/gost/certs/server.key"
+)
+
 // ========== 幂等性辅助函数 ==========
 
 // isAlreadyExistsError 检查是否是 "already exists" 错误（创建时已存在）
@@ -563,7 +579,8 @@ func isNotFoundError(err error) bool {
 
 // createRelayTLSForwardWithProtocol 创建带协议名的 Relay+TLS 转发服务（内部方法）
 // protocolName 用于区分服务名，如 "tcp", "ws", "http"
-func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPort int, targetIP string, targetPort int, protocolName string) (serviceName string, err error) {
+// tlsListener: 是否在监听端启用 TLS（客户端加密）
+func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPort int, targetIP string, targetPort int, protocolName string, tlsListener bool) (serviceName string, err error) {
 	// 生成唯一的名称（根据协议类型区分）
 	chainName := fmt.Sprintf("chain-%s-relay-%d", protocolName, listenPort)
 	serviceName = fmt.Sprintf("%s-relay-%d", protocolName, listenPort)
@@ -598,6 +615,17 @@ func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 	}
 
 	// 2. 创建 Service
+	listener := &ListenerConfig{Type: "tcp"}
+	if tlsListener {
+		listener = &ListenerConfig{
+			Type: "tls",
+			TLS: &TLSConfig{
+				CertFile: TlsCertPath,
+				KeyFile:  TlsKeyPath,
+			},
+		}
+	}
+
 	service := &ServiceConfig{
 		Name: serviceName,
 		Addr: listenAddr,
@@ -605,8 +633,14 @@ func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 			Type:  "tcp",
 			Chain: chainName,
 		},
-		Listener: &ListenerConfig{
-			Type: "tcp",
+		Listener: listener,
+		Forwarder: &ForwarderConfig{
+			Nodes: []ForwardNodeConfig{
+				{
+					Name: fmt.Sprintf("target-%d", targetPort),
+					Addr: targetAddr,
+				},
+			},
 		},
 	}
 
@@ -665,13 +699,37 @@ func (c *Client) CreateMerchantForwards(gostServerIP string, basePort int, targe
 
 	for _, cfg := range MerchantPortConfigs {
 		listenPort := basePort + cfg.Offset
-		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name)
+		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, false)
 		if err != nil {
 			// 回滚已创建的端口
 			for _, created := range createdConfigs {
 				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name)
 			}
 			return fmt.Errorf("创建 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
+		}
+		createdConfigs = append(createdConfigs, cfg)
+	}
+
+	return nil
+}
+
+// CreateMerchantForwardsWithTls 批量创建商户的 3 个转发服务，监听端启用 TLS
+func CreateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
+	return defaultClient.CreateMerchantForwardsWithTls(gostServerIP, basePort, targetIP)
+}
+
+// CreateMerchantForwardsWithTls 批量创建商户的 3 个转发服务，监听端启用 TLS
+func (c *Client) CreateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
+	var createdConfigs []MerchantPortConfig
+
+	for _, cfg := range MerchantPortConfigs {
+		listenPort := basePort + cfg.Offset
+		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, true)
+		if err != nil {
+			for _, created := range createdConfigs {
+				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name)
+			}
+			return fmt.Errorf("创建 TLS %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
 		createdConfigs = append(createdConfigs, cfg)
 	}
@@ -732,7 +790,7 @@ func (c *Client) UpdateMerchantForwardsWithTargetPort(gostServerIP string, baseP
 	for i, cfg := range MerchantPortConfigs {
 		listenPort := basePort + cfg.Offset
 		targetPort := targetBasePort + i // 使用自定义基础端口 + 偏移
-		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, targetPort, cfg.Name)
+		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, targetPort, cfg.Name, false)
 		if err != nil {
 			// 回滚已创建的端口
 			for _, created := range createdConfigs {
@@ -906,10 +964,23 @@ var MerchantDirectPortConfigs = []MerchantPortConfig{
 
 // createDirectForwardWithProtocol 创建 TCP 直连转发服务（内部方法）
 // 不使用 relay+tls，直接 TCP 转发
-func (c *Client) createDirectForwardWithProtocol(gostServerIP string, listenPort int, targetIP string, targetPort int, protocolName string) (serviceName string, err error) {
+// tlsListener: 是否在监听端启用 TLS（客户端加密）
+func (c *Client) createDirectForwardWithProtocol(gostServerIP string, listenPort int, targetIP string, targetPort int, protocolName string, tlsListener bool) (serviceName string, err error) {
 	serviceName = fmt.Sprintf("%s-direct-%d", protocolName, listenPort)
 	targetAddr := fmt.Sprintf("%s:%d", targetIP, targetPort)
 	listenAddr := fmt.Sprintf(":%d", listenPort)
+
+	// 构建 listener
+	listener := &ListenerConfig{Type: "tcp"}
+	if tlsListener {
+		listener = &ListenerConfig{
+			Type: "tls",
+			TLS: &TLSConfig{
+				CertFile: TlsCertPath,
+				KeyFile:  TlsKeyPath,
+			},
+		}
+	}
 
 	// 创建 Service（直接 TCP 转发，使用 forwarder）
 	service := &ServiceConfig{
@@ -918,9 +989,7 @@ func (c *Client) createDirectForwardWithProtocol(gostServerIP string, listenPort
 		Handler: &HandlerConfig{
 			Type: "tcp",
 		},
-		Listener: &ListenerConfig{
-			Type: "tcp",
-		},
+		Listener: listener,
 		Forwarder: &ForwarderConfig{
 			Nodes: []ForwardNodeConfig{
 				{
@@ -978,13 +1047,37 @@ func (c *Client) CreateMerchantDirectForwards(gostServerIP string, basePort int,
 
 	for _, cfg := range MerchantDirectPortConfigs {
 		listenPort := basePort + cfg.Offset
-		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name)
+		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, false)
 		if err != nil {
 			// 回滚已创建的端口
 			for _, created := range createdConfigs {
 				_ = c.deleteDirectForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name)
 			}
 			return fmt.Errorf("创建直连 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
+		}
+		createdConfigs = append(createdConfigs, cfg)
+	}
+
+	return nil
+}
+
+// CreateMerchantDirectForwardsWithTls 批量创建商户的 3 个直连转发服务，监听端启用 TLS
+func CreateMerchantDirectForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
+	return defaultClient.CreateMerchantDirectForwardsWithTls(gostServerIP, basePort, targetIP)
+}
+
+// CreateMerchantDirectForwardsWithTls 批量创建商户的 3 个直连转发服务，监听端启用 TLS
+func (c *Client) CreateMerchantDirectForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
+	var createdConfigs []MerchantPortConfig
+
+	for _, cfg := range MerchantDirectPortConfigs {
+		listenPort := basePort + cfg.Offset
+		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, true)
+		if err != nil {
+			for _, created := range createdConfigs {
+				_ = c.deleteDirectForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name)
+			}
+			return fmt.Errorf("创建 TLS 直连 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
 		createdConfigs = append(createdConfigs, cfg)
 	}

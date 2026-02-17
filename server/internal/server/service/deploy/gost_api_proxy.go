@@ -7,6 +7,8 @@ import (
 	"server/pkg/entity"
 	"server/pkg/gostapi"
 	"strings"
+
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // getServerHostById 查询服务器 Host
@@ -266,16 +268,41 @@ func SetupGostForward(req model.SetupGostForwardReq) error {
 	if useTLS {
 		// relay+tls 加密转发
 		if len(req.Ports) > 0 {
-			return gostapi.SetupForwardTargetWithPorts(host, req.TargetIP, req.Ports)
+			err = gostapi.SetupForwardTargetWithPorts(host, req.TargetIP, req.Ports)
+		} else {
+			err = gostapi.SetupForwardTarget(host, req.TargetIP)
 		}
-		return gostapi.SetupForwardTarget(host, req.TargetIP)
 	} else {
 		// TCP 直连转发（不加密）
 		if len(req.Ports) > 0 {
-			return gostapi.SetupDirectForwardTargetWithPorts(host, req.TargetIP, req.Ports)
+			err = gostapi.SetupDirectForwardTargetWithPorts(host, req.TargetIP, req.Ports)
+		} else {
+			err = gostapi.SetupDirectForwardTarget(host, req.TargetIP)
 		}
-		return gostapi.SetupDirectForwardTarget(host, req.TargetIP)
 	}
+
+	if err != nil {
+		return err
+	}
+
+	// 自动为 HTTP 端口配置 Nginx 缓存（如果 Nginx 已安装）
+	httpPort := identifyHttpPort(req.Ports)
+	if httpPort > 0 && isNginxInstalled(req.ServerId) {
+		// 1. 修改 GOST HTTP 服务为仅监听 loopback
+		if err := UpdateGostServiceToLoopback(req.ServerId, httpPort); err != nil {
+			logx.Errorf("设置 GOST loopback 失败 (端口 %d): %v", httpPort, err)
+			// 不影响转发配置，仅记录日志
+		} else {
+			// 2. 配置 Nginx 缓存代理
+			if err := ConfigureNginxCacheForPort(req.ServerId, httpPort); err != nil {
+				logx.Errorf("配置 Nginx 缓存失败 (端口 %d): %v", httpPort, err)
+				// 回滚 GOST 地址
+				_ = RestoreGostServiceToPublic(req.ServerId, httpPort)
+			}
+		}
+	}
+
+	return nil
 }
 
 // ClearGostForward 清除 GOST 转发规则
@@ -284,6 +311,18 @@ func ClearGostForward(req model.ClearGostForwardReq) error {
 	host, err := getServerHostById(req.ServerId)
 	if err != nil {
 		return err
+	}
+
+	// 清理 Nginx 缓存配置（在删除 GOST 服务之前，先恢复公网监听）
+	if isNginxInstalled(req.ServerId) {
+		if len(req.Ports) > 0 {
+			httpPort := identifyHttpPort(req.Ports)
+			if httpPort > 0 {
+				_ = RemoveNginxCacheForPort(req.ServerId, httpPort)
+			}
+		} else {
+			_ = RemoveAllNginxCacheConfigs(req.ServerId)
+		}
 	}
 
 	// 同时清除两种模式的规则（因为可能不知道当前是哪种模式）

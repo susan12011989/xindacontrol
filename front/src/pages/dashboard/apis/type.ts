@@ -116,13 +116,24 @@ export interface ChangeGostPortResp {
 }
 export type ChangeGostPortResponseData = ApiResponseData<ChangeGostPortResp>
 
-// ========== Adminm 配置（短信） ==========
+// ========== Adminm 配置（短信 - 多通道） ==========
 export interface SmsConfig {
+  provider: string // "aliyun" | "unisms" | "smsbao"
+  // 阿里云
   region_id: string
   access_key: string
   secret_key: string
   sign_name: string
   template_code: string
+  // UniSMS (联合短信)
+  unisms_access_key_id: string
+  unisms_access_key_secret: string
+  unisms_signature: string
+  unisms_template_id: string
+  // 短信宝
+  smsbao_account: string
+  smsbao_api_key: string
+  smsbao_template: string
 }
 
 export type AdminmSmsConfigResponseData = ApiResponseData<SmsConfig | null>

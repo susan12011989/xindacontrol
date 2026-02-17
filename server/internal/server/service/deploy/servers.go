@@ -82,10 +82,14 @@ func QueryServers(req model.QueryServersReq) (model.QueryServersResponse, error)
 			ServerType:  s.ServerType,
 			ForwardType: s.ForwardType,
 			Status:      s.Status,
+			TlsEnabled:  s.TlsEnabled,
 			Description: s.Description,
 			MerchantId:  s.MerchantId,
 			CreatedAt:   s.CreatedAt.Format("2006-01-02 15:04:05"),
 			UpdatedAt:   s.UpdatedAt.Format("2006-01-02 15:04:05"),
+		}
+		if s.TlsDeployedAt != nil {
+			item.TlsDeployedAt = s.TlsDeployedAt.Format("2006-01-02 15:04:05")
 		}
 		// 填充商户信息
 		if merchant, ok := merchantMap[s.MerchantId]; ok {
@@ -123,10 +127,14 @@ func GetServerDetail(id int) (model.ServerResp, error) {
 		ServerType:  server.ServerType,
 		ForwardType: server.ForwardType,
 		Status:      server.Status,
+		TlsEnabled:  server.TlsEnabled,
 		Description: server.Description,
 		MerchantId:  server.MerchantId,
 		CreatedAt:   server.CreatedAt.Format("2006-01-02 15:04:05"),
 		UpdatedAt:   server.UpdatedAt.Format("2006-01-02 15:04:05"),
+	}
+	if server.TlsDeployedAt != nil {
+		resp.TlsDeployedAt = server.TlsDeployedAt.Format("2006-01-02 15:04:05")
 	}
 
 	// 获取商户信息
@@ -211,19 +219,36 @@ func enqueueGostServicesForMerchants(serverHost string, forwardType int) {
 		return
 	}
 
+	// 检查该服务器是否启用了 TLS
+	var server entity.Servers
+	tlsEnabled := false
+	has, err := dbs.DBAdmin.Where("host = ? AND server_type = 2", serverHost).Get(&server)
+	if err == nil && has && server.TlsEnabled == 1 {
+		tlsEnabled = true
+	}
+
 	forwardTypeName := "encrypted"
 	if forwardType == entity.ForwardTypeDirect {
 		forwardTypeName = "direct"
+	}
+	if tlsEnabled {
+		forwardTypeName += "+tls-listener"
 	}
 
 	for _, m := range merchants {
 		var err error
 		if forwardType == entity.ForwardTypeDirect {
-			// 直连转发：直接转发到商户业务程序 10000/10001/10002
-			err = gostapi.EnqueueCreateMerchantDirectForwards(serverHost, m.Port, m.ServerIP)
+			if tlsEnabled {
+				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(serverHost, m.Port, m.ServerIP)
+			} else {
+				err = gostapi.EnqueueCreateMerchantDirectForwards(serverHost, m.Port, m.ServerIP)
+			}
 		} else {
-			// 加密转发：通过 relay+tls 转发到商户 GOST 10010/10011/10012
-			err = gostapi.EnqueueCreateMerchantForwards(serverHost, m.Port, m.ServerIP)
+			if tlsEnabled {
+				err = gostapi.EnqueueCreateMerchantForwardsWithTls(serverHost, m.Port, m.ServerIP)
+			} else {
+				err = gostapi.EnqueueCreateMerchantForwards(serverHost, m.Port, m.ServerIP)
+			}
 		}
 		if err != nil {
 			logx.Errorf("enqueue create merchant %s forwards task for merchant %d (port %d) on server %s failed: %+v",
@@ -301,6 +326,11 @@ func UpdateServer(id int, req model.UpdateServerReq) error {
 	if affected == 0 {
 		return errors.New("服务器不存在或无变更")
 	}
+
+	// 清除 SSH 连接池缓存（Host、密码、密钥等变更后需要重新连接）
+	pool := utils.GetSSHPool()
+	pool.RemoveConnection(fmt.Sprintf("%d", id))
+	logx.Infof("cleared SSH connection cache for server %d", id)
 
 	// 系统服务器 Host 变更时，需要在新服务器上为所有商户创建 gost 转发
 	if oldServer.ServerType == 2 && req.Host != "" && req.Host != oldServer.Host {

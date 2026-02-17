@@ -421,3 +421,95 @@ export function getGostForwardStatus(server_id: number) {
     params: { server_id }
   })
 }
+
+// ========== Nginx 缓存管理 ==========
+
+/** 获取 Nginx 缓存状态 */
+export function getNginxCacheStatus(server_id: number) {
+  return request<Deploy.NginxCacheStatusResponseData>({
+    url: "deploy/nginx/cache/status",
+    method: "get",
+    params: { server_id }
+  })
+}
+
+/** 清除 Nginx 缓存 */
+export function clearNginxCache(data: Deploy.ClearNginxCacheReq) {
+  return request<{ code: number; data: { message: string }; message: string }>({
+    url: "deploy/nginx/cache/clear",
+    method: "post",
+    data
+  })
+}
+
+// ========== TLS 证书管理 ==========
+
+/** 获取当前有效证书 */
+export function getTlsCerts() {
+  return request<Deploy.TlsCertsResponseData>({
+    url: "deploy/tls/certs",
+    method: "get"
+  })
+}
+
+/** 生成 CA + 服务器证书 */
+export function generateTlsCerts(data?: Deploy.GenerateTlsCertReq) {
+  return request<Deploy.GenerateTlsCertResponseData>({
+    url: "deploy/tls/certs/generate",
+    method: "post",
+    data
+  })
+}
+
+/** 停用当前证书 */
+export function disableTlsCerts() {
+  return request({
+    url: "deploy/tls/certs/disable",
+    method: "post"
+  })
+}
+
+/** 获取证书指纹（供 App 端 Pinning） */
+export function getTlsCertFingerprint() {
+  return request<Deploy.CertFingerprintResponseData>({
+    url: "deploy/tls/certs/fingerprint",
+    method: "get"
+  })
+}
+
+/** 查看所有系统服务器 TLS 状态 */
+export function getTlsStatus() {
+  return request<Deploy.TlsStatusResponseData>({
+    url: "deploy/tls/status",
+    method: "get"
+  })
+}
+
+/** 验证所有系统服务器 TLS 连接 */
+export function verifyTlsStatus() {
+  return request<Deploy.TlsStatusResponseData>({
+    url: "deploy/tls/verify",
+    method: "post",
+    timeout: 120000 // 2分钟超时
+  })
+}
+
+/** 批量升级为 TLS */
+export function batchUpgradeTls(data?: Deploy.BatchTlsReq) {
+  return request<Deploy.BatchTlsResponseData>({
+    url: "deploy/tls/upgrade",
+    method: "post",
+    data,
+    timeout: 300000 // 5分钟超时
+  })
+}
+
+/** 批量回滚为 TCP */
+export function batchRollbackTls(data?: Deploy.BatchTlsReq) {
+  return request<Deploy.BatchTlsResponseData>({
+    url: "deploy/tls/rollback",
+    method: "post",
+    data,
+    timeout: 300000
+  })
+}

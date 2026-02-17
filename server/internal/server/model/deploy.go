@@ -54,9 +54,11 @@ type ServerResp struct {
 	AuthType     int    `json:"auth_type"`
 	ServerType   int    `json:"server_type"`  // 1-商户服务器 2-系统服务器
 	ForwardType  int    `json:"forward_type"` // 转发类型：1-加密(relay+tls) 2-直连(tcp)
-	Status       int    `json:"status"`
-	Description  string `json:"description"`
-	MerchantId   int    `json:"merchant_id"`   // 关联的商户ID
+	Status        int    `json:"status"`
+	TlsEnabled    int    `json:"tls_enabled"`     // 客户端TLS：0-未启用 1-已启用
+	TlsDeployedAt string `json:"tls_deployed_at"` // TLS证书部署时间
+	Description   string `json:"description"`
+	MerchantId    int    `json:"merchant_id"`   // 关联的商户ID
 	MerchantName string `json:"merchant_name"` // 关联的商户名称
 	MerchantNo   string `json:"merchant_no"`   // 商户号
 	CreatedAt    string `json:"created_at"`
@@ -84,16 +86,23 @@ type TestConnectionReq struct {
 // 支持的服务列表：server, wukongim, gost
 var SupportedServices = []string{"server", "wukongim", "gost"}
 
-// 服务上传路径映射
+// 服务上传路径映射（Docker 部署：宿主机上的二进制所在目录）
 var ServiceUploadPaths = map[string]string{
-	"server":   "/root/server/",
+	"server":   "/opt/tsdd/",
 	"wukongim": "/root/wukongim/",
 }
 
-// 服务可执行文件名映射（实际的二进制文件名）
+// 服务可执行文件名映射（Docker 部署：宿主机上挂载到容器内的二进制文件名）
 var ServiceBinaryNames = map[string]string{
-	"server":   "server",
-	"wukongim": "WuKongIM", // 注意大小写，要与 systemd 配置中的 ExecStart 一致
+	"server":   "TangSengDaoDaoServer", // 挂载到容器 /home/app
+	"wukongim": "WuKongIM",
+}
+
+// 服务 Docker 容器名映射
+var ServiceDockerNames = map[string]string{
+	"server":   "tsdd-server",
+	"wukongim": "tsdd-wukongim",
+	"gost":     "gost",
 }
 
 // 服务操作请求
@@ -327,4 +336,23 @@ type GostForwardItem struct {
 	Port     int    `json:"port"`      // 监听端口
 	TargetIP string `json:"target_ip"` // 目标IP
 	Status   string `json:"status"`    // 状态：active/inactive
+}
+
+// ========== Nginx 缓存管理 ==========
+
+// 清除 Nginx 缓存请求
+type ClearNginxCacheReq struct {
+	ServerId int `json:"server_id" binding:"required"` // 系统服务器ID
+}
+
+// Nginx 缓存状态响应
+type NginxCacheStatusResp struct {
+	Installed bool   `json:"installed"` // Nginx 是否已安装
+	Running   bool   `json:"running"`   // Nginx 是否运行中
+	CacheSize string `json:"cache_size"` // 缓存目录大小，如 "156M"
+}
+
+// 安装 Nginx 请求
+type InstallNginxReq struct {
+	ServerId int `json:"server_id" binding:"required"` // 系统服务器ID
 }

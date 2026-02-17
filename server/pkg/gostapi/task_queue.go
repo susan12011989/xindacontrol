@@ -56,6 +56,7 @@ type GostTask struct {
 	BasePort       int       `json:"base_port"`        // 基础端口
 	TargetIP       string    `json:"target_ip"`        // 转发目标 IP（系统服务器转发时使用）
 	TargetBasePort int       `json:"target_base_port"` // 目标基础端口（自定义时使用，0 表示使用默认值）
+	TlsListener    bool      `json:"tls_listener"`     // 监听端是否启用 TLS（客户端加密）
 	Version        int64     `json:"version"`          // 任务版本号（用于检测是否被新任务取代）
 	RetryCount     int       `json:"retry_count"`      // 已重试次数
 	CreatedAt      time.Time `json:"created_at"`       // 创建时间
@@ -282,7 +283,11 @@ func (tq *TaskQueue) processTask(task *GostTask) {
 	case TaskDeleteMerchantLocalForwards:
 		err = DeleteMerchantLocalForwards(task.ServerIP)
 	case TaskCreateMerchantForwards:
-		err = CreateMerchantForwards(task.ServerIP, task.BasePort, task.TargetIP)
+		if task.TlsListener {
+			err = CreateMerchantForwardsWithTls(task.ServerIP, task.BasePort, task.TargetIP)
+		} else {
+			err = CreateMerchantForwards(task.ServerIP, task.BasePort, task.TargetIP)
+		}
 	case TaskDeleteMerchantForwards:
 		err = DeleteMerchantForwards(task.ServerIP, task.BasePort)
 	case TaskUpdateMerchantForwards:
@@ -292,7 +297,11 @@ func (tq *TaskQueue) processTask(task *GostTask) {
 			err = UpdateMerchantForwards(task.ServerIP, task.BasePort, task.TargetIP)
 		}
 	case TaskCreateMerchantDirectForwards:
-		err = CreateMerchantDirectForwards(task.ServerIP, task.BasePort, task.TargetIP)
+		if task.TlsListener {
+			err = CreateMerchantDirectForwardsWithTls(task.ServerIP, task.BasePort, task.TargetIP)
+		} else {
+			err = CreateMerchantDirectForwards(task.ServerIP, task.BasePort, task.TargetIP)
+		}
 	case TaskDeleteMerchantDirectForwards:
 		err = DeleteMerchantDirectForwards(task.ServerIP, task.BasePort)
 	case TaskUpdateMerchantDirectForwards:
@@ -384,6 +393,20 @@ func EnqueueCreateMerchantForwards(systemServerIP string, basePort int, targetIP
 	})
 }
 
+// EnqueueCreateMerchantForwardsWithTls 入队：创建系统服务器转发（监听端启用 TLS）
+func EnqueueCreateMerchantForwardsWithTls(systemServerIP string, basePort int, targetIP string) error {
+	if taskQueue == nil {
+		return fmt.Errorf("task queue not initialized")
+	}
+	return taskQueue.Enqueue(&GostTask{
+		Type:        TaskCreateMerchantForwards,
+		ServerIP:    systemServerIP,
+		BasePort:    basePort,
+		TargetIP:    targetIP,
+		TlsListener: true,
+	})
+}
+
 // EnqueueDeleteMerchantForwards 入队：删除系统服务器转发
 func EnqueueDeleteMerchantForwards(systemServerIP string, basePort int) error {
 	if taskQueue == nil {
@@ -435,6 +458,20 @@ func EnqueueCreateMerchantDirectForwards(systemServerIP string, basePort int, ta
 		ServerIP: systemServerIP,
 		BasePort: basePort,
 		TargetIP: targetIP,
+	})
+}
+
+// EnqueueCreateMerchantDirectForwardsWithTls 入队：创建系统服务器直连转发（监听端启用 TLS）
+func EnqueueCreateMerchantDirectForwardsWithTls(systemServerIP string, basePort int, targetIP string) error {
+	if taskQueue == nil {
+		return fmt.Errorf("task queue not initialized")
+	}
+	return taskQueue.Enqueue(&GostTask{
+		Type:        TaskCreateMerchantDirectForwards,
+		ServerIP:    systemServerIP,
+		BasePort:    basePort,
+		TargetIP:    targetIP,
+		TlsListener: true,
 	})
 }
 

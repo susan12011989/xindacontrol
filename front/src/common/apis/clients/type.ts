@@ -12,13 +12,24 @@ export interface QueryClientsReq extends Pagination {
   app_name?: string // app名称
 }
 
-// 短信配置
+// 短信配置（多通道）
 export interface SmsConfig {
+  provider: string // "aliyun" | "unisms" | "smsbao"
+  // 阿里云
   region_id: string // 区域ID
   access_key: string // AccessKey
   secret_key: string // SecretKey
   sign_name: string // 签名
   template_code: string // 模板代码
+  // UniSMS (联合短信)
+  unisms_access_key_id: string
+  unisms_access_key_secret: string
+  unisms_signature: string
+  unisms_template_id: string
+  // 短信宝
+  smsbao_account: string
+  smsbao_api_key: string
+  smsbao_template: string
 }
 
 // TRTC 配置

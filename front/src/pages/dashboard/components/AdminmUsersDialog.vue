@@ -36,10 +36,13 @@ function fetchList() {
       total.value = data.total
       paginationData.total = data.total
     })
+    .catch(() => {
+      // 已由 axios 拦截器统一弹出错误提示
+    })
     .finally(() => (loading.value = false))
 }
 
-watch([() => props.merchantNo, () => paginationData.currentPage, () => paginationData.pageSize], () => {
+watch([() => paginationData.currentPage, () => paginationData.pageSize], () => {
   if (props.visible) fetchList()
 })
 

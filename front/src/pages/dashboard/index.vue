@@ -1,9 +1,11 @@
 <script lang="ts" setup>
 import type { FormInstance } from "element-plus"
 import type { MerchantQueryRequestData, SmsConfig, TunnelCheckItem, TunnelStats } from "./apis/type"
+import type { MerchantStorageResp } from "@@/apis/merchant_storage/type"
 import { getClientList } from "@/common/apis/clients"
 import { usePagination } from "@/common/composables/usePagination"
 import { queryAdminmActive } from "@@/apis/adminm_users"
+import { getMerchantStorageList, createMerchantStorage, updateMerchantStorage, deleteMerchantStorage, pushMerchantStorage } from "@@/apis/merchant_storage"
 import {
   CirclePlus,
   Connection,
@@ -12,7 +14,7 @@ import {
   Search,
   Shop
 } from "@element-plus/icons-vue"
-import { changeMerchantGostPortApi, changeMerchantIPApi, getAdminmSmsConfigApi, getTunnelStatsApi, merchantQueryApi, saveAdminmNicknameApi, saveAdminmSensitiveContentsApi, saveAdminmSmsConfigApi, tunnelCheckApi, updateMerchantApi } from "./apis/index"
+import { changeMerchantGostPortApi, changeMerchantIPApi, clearMerchantDataApi, getAdminmSmsConfigApi, getTunnelStatsApi, merchantQueryApi, saveAdminmNicknameApi, saveAdminmSensitiveContentsApi, saveAdminmSmsConfigApi, tunnelCheckApi, updateMerchantApi } from "./apis/index"
 import ImageUploader from "@/common/components/ImageUploader.vue"
 import AdminmUsersDialog from "./components/AdminmUsersDialog.vue"
 import MerchantDetail from "./components/MerchantDetail.vue"
@@ -260,15 +262,55 @@ function handleQuickBuild(row: any) {
   })
 }
 
+// 清除商户数据
+const clearDataLoading = ref(false)
+function handleClearData(row: any) {
+  if (!row?.no) return
+  ElMessageBox.prompt(
+    `此操作将清除商户 "${row.name}" 的所有用户数据（用户、消息、群组、好友等），但保留系统账号和配置。\n\n请输入商户企业号 "${row.no}" 确认操作：`,
+    "危险操作 - 清除数据",
+    {
+      confirmButtonText: "确认清除",
+      cancelButtonText: "取消",
+      type: "error",
+      inputValidator: (value: string) => {
+        if (value !== row.no) return `请输入正确的企业号: ${row.no}`
+        return true
+      },
+      inputPlaceholder: `请输入 ${row.no}`
+    }
+  )
+    .then(() => {
+      clearDataLoading.value = true
+      return clearMerchantDataApi(row.no)
+    })
+    .then((res: any) => {
+      if (!res) return
+      ElMessage.success(`商户 "${row.name}" 的用户数据已清除`)
+    })
+    .catch(() => {})
+    .finally(() => {
+      clearDataLoading.value = false
+    })
+}
+
 // 商户配置（短信）
 const configDialogVisible = ref(false)
 const configLoading = ref(false)
 const smsConfigForm = reactive<SmsConfig>({
+  provider: "aliyun",
   region_id: "",
   access_key: "",
   secret_key: "",
   sign_name: "",
-  template_code: ""
+  template_code: "",
+  unisms_access_key_id: "",
+  unisms_access_key_secret: "",
+  unisms_signature: "",
+  unisms_template_id: "",
+  smsbao_account: "",
+  smsbao_api_key: "",
+  smsbao_template: ""
 })
 const configMerchantNo = ref("")
 const isBatchConfig = ref(false)
@@ -332,11 +374,19 @@ function onSensitiveFileChange(e: Event) {
 }
 
 function resetSmsForm() {
+  smsConfigForm.provider = "aliyun"
   smsConfigForm.region_id = ""
   smsConfigForm.access_key = ""
   smsConfigForm.secret_key = ""
   smsConfigForm.sign_name = ""
   smsConfigForm.template_code = ""
+  smsConfigForm.unisms_access_key_id = ""
+  smsConfigForm.unisms_access_key_secret = ""
+  smsConfigForm.unisms_signature = ""
+  smsConfigForm.unisms_template_id = ""
+  smsConfigForm.smsbao_account = ""
+  smsConfigForm.smsbao_api_key = ""
+  smsConfigForm.smsbao_template = ""
 }
 
 async function fetchSmsConfig(merchantNo: string) {
@@ -345,11 +395,19 @@ async function fetchSmsConfig(merchantNo: string) {
     const res = await getAdminmSmsConfigApi(merchantNo)
     const data = res.data
     if (data) {
+      smsConfigForm.provider = data.provider || "aliyun"
       smsConfigForm.region_id = data.region_id || ""
       smsConfigForm.access_key = data.access_key || ""
       smsConfigForm.secret_key = data.secret_key || ""
       smsConfigForm.sign_name = data.sign_name || ""
       smsConfigForm.template_code = data.template_code || ""
+      smsConfigForm.unisms_access_key_id = data.unisms_access_key_id || ""
+      smsConfigForm.unisms_access_key_secret = data.unisms_access_key_secret || ""
+      smsConfigForm.unisms_signature = data.unisms_signature || ""
+      smsConfigForm.unisms_template_id = data.unisms_template_id || ""
+      smsConfigForm.smsbao_account = data.smsbao_account || ""
+      smsConfigForm.smsbao_api_key = data.smsbao_api_key || ""
+      smsConfigForm.smsbao_template = data.smsbao_template || ""
     } else {
       resetSmsForm()
     }
@@ -594,11 +652,19 @@ function onSelectSmsClient(id: number | undefined) {
   if (!found) return
   const cfg = found.raw?.sms_config
   if (!cfg) return
+  smsConfigForm.provider = cfg.provider || "aliyun"
   smsConfigForm.region_id = cfg.region_id || ""
   smsConfigForm.access_key = cfg.access_key || ""
   smsConfigForm.secret_key = cfg.secret_key || ""
   smsConfigForm.sign_name = cfg.sign_name || ""
   smsConfigForm.template_code = cfg.template_code || ""
+  smsConfigForm.unisms_access_key_id = cfg.unisms_access_key_id || ""
+  smsConfigForm.unisms_access_key_secret = cfg.unisms_access_key_secret || ""
+  smsConfigForm.unisms_signature = cfg.unisms_signature || ""
+  smsConfigForm.unisms_template_id = cfg.unisms_template_id || ""
+  smsConfigForm.smsbao_account = cfg.smsbao_account || ""
+  smsConfigForm.smsbao_api_key = cfg.smsbao_api_key || ""
+  smsConfigForm.smsbao_template = cfg.smsbao_template || ""
 }
 
 // Logo 上传相关
@@ -627,6 +693,167 @@ async function handleLogoUpdate(row: any, url: string) {
     ElMessage.error("Logo 更新失败")
   } finally {
     uploadingLogoId.value = null
+  }
+}
+
+// ========== 存储配置弹窗 ==========
+const storageDialogVisible = ref(false)
+const storageLoading = ref(false)
+const storageList = ref<MerchantStorageResp[]>([])
+const storageMerchant = reactive({ id: 0, name: "", no: "" })
+
+// 存储类型选项
+const storageTypeOptions = [
+  { label: "MinIO", value: "minio" },
+  { label: "阿里云 OSS", value: "aliyunOSS" },
+  { label: "AWS S3", value: "aws_s3" },
+  { label: "腾讯云 COS", value: "tencent_cos" }
+]
+
+function getStorageTypeLabel(type: string) {
+  return storageTypeOptions.find(o => o.value === type)?.label || type
+}
+function getStorageTypeTagType(type: string): "success" | "warning" | "info" | "primary" | "danger" {
+  const m: Record<string, "success" | "warning" | "info" | "primary" | "danger"> = { minio: "primary", aliyunOSS: "warning", aws_s3: "success", tencent_cos: "info" }
+  return m[type] || "info"
+}
+
+async function openStorageDialog(row: any) {
+  storageMerchant.id = row.id
+  storageMerchant.name = row.name
+  storageMerchant.no = row.no
+  storageDialogVisible.value = true
+  await loadStorageList()
+}
+
+async function loadStorageList() {
+  storageLoading.value = true
+  try {
+    const res = await getMerchantStorageList({ merchant_id: storageMerchant.id, page: 1, size: 100 })
+    storageList.value = res.data.list || []
+  } catch {
+    storageList.value = []
+  } finally {
+    storageLoading.value = false
+  }
+}
+
+// 存储配置编辑
+const storageFormVisible = ref(false)
+const storageFormLoading = ref(false)
+const storageIsEdit = ref(false)
+const storageEditId = ref(0)
+const storageForm = reactive({
+  storage_type: "minio",
+  name: "",
+  endpoint: "",
+  bucket: "",
+  region: "",
+  access_key_id: "",
+  access_key_secret: "",
+  upload_url: "",
+  download_url: "",
+  file_base_url: "",
+  bucket_url: "",
+  custom_domain: "",
+  is_default: 0,
+  status: 1
+})
+
+function resetStorageForm() {
+  Object.assign(storageForm, {
+    storage_type: "minio", name: "", endpoint: "", bucket: "", region: "",
+    access_key_id: "", access_key_secret: "", upload_url: "", download_url: "",
+    file_base_url: "", bucket_url: "", custom_domain: "", is_default: 0, status: 1
+  })
+}
+
+function showAddStorage() {
+  storageIsEdit.value = false
+  storageEditId.value = 0
+  resetStorageForm()
+  storageFormVisible.value = true
+}
+
+function showEditStorage(row: MerchantStorageResp) {
+  storageIsEdit.value = true
+  storageEditId.value = row.id
+  Object.assign(storageForm, {
+    storage_type: row.storage_type, name: row.name, endpoint: row.endpoint,
+    bucket: row.bucket, region: row.region, access_key_id: row.access_key_id,
+    access_key_secret: "", upload_url: row.upload_url, download_url: row.download_url,
+    file_base_url: row.file_base_url, bucket_url: row.bucket_url,
+    custom_domain: row.custom_domain, is_default: row.is_default, status: row.status
+  })
+  storageFormVisible.value = true
+}
+
+async function handleStorageSubmit() {
+  if (!storageForm.name || !storageForm.bucket || !storageForm.access_key_id) {
+    ElMessage.warning("请填写必填项：配置名称、Bucket、AccessKeyId")
+    return
+  }
+  storageFormLoading.value = true
+  try {
+    const data = { ...storageForm, merchant_id: storageMerchant.id }
+    if (storageIsEdit.value) {
+      await updateMerchantStorage(storageEditId.value, data)
+      ElMessage.success("更新成功")
+    } else {
+      await createMerchantStorage(data)
+      ElMessage.success("创建成功")
+    }
+    storageFormVisible.value = false
+    await loadStorageList()
+  } catch (e: any) {
+    ElMessage.error(e?.message || "操作失败")
+  } finally {
+    storageFormLoading.value = false
+  }
+}
+
+function handleStorageDelete(row: MerchantStorageResp) {
+  ElMessageBox.confirm(`确定删除配置「${row.name}」吗？`, "删除确认", { type: "warning" })
+    .then(() => deleteMerchantStorage(row.id))
+    .then(() => { ElMessage.success("删除成功"); loadStorageList() })
+    .catch(() => {})
+}
+
+// 推送
+const pushDialogVisible = ref(false)
+const pushLoading = ref(false)
+const pushTarget = reactive({ config_id: 0, config_name: "", twofa_code: "" })
+
+function showPushDialog(row: MerchantStorageResp) {
+  pushTarget.config_id = row.id
+  pushTarget.config_name = row.name
+  pushTarget.twofa_code = ""
+  pushDialogVisible.value = true
+}
+
+async function handlePush() {
+  if (!pushTarget.twofa_code || pushTarget.twofa_code.length !== 6) {
+    ElMessage.warning("请输入6位2FA验证码")
+    return
+  }
+  pushLoading.value = true
+  try {
+    const res = await pushMerchantStorage({
+      merchant_id: storageMerchant.id,
+      config_id: pushTarget.config_id,
+      twofa_code: pushTarget.twofa_code
+    })
+    if (res.data.success) {
+      ElMessage.success("推送成功")
+      pushDialogVisible.value = false
+      await loadStorageList()
+    } else {
+      ElMessage.error(res.data.message || "推送失败")
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || "推送失败")
+  } finally {
+    pushLoading.value = false
   }
 }
 </script>
@@ -819,12 +1046,14 @@ async function handleLogoUpdate(row: any, url: string) {
                     <el-dropdown-menu>
                       <el-dropdown-item @click="showDetailDialog(row)">详情</el-dropdown-item>
                       <el-dropdown-item @click="openSmsConfig(row)">短信配置</el-dropdown-item>
+                      <el-dropdown-item @click="openStorageDialog(row)">存储配置</el-dropdown-item>
                       <el-dropdown-item @click="openNicknameForRow(row)">系统昵称</el-dropdown-item>
                       <el-dropdown-item divided @click="openTunnelDialog(row)">隧道连接检测</el-dropdown-item>
                       <el-dropdown-item @click="handleChangeGostPort(row)" :disabled="changeGostPortLoading">更换隧道端口</el-dropdown-item>
                       <el-dropdown-item @click="$router.push({ name: 'MerchantEdit', params: { id: row.id }, query: { data: JSON.stringify(row) } })">编辑</el-dropdown-item>
                       <el-dropdown-item @click="handleQuickBuild(row)">一键打包</el-dropdown-item>
-                      <el-dropdown-item divided class="danger-item" :disabled="changeIpLoading" @click="handleChangeIP(row)">更换IP</el-dropdown-item>
+                      <el-dropdown-item divided class="danger-item" :disabled="clearDataLoading" @click="handleClearData(row)">清除数据</el-dropdown-item>
+                      <el-dropdown-item class="danger-item" :disabled="changeIpLoading" @click="handleChangeIP(row)">更换IP</el-dropdown-item>
                       <el-dropdown-item class="danger-item" @click="handleDelete(row)">删除</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
@@ -953,21 +1182,58 @@ async function handleLogoUpdate(row: any, url: string) {
             <el-option v-for="opt in clientOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
           </el-select>
         </el-form-item>
-        <el-form-item label="RegionId">
-          <el-input v-model="smsConfigForm.region_id" placeholder="region_id" clearable />
+        <el-form-item label="短信通道">
+          <el-select v-model="smsConfigForm.provider" placeholder="选择短信通道" style="width: 100%;">
+            <el-option label="阿里云 (Aliyun)" value="aliyun" />
+            <el-option label="联合短信 (UniSMS)" value="unisms" />
+            <el-option label="短信宝 (SmsBao)" value="smsbao" />
+          </el-select>
         </el-form-item>
-        <el-form-item label="AccessKey">
-          <el-input v-model="smsConfigForm.access_key" placeholder="access_key" clearable />
-        </el-form-item>
-        <el-form-item label="SecretKey">
-          <el-input v-model="smsConfigForm.secret_key" placeholder="secret_key" clearable show-password />
-        </el-form-item>
-        <el-form-item label="签名">
-          <el-input v-model="smsConfigForm.sign_name" placeholder="sign_name" clearable />
-        </el-form-item>
-        <el-form-item label="模板Code">
-          <el-input v-model="smsConfigForm.template_code" placeholder="template_code" clearable />
-        </el-form-item>
+        <!-- 阿里云配置 -->
+        <template v-if="smsConfigForm.provider === 'aliyun' || !smsConfigForm.provider">
+          <el-form-item label="RegionId">
+            <el-input v-model="smsConfigForm.region_id" placeholder="如：cn-hangzhou" clearable />
+          </el-form-item>
+          <el-form-item label="AccessKey">
+            <el-input v-model="smsConfigForm.access_key" placeholder="阿里云 AccessKeyID" clearable />
+          </el-form-item>
+          <el-form-item label="SecretKey">
+            <el-input v-model="smsConfigForm.secret_key" placeholder="阿里云 AccessSecret" clearable show-password />
+          </el-form-item>
+          <el-form-item label="签名">
+            <el-input v-model="smsConfigForm.sign_name" placeholder="短信签名" clearable />
+          </el-form-item>
+          <el-form-item label="模板Code">
+            <el-input v-model="smsConfigForm.template_code" placeholder="短信模板代码" clearable />
+          </el-form-item>
+        </template>
+        <!-- UniSMS 配置 -->
+        <template v-if="smsConfigForm.provider === 'unisms'">
+          <el-form-item label="AccessKeyID">
+            <el-input v-model="smsConfigForm.unisms_access_key_id" placeholder="UniSMS AccessKeyID" clearable />
+          </el-form-item>
+          <el-form-item label="AccessKeySecret">
+            <el-input v-model="smsConfigForm.unisms_access_key_secret" placeholder="UniSMS AccessKeySecret（可选）" clearable show-password />
+          </el-form-item>
+          <el-form-item label="签名">
+            <el-input v-model="smsConfigForm.unisms_signature" placeholder="UniSMS 签名" clearable />
+          </el-form-item>
+          <el-form-item label="模板ID">
+            <el-input v-model="smsConfigForm.unisms_template_id" placeholder="UniSMS 模板ID" clearable />
+          </el-form-item>
+        </template>
+        <!-- 短信宝配置 -->
+        <template v-if="smsConfigForm.provider === 'smsbao'">
+          <el-form-item label="账号">
+            <el-input v-model="smsConfigForm.smsbao_account" placeholder="短信宝账号" clearable />
+          </el-form-item>
+          <el-form-item label="API Key">
+            <el-input v-model="smsConfigForm.smsbao_api_key" placeholder="短信宝 API Key（原文密码）" clearable show-password />
+          </el-form-item>
+          <el-form-item label="模板">
+            <el-input v-model="smsConfigForm.smsbao_template" type="textarea" :rows="2" placeholder="模板内容，用 {code} 作为验证码占位符" clearable />
+          </el-form-item>
+        </template>
         <el-form-item>
           <el-button type="primary" @click="handleSaveSms">保存</el-button>
         </el-form-item>
@@ -1052,6 +1318,125 @@ async function handleLogoUpdate(row: any, url: string) {
       </el-form>
       <template #footer>
         <el-button @click="sensitiveDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 存储配置弹窗 -->
+    <el-dialog v-model="storageDialogVisible" :title="`存储配置 - ${storageMerchant.name}`" width="860px">
+      <div style="margin-bottom: 12px; display: flex; justify-content: flex-end;">
+        <el-button type="primary" size="small" @click="showAddStorage">新增配置</el-button>
+      </div>
+      <el-table :data="storageList" v-loading="storageLoading" border size="small">
+        <el-table-column prop="name" label="配置名称" width="120" />
+        <el-table-column label="存储类型" width="110">
+          <template #default="{ row }">
+            <el-tag :type="getStorageTypeTagType(row.storage_type)" size="small">
+              {{ getStorageTypeLabel(row.storage_type) }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="bucket" label="Bucket" width="130" show-overflow-tooltip />
+        <el-table-column prop="endpoint" label="Endpoint" show-overflow-tooltip />
+        <el-table-column label="默认" width="60" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.is_default === 1" type="success" size="small">是</el-tag>
+            <span v-else>-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="60" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
+              {{ row.status === 1 ? '启用' : '禁用' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="推送" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.last_push_result === '成功'" type="success" size="small">成功</el-tag>
+            <el-tooltip v-else-if="row.last_push_result" :content="row.last_push_result" placement="top">
+              <el-tag type="danger" size="small">失败</el-tag>
+            </el-tooltip>
+            <span v-else class="text-gray">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="160" align="center" fixed="right">
+          <template #default="{ row }">
+            <el-button type="primary" link size="small" @click="showEditStorage(row)">编辑</el-button>
+            <el-button type="success" link size="small" @click="showPushDialog(row)">推送</el-button>
+            <el-button type="danger" link size="small" @click="handleStorageDelete(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!storageLoading && storageList.length === 0" description="暂无存储配置，点击「新增配置」添加" />
+      <template #footer>
+        <el-button @click="storageDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 存储配置编辑弹窗 -->
+    <el-dialog v-model="storageFormVisible" :title="storageIsEdit ? '编辑存储配置' : '新增存储配置'" width="600px" append-to-body>
+      <el-form :model="storageForm" label-width="120px" v-loading="storageFormLoading">
+        <el-form-item label="存储类型" required>
+          <el-select v-model="storageForm.storage_type" style="width: 100%;">
+            <el-option v-for="opt in storageTypeOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="配置名称" required>
+          <el-input v-model="storageForm.name" placeholder="请输入配置名称" />
+        </el-form-item>
+        <el-form-item label="服务端点">
+          <el-input v-model="storageForm.endpoint" placeholder="如: http://minio:9000" />
+        </el-form-item>
+        <el-form-item label="Bucket" required>
+          <el-input v-model="storageForm.bucket" placeholder="请输入 Bucket 名称" />
+        </el-form-item>
+        <el-form-item v-if="['aws_s3', 'tencent_cos'].includes(storageForm.storage_type)" label="区域">
+          <el-input v-model="storageForm.region" placeholder="如: us-east-1, ap-guangzhou" />
+        </el-form-item>
+        <el-form-item label="AccessKeyId" required>
+          <el-input v-model="storageForm.access_key_id" placeholder="请输入 AccessKeyId" />
+        </el-form-item>
+        <el-form-item label="AccessKeySecret">
+          <el-input v-model="storageForm.access_key_secret" type="password" show-password :placeholder="storageIsEdit ? '留空表示不修改' : '请输入 AccessKeySecret'" />
+        </el-form-item>
+        <template v-if="storageForm.storage_type === 'minio'">
+          <el-form-item label="上传URL">
+            <el-input v-model="storageForm.upload_url" placeholder="可选，留空使用 Endpoint" />
+          </el-form-item>
+          <el-form-item label="下载URL">
+            <el-input v-model="storageForm.download_url" placeholder="可选，留空使用 Endpoint" />
+          </el-form-item>
+        </template>
+        <el-form-item v-if="['minio', 'aws_s3', 'tencent_cos'].includes(storageForm.storage_type)" label="文件基础URL">
+          <el-input v-model="storageForm.file_base_url" placeholder="文件访问的基础URL" />
+        </el-form-item>
+        <el-form-item v-if="storageForm.storage_type === 'aliyunOSS'" label="Bucket URL">
+          <el-input v-model="storageForm.bucket_url" placeholder="如: https://bucket.oss-cn-hangzhou.aliyuncs.com" />
+        </el-form-item>
+        <el-form-item label="自定义域名">
+          <el-input v-model="storageForm.custom_domain" placeholder="CDN 自定义域名（可选）" />
+        </el-form-item>
+        <el-form-item label="设为默认">
+          <el-switch v-model="storageForm.is_default" :active-value="1" :inactive-value="0" />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-switch v-model="storageForm.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="禁用" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="storageFormVisible = false">取消</el-button>
+        <el-button type="primary" :loading="storageFormLoading" @click="handleStorageSubmit">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 推送存储配置确认弹窗 -->
+    <el-dialog v-model="pushDialogVisible" title="推送存储配置" width="400px" append-to-body>
+      <p>即将推送配置「{{ pushTarget.config_name }}」到商户 {{ storageMerchant.name }} 的服务器</p>
+      <p style="color: #909399; font-size: 13px; margin: 10px 0;">推送后将立即生效，请确保配置正确</p>
+      <el-input v-model="pushTarget.twofa_code" placeholder="请输入6位2FA验证码" maxlength="6" style="margin-top: 15px;" />
+      <template #footer>
+        <el-button @click="pushDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="pushLoading" @click="handlePush">确认推送</el-button>
       </template>
     </el-dialog>
   </div>
