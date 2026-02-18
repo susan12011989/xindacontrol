@@ -146,16 +146,16 @@ export const constantRoutes: RouteRecordRaw[] = [
       //     keepAlive: true
       //   }
       // },
-      // {
-      //   path: "clients",
-      //   component: () => import("@/pages/clients/list.vue"),
-      //   name: "GlobalClients",
-      //   meta: {
-      //     title: "客户端管理",
-      //     elIcon: "Iphone",
-      //     keepAlive: true
-      //   }
-      // },
+      {
+        path: "clients",
+        component: () => import("@/pages/clients/list.vue"),
+        name: "GlobalClients",
+        meta: {
+          title: "客户端管理",
+          elIcon: "Iphone",
+          keepAlive: true
+        }
+      },
       {
         path: "announcements",
         component: () => import("@/pages/announcements/index.vue"),
@@ -293,16 +293,6 @@ export const constantRoutes: RouteRecordRaw[] = [
         }
       },
       {
-        path: "versions",
-        component: () => import("@/pages/ops/versions/index.vue"),
-        name: "DeployVersions",
-        meta: {
-          title: "版本管理",
-          elIcon: "Files",
-          keepAlive: false
-        }
-      },
-      {
         path: "storage",
         component: () => import("@/pages/storage/merchant-storage.vue"),
         name: "DeployStorage",
@@ -319,6 +309,16 @@ export const constantRoutes: RouteRecordRaw[] = [
         meta: {
           title: "TLS证书",
           elIcon: "Lock",
+          keepAlive: false
+        }
+      },
+      {
+        path: "resources",
+        component: () => import("@/pages/resource-overview/index.vue"),
+        name: "DeployResources",
+        meta: {
+          title: "资源总览",
+          elIcon: "Grid",
           keepAlive: false
         }
       }

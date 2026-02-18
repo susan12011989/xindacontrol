@@ -160,6 +160,7 @@ function createDefaultInstance(): CreateInstanceData {
     disk_size: 40, // 默认40GB
     period_unit: "Month",
     period: 1,
+    auto_renew: true, // 默认开启自动续费
     use_password: false, // 默认使用SSH密钥对
     password: ""
   }
@@ -557,6 +558,14 @@ watch(() => selectedCloudAccount.value, (newVal) => {
                     <el-option v-for="n in [1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 24, 36, 48, 60]" :key="n" :label="`${n}个月`" :value="n" />
                   </template>
                 </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="自动续费">
+                <el-switch v-model="instance.auto_renew" active-text="开启" inactive-text="关闭" />
+                <div class="form-tip">
+                  到期后自动续费，续费周期与购买时长一致
+                </div>
               </el-form-item>
             </el-col>
           </el-row>

@@ -92,7 +92,15 @@ func UpdateGostServiceDetail(serverId int, name string, cfg *gostapi.ServiceConf
 	if err != nil {
 		return nil, err
 	}
-	return gostapi.UpdateService(host, name, cfg)
+	resp, err := gostapi.UpdateService(host, name, cfg)
+	if err != nil {
+		return resp, err
+	}
+	// 自动持久化到文件
+	if e := PersistGostConfig(serverId); e != nil {
+		logx.Errorf("UpdateGostServiceDetail 自动持久化失败(serverId=%d): %v", serverId, e)
+	}
+	return resp, nil
 }
 
 // GetGostChainDetail 获取指定 Chain 详情
@@ -110,7 +118,15 @@ func UpdateGostChainDetail(serverId int, name string, cfg *gostapi.ChainConfig) 
 	if err != nil {
 		return nil, err
 	}
-	return gostapi.UpdateChain(host, name, cfg)
+	resp, err := gostapi.UpdateChain(host, name, cfg)
+	if err != nil {
+		return resp, err
+	}
+	// 自动持久化到文件
+	if e := PersistGostConfig(serverId); e != nil {
+		logx.Errorf("UpdateGostChainDetail 自动持久化失败(serverId=%d): %v", serverId, e)
+	}
+	return resp, nil
 }
 
 // CreateGostServiceAPI 通过 CreateRelayTLSForward 统一创建
@@ -119,7 +135,15 @@ func CreateGostServiceAPI(serverId int, listenPort int, forwardHost string, forw
 	if err != nil {
 		return "", err
 	}
-	return gostapi.CreateRelayTLSForward(host, listenPort, forwardHost, forwardPort)
+	result, err := gostapi.CreateRelayTLSForward(host, listenPort, forwardHost, forwardPort)
+	if err != nil {
+		return result, err
+	}
+	// 自动持久化到文件
+	if e := PersistGostConfig(serverId); e != nil {
+		logx.Errorf("CreateGostServiceAPI 自动持久化失败(serverId=%d): %v", serverId, e)
+	}
+	return result, nil
 }
 
 // DeleteGostServiceAPI 直接按服务名删除服务及其对应的链
@@ -142,9 +166,9 @@ func DeleteGostServiceAPI(serverId int, name string) (*gostapi.Response, error) 
 		_, _ = gostapi.DeleteChain(host, chainName)
 	}
 
-	// 保存配置
-	if _, err := gostapi.SaveConfig(host, "yaml", ""); err != nil {
-		return nil, fmt.Errorf("服务删除成功，但保存配置失败: %w", err)
+	// 持久化到文件（替代不可靠的 GOST API SaveConfig）
+	if e := PersistGostConfig(serverId); e != nil {
+		logx.Errorf("DeleteGostServiceAPI 自动持久化失败(serverId=%d): %v", serverId, e)
 	}
 
 	return &gostapi.Response{Code: 200, Msg: "ok"}, nil
@@ -188,7 +212,15 @@ func CreateGostChainAPI(serverId int, listenPort int, forwardHost string, forwar
 	if err != nil {
 		return "", err
 	}
-	return gostapi.CreateRelayTLSForward(host, listenPort, forwardHost, forwardPort)
+	result, err := gostapi.CreateRelayTLSForward(host, listenPort, forwardHost, forwardPort)
+	if err != nil {
+		return result, err
+	}
+	// 自动持久化到文件
+	if e := PersistGostConfig(serverId); e != nil {
+		logx.Errorf("CreateGostChainAPI 自动持久化失败(serverId=%d): %v", serverId, e)
+	}
+	return result, nil
 }
 
 // DeleteGostChainAPI 直接按链名删除链及其对应的服务
@@ -211,9 +243,9 @@ func DeleteGostChainAPI(serverId int, name string) (*gostapi.Response, error) {
 		_, _ = gostapi.DeleteService(host, serviceName)
 	}
 
-	// 保存配置
-	if _, err := gostapi.SaveConfig(host, "yaml", ""); err != nil {
-		return nil, fmt.Errorf("链删除成功，但保存配置失败: %w", err)
+	// 持久化到文件（替代不可靠的 GOST API SaveConfig）
+	if e := PersistGostConfig(serverId); e != nil {
+		logx.Errorf("DeleteGostChainAPI 自动持久化失败(serverId=%d): %v", serverId, e)
 	}
 
 	return &gostapi.Response{Code: 200, Msg: "ok"}, nil
@@ -302,6 +334,11 @@ func SetupGostForward(req model.SetupGostForwardReq) error {
 		}
 	}
 
+	// 自动持久化到文件
+	if e := PersistGostConfig(req.ServerId); e != nil {
+		logx.Errorf("SetupGostForward 自动持久化失败(serverId=%d): %v", req.ServerId, e)
+	}
+
 	return nil
 }
 
@@ -333,6 +370,12 @@ func ClearGostForward(req model.ClearGostForwardReq) error {
 		_ = gostapi.ClearForwardTarget(host)       // TLS
 		_ = gostapi.ClearDirectForwardTarget(host) // TCP
 	}
+
+	// 自动持久化到文件
+	if e := PersistGostConfig(req.ServerId); e != nil {
+		logx.Errorf("ClearGostForward 自动持久化失败(serverId=%d): %v", req.ServerId, e)
+	}
+
 	return nil
 }
 

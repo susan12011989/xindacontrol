@@ -67,6 +67,21 @@ const featureLoading = ref(false)
 const featureFlagsVisible = ref(false)
 const featureFlags = ref<FeatureFlagResp[]>([])
 
+// 按商户分组的服务器列表
+const groupedServers = computed(() => {
+  const groups: { label: string; servers: any[] }[] = []
+  const map = new Map<string, any[]>()
+  for (const s of serverList.value) {
+    const key = s.merchant_name || "未分配商户"
+    if (!map.has(key)) map.set(key, [])
+    map.get(key)!.push(s)
+  }
+  for (const [label, servers] of map) {
+    groups.push({ label, servers })
+  }
+  return groups
+})
+
 // 加载服务器列表
 async function loadServers() {
   try {
@@ -534,13 +549,15 @@ watch(currentServerId, () => {
       <div class="flex justify-between items-center">
         <div class="flex items-center gap-4">
           <span class="text-base font-bold">服务器:</span>
-          <el-select v-model="currentServerId" placeholder="请选择服务器" style="width: 300px">
-            <el-option
-              v-for="server in serverList"
-              :key="server.id"
-              :label="`${server.name} (${server.host})`"
-              :value="server.id"
-            />
+          <el-select v-model="currentServerId" placeholder="请选择服务器" filterable style="width: 360px">
+            <el-option-group v-for="group in groupedServers" :key="group.label" :label="group.label">
+              <el-option
+                v-for="server in group.servers"
+                :key="server.id"
+                :label="`${server.name} (${server.host})`"
+                :value="server.id"
+              />
+            </el-option-group>
           </el-select>
           <span v-if="currentServerInfo.merchant_name" class="text-sm text-gray-500">
             商户: {{ currentServerInfo.merchant_name }}
@@ -804,19 +821,22 @@ watch(currentServerId, () => {
             </div>
           </template>
 
-          <!-- 服务器选择 -->
+          <!-- 服务器选择（按商户分组） -->
           <div class="mb-4">
             <el-checkbox-group v-model="selectedServerIds">
-              <el-checkbox
-                v-for="server in serverList"
-                :key="server.id"
-                :value="server.id"
-                :label="server.id"
-                border
-                class="mr-2 mb-2"
-              >
-                {{ server.name }} ({{ server.host }})
-              </el-checkbox>
+              <div v-for="group in groupedServers" :key="group.label" class="mb-3">
+                <div class="text-sm font-bold text-gray-500 mb-1">{{ group.label }}</div>
+                <el-checkbox
+                  v-for="server in group.servers"
+                  :key="server.id"
+                  :value="server.id"
+                  :label="server.id"
+                  border
+                  class="mr-2 mb-2"
+                >
+                  {{ server.name }} ({{ server.host }})
+                </el-checkbox>
+              </div>
             </el-checkbox-group>
           </div>
 

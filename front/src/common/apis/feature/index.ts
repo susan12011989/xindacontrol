@@ -46,3 +46,12 @@ export function initFeatureFlags(data: Feature.InitFeatureFlagsReq) {
     data
   })
 }
+
+/** 检查功能是否启用 */
+export function checkFeature(merchant_id: number, feature_name: string) {
+  return request<Feature.CheckFeatureResponseData>({
+    url: "feature/check",
+    method: "get",
+    params: { merchant_id, feature_name }
+  })
+}

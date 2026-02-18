@@ -44,8 +44,8 @@ func NewSPAHandler(fsys fs.FS, index string) http.Handler {
 
 			// 缓存策略
 			if strings.HasSuffix(name, ".html") {
-				// HTML 采用短期缓存，降低更新延迟风险
-				w.Header().Set("Cache-Control", "public, max-age=300")
+				// HTML 始终从服务器获取最新版本，避免部署后旧缓存引用已变更的 chunk
+				w.Header().Set("Cache-Control", "no-cache")
 			} else if hashedNamePattern.MatchString(name) {
 				// 仅对带 hash 的构建产物使用强缓存
 				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")

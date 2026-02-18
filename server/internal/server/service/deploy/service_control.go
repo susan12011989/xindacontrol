@@ -29,7 +29,7 @@ var serviceDockerNames = model.ServiceDockerNames
 var serviceConfigPaths = map[string]string{
 	"server":   "/opt/tsdd/configs/tsdd.yaml",
 	"wukongim": "/var/lib/docker/volumes/tsdd_wukongim_data/_data/wk.yaml",
-	"gost":     "/root/gost/gost.yaml",
+	"gost":     "/etc/gost/config.yaml",
 }
 
 // ServiceAction 执行服务操作（start/stop/restart）
@@ -337,7 +337,7 @@ func GetConfigFile(serverId int, serviceName string) (model.ConfigFileResp, erro
 	}
 
 	// 先检查文件是否存在
-	checkCmd := fmt.Sprintf("test -f '%s' && echo 'exists'", configPath)
+	checkCmd := fmt.Sprintf("sudo test -f '%s' && echo 'exists'", configPath)
 	checkOutput, _ := client.ExecuteCommand(checkCmd)
 	if strings.TrimSpace(checkOutput) != "exists" {
 		// 文件不存在，返回空内容（允许用户创建）
@@ -347,7 +347,7 @@ func GetConfigFile(serverId int, serviceName string) (model.ConfigFileResp, erro
 		return resp, nil
 	}
 
-	cmd := fmt.Sprintf("cat '%s'", configPath)
+	cmd := fmt.Sprintf("sudo cat '%s'", configPath)
 	content, err := client.ExecuteCommand(cmd)
 	if err != nil {
 		return resp, fmt.Errorf("读取配置文件失败: %v", err)
@@ -377,11 +377,15 @@ func UpdateConfigFile(serverId int, serviceName string, content string) (model.C
 	// 备份原配置
 	ts := time.Now().Format("20060102_150405")
 	backupPath := fmt.Sprintf("%s.%s.bak", configPath, ts)
-	client.ExecuteCommand(fmt.Sprintf("cp -f '%s' '%s' 2>/dev/null", configPath, backupPath))
+	client.ExecuteCommand(fmt.Sprintf("sudo cp -f '%s' '%s' 2>/dev/null", configPath, backupPath))
+
+	// 确保目录存在
+	dir := path.Dir(configPath)
+	client.ExecuteCommand(fmt.Sprintf("sudo mkdir -p '%s'", dir))
 
 	// 写入新配置
 	escapedContent := strings.ReplaceAll(content, "'", "'\"'\"'")
-	cmd := fmt.Sprintf("echo '%s' > '%s'", escapedContent, configPath)
+	cmd := fmt.Sprintf("echo '%s' | sudo tee '%s' > /dev/null", escapedContent, configPath)
 	if _, err = client.ExecuteCommand(cmd); err != nil {
 		return resp, fmt.Errorf("写入配置文件失败: %v", err)
 	}

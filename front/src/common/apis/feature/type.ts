@@ -63,7 +63,15 @@ export interface FeatureFlagOperationResponse {
   message: string
 }
 
+// 检查功能是否启用响应
+export interface CheckFeatureResp {
+  merchant_id: number
+  feature_name: string
+  enabled: boolean
+}
+
 // API 响应类型
 export type FeatureDefinitionsResponseData = ApiResponseData<{ list: FeatureDefinition[] }>
 export type QueryFeatureFlagsResponseData = ApiResponseData<QueryFeatureFlagsResponse>
 export type FeatureFlagOperationResponseData = ApiResponseData<FeatureFlagOperationResponse>
+export type CheckFeatureResponseData = ApiResponseData<CheckFeatureResp>

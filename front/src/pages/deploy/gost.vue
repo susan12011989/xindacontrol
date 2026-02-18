@@ -2,7 +2,8 @@
 import type { DeployGostServerReq, ServerResp } from "@@/apis/deploy/type"
 import type { MerchantResp } from "@@/apis/merchant/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
-import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus, getProgramConfig, updateProgramConfig, getNginxCacheStatus, clearNginxCache } from "@@/apis/deploy"
+import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus, getProgramConfig, updateProgramConfig, getNginxCacheStatus, clearNginxCache, persistGostConfig, getGostConfigSyncStatus } from "@@/apis/deploy"
+import type { GostConfigSyncStatusResp } from "@@/apis/deploy/type"
 import { getMerchantList } from "@@/apis/merchant"
 import { getCloudAccountList } from "@@/apis/cloud_account"
 import { createStreamRequest } from "@/http/axios"
@@ -130,6 +131,7 @@ async function loadServerList() {
     }
     if (selectedServerId.value) {
       await loadRecords()
+      loadSyncStatus()
     }
   } catch (error) {
     console.error("获取服务器列表失败:", error)
@@ -192,6 +194,7 @@ function onSubmitCreateForm() {
       xCreateModalDom.value?.close()
       ElMessage.success("创建成功")
       loadRecords()
+      loadSyncStatus()
     } finally {
       xCreateFormOpt.loading = false
     }
@@ -431,6 +434,7 @@ const crudStore = reactive({
         ElMessage.success((res as any).msg || (res as any).message || "保存成功")
         xModalDom.value?.close()
         loadRecords()
+        loadSyncStatus()
       } catch {
         // ignore
       } finally {
@@ -460,6 +464,7 @@ async function onDelete(row: any) {
     await deleteGostServiceByAPI({ server_id: selectedServerId.value, service_name: row.name })
     ElMessage.success("删除成功")
     loadRecords()
+    loadSyncStatus()
   } catch {
     // ignore
   }
@@ -468,6 +473,7 @@ async function onDelete(row: any) {
 watch(selectedServerId, () => {
   if (selectedServerId.value) {
     loadRecords()
+    loadSyncStatus()
   }
 })
 
@@ -523,6 +529,7 @@ async function doSetupForward() {
     ElMessage.success(`转发配置成功! (${forwardForm.mode === "tls" ? "TLS加密" : "TCP直连"})`)
     forwardDialogVisible.value = false
     loadRecords()
+    loadSyncStatus()
   } catch (e: any) {
     ElMessage.error(e?.message || "配置失败")
   } finally {
@@ -542,6 +549,7 @@ async function doClearForward() {
     await clearGostForward({ server_id: selectedServerId.value })
     ElMessage.success("转发规则已清除")
     loadRecords()
+    loadSyncStatus()
   } catch (e: any) {
     ElMessage.error(e?.message || "清除失败")
   }
@@ -682,6 +690,38 @@ function startInstallNginx() {
   )
 }
 
+// ========== GOST 配置同步状态 ==========
+const configSyncStatus = ref<GostConfigSyncStatusResp | null>(null)
+const isSyncLoading = ref(false)
+const isPersisting = ref(false)
+
+async function loadSyncStatus() {
+  if (!selectedServerId.value) return
+  isSyncLoading.value = true
+  try {
+    const res = await getGostConfigSyncStatus(selectedServerId.value)
+    configSyncStatus.value = res.data
+  } catch {
+    configSyncStatus.value = null
+  } finally {
+    isSyncLoading.value = false
+  }
+}
+
+async function doPersistConfig() {
+  if (!selectedServerId.value) return
+  isPersisting.value = true
+  try {
+    await persistGostConfig({ server_id: selectedServerId.value })
+    ElMessage.success("配置已保存到文件")
+    await loadSyncStatus()
+  } catch (e: any) {
+    ElMessage.error(e?.message || "保存失败")
+  } finally {
+    isPersisting.value = false
+  }
+}
+
 // ========== 生命周期 ==========
 onMounted(() => {
   loadServerList()
@@ -727,6 +767,27 @@ onMounted(() => {
         <el-button type="danger" icon="Delete" @click="doClearForward">清除转发</el-button>
         <el-divider direction="vertical" />
         <el-button type="warning" icon="Document" @click="openConfigDialog">配置文件</el-button>
+        <el-divider direction="vertical" />
+        <!-- 配置同步状态 -->
+        <el-tooltip v-if="configSyncStatus" :content="configSyncStatus.message" placement="bottom">
+          <el-tag
+            :type="configSyncStatus.synced ? 'success' : 'warning'"
+            style="cursor: pointer"
+            @click="loadSyncStatus"
+          >
+            {{ configSyncStatus.synced ? '已同步' : '未同步' }}
+            <span v-if="!configSyncStatus.synced" class="text-xs">
+              (运行:{{ configSyncStatus.running_service_count }} / 文件:{{ configSyncStatus.file_service_count }})
+            </span>
+          </el-tag>
+        </el-tooltip>
+        <el-button
+          type="success"
+          icon="Download"
+          :loading="isPersisting"
+          :disabled="configSyncStatus?.synced === true"
+          @click="doPersistConfig"
+        >保存到文件</el-button>
         <el-divider direction="vertical" />
         <el-button type="info" icon="Box" @click="openCacheDialog">缓存管理</el-button>
         <el-divider direction="vertical" />

@@ -193,6 +193,14 @@ export interface ArtifactListReq {
   platform?: string
 }
 
+/** 任务实时进度 */
+export interface BuildTaskProgress {
+  task_id: number
+  status: number
+  progress: number
+  current_step: string
+}
+
 /** 构建统计 */
 export interface BuildStats {
   today: {

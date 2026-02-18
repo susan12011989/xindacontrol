@@ -356,3 +356,20 @@ type NginxCacheStatusResp struct {
 type InstallNginxReq struct {
 	ServerId int `json:"server_id" binding:"required"` // 系统服务器ID
 }
+
+// ========== GOST 配置持久化 ==========
+
+// 持久化 GOST 配置请求
+type PersistGostConfigReq struct {
+	ServerId int `json:"server_id" binding:"required"`
+}
+
+// GOST 配置同步状态响应
+type GostConfigSyncStatusResp struct {
+	Synced              bool   `json:"synced"`                // 是否同步
+	RunningServiceCount int    `json:"running_service_count"` // 运行中的服务数
+	RunningChainCount   int    `json:"running_chain_count"`   // 运行中的链数
+	FileServiceCount    int    `json:"file_service_count"`    // 文件中的服务数
+	FileChainCount      int    `json:"file_chain_count"`      // 文件中的链数
+	Message             string `json:"message"`               // 状态描述
+}

@@ -1,6 +1,6 @@
 import type { AxiosProgressEvent } from "axios"
 import type * as Deploy from "./type"
-import { request } from "@/http/axios"
+import { createStreamRequest, request } from "@/http/axios"
 
 // ========== 服务器管理 ==========
 
@@ -308,79 +308,6 @@ export function queryLogs(data: Deploy.LogQueryReq) {
   })
 }
 
-// ========== 版本管理 ==========
-
-/** 获取版本列表 */
-export function listVersions(params?: Deploy.ListVersionsReq) {
-  return request<Deploy.ListVersionsResponseData>({
-    url: "deploy/versions",
-    method: "get",
-    params
-  })
-}
-
-/** 上传新版本 */
-export function uploadVersion(form: FormData, onProgress?: (percent: number) => void) {
-  return request<Deploy.VersionInfoResponseData>({
-    url: "deploy/versions/upload",
-    method: "post",
-    data: form,
-    timeout: 300000, // 5分钟超时
-    onUploadProgress: (evt) => {
-      const total = evt.total || 0
-      if (total > 0) {
-        const percent = Math.round((evt.loaded * 100) / total)
-        onProgress?.(percent)
-      }
-    }
-  })
-}
-
-/** 删除版本 */
-export function deleteVersion(id: number) {
-  return request<{ code: number; data: { message: string }; message: string }>({
-    url: `deploy/versions/${id}`,
-    method: "delete"
-  })
-}
-
-/** 设为当前版本 */
-export function setCurrentVersion(id: number) {
-  return request<{ code: number; data: { message: string }; message: string }>({
-    url: `deploy/versions/${id}/set-current`,
-    method: "post"
-  })
-}
-
-/** 部署版本到服务器 */
-export function deployVersion(data: Deploy.DeployVersionReq) {
-  return request<Deploy.DeployVersionResponseData>({
-    url: "deploy/versions/deploy",
-    method: "post",
-    data,
-    timeout: 600000 // 10分钟超时
-  })
-}
-
-/** 回滚版本 */
-export function rollbackVersion(data: Deploy.RollbackReq) {
-  return request<Deploy.RollbackResponseData>({
-    url: "deploy/versions/rollback",
-    method: "post",
-    data,
-    timeout: 120000 // 2分钟超时
-  })
-}
-
-/** 获取部署历史 */
-export function getDeploymentHistory(params?: Deploy.DeploymentHistoryReq) {
-  return request<Deploy.DeploymentHistoryResponseData>({
-    url: "deploy/deployment-history",
-    method: "get",
-    params
-  })
-}
-
 // ========== TSDD AMI 部署 ==========
 
 /** 使用 AMI 部署 TSDD 服务器 */
@@ -391,6 +318,71 @@ export function deployTSDDWithAMI(data: Deploy.DeployTSDDWithAMIReq) {
     data,
     timeout: 600000 // 10分钟超时，AMI 部署需要时间
   })
+}
+
+// ========== TSDD Docker 部署 ==========
+
+/** 部署 TSDD 到已注册服务器 */
+export function deployTSDD(data: Deploy.DeployTSDDReq) {
+  return request<Deploy.DeployTSDDResponseData>({
+    url: "deploy/tsdd/deploy",
+    method: "post",
+    data,
+    timeout: 600000 // 10分钟超时
+  })
+}
+
+/** 通过IP部署 TSDD（新服务器） */
+export function deployTSDDByIP(data: Deploy.DeployTSDDByIPReq) {
+  return request<Deploy.DeployTSDDResponseData>({
+    url: "deploy/tsdd/deploy-by-ip",
+    method: "post",
+    data,
+    timeout: 600000
+  })
+}
+
+/** 获取服务器部署状态 */
+export function getDeployStatus(server_id: number) {
+  return request<Deploy.GetDeployStatusResponseData>({
+    url: "deploy/tsdd/status",
+    method: "get",
+    params: { server_id }
+  })
+}
+
+// ========== GOST 一键部署（流式API） ==========
+
+/** 一键部署 GOST 转发服务器（流式） */
+export function deployGostServer(data: Deploy.DeployGostServerReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
+  return createStreamRequest({
+    url: "deploy/gost/deploy",
+    method: "post",
+    data,
+    timeout: 600000
+  }, onData, onError)
+}
+
+/** 在已有服务器上安装 GOST（流式） */
+export function installGostToServer(data: Deploy.InstallGostReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
+  return createStreamRequest({
+    url: "deploy/gost/install",
+    method: "post",
+    data,
+    timeout: 600000
+  }, onData, onError)
+}
+
+// ========== Nginx 安装（流式API） ==========
+
+/** 安装 Nginx 到系统服务器（流式） */
+export function installNginx(data: Deploy.InstallNginxReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
+  return createStreamRequest({
+    url: "deploy/nginx/install",
+    method: "post",
+    data,
+    timeout: 600000
+  }, onData, onError)
 }
 
 // ========== GOST 转发配置（一键部署） ==========
@@ -417,6 +409,27 @@ export function clearGostForward(data: Deploy.ClearGostForwardReq) {
 export function getGostForwardStatus(server_id: number) {
   return request<Deploy.GostForwardStatusResponseData>({
     url: "deploy/gost/forward/status",
+    method: "get",
+    params: { server_id }
+  })
+}
+
+// ========== GOST 配置持久化 ==========
+
+/** 持久化 GOST 运行配置到文件 */
+export function persistGostConfig(data: { server_id: number }) {
+  return request<{ code: number; data: { message: string }; message: string }>({
+    url: "deploy/gost/config/persist",
+    method: "post",
+    data,
+    timeout: 30000
+  })
+}
+
+/** 获取 GOST 配置同步状态 */
+export function getGostConfigSyncStatus(server_id: number) {
+  return request<Deploy.GostConfigSyncStatusResponseData>({
+    url: "deploy/gost/config/sync-status",
     method: "get",
     params: { server_id }
   })

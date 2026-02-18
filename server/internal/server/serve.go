@@ -11,6 +11,7 @@ import (
 	"server/internal/server/router/announcements"
 	"server/internal/server/router/audit"
 	"server/internal/server/router/auth"
+	"server/internal/server/router/clients"
 	"server/internal/server/router/cloud_account"
 	"server/internal/server/router/cloud_aliyun"
 	"server/internal/server/router/cloud_aws"
@@ -25,6 +26,7 @@ import (
 	"server/internal/server/router/merchant_api"
 	"server/internal/server/router/merchant_storage"
 	"server/internal/server/router/project"
+	"server/internal/server/router/resource_overview"
 	"server/internal/server/router/utils"
 	"server/internal/server/static"
 	"server/pkg/consts"
@@ -56,11 +58,16 @@ func Serve(ctx context.Context) {
 	_ = dbs.DBAdmin.Sync2(new(entity.IpEmbedTargets))
 	// 自动创建表：IP嵌入选择记录
 	_ = dbs.DBAdmin.Sync2(new(entity.IpEmbedSelections))
+	// 自动创建表：客户端管理
+	_ = dbs.DBAdmin.Sync2(new(entity.Clients))
 	// 自动创建表：操作审计日志
 	_ = dbs.DBAdmin.Sync2(new(entity.AuditLogs))
 	// 自动创建表：告警规则和日志
 	_ = dbs.DBAdmin.Sync2(new(entity.AlertRules))
 	_ = dbs.DBAdmin.Sync2(new(entity.AlertLogs))
+	// 自动创建表：资源标签
+	_ = dbs.DBAdmin.Sync2(new(entity.ResourceTags))
+	_ = dbs.DBAdmin.Sync2(new(entity.ResourceTagRelations))
 	// http api
 	ge := gin.Default()
 
@@ -108,7 +115,9 @@ func Serve(ctx context.Context) {
 	announcements.Routes(group) // 系统公告
 	audit.Routes(group)            // 操作审计日志
 	alert.Routes(group)            // 告警通知管理
-	merchant_storage.Routes(group) // 商户存储配置管理
+	merchant_storage.Routes(group)  // 商户存储配置管理
+	resource_overview.Routes(group) // 资源总览
+	clients.Routes(group)           // 客户端管理
 
 	// 配置静态文件服务（前端页面 + SPA 回退）
 	fsys := static.FS()

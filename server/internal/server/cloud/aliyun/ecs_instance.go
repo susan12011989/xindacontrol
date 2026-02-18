@@ -44,6 +44,8 @@ type CreateInstanceRequest struct {
 	UsePassword   bool   `json:"use_password"`    // 是否使用密码认证（true=密码认证，false=自动创建密钥对）
 	KeyPairName   string `json:"key_pair_name"`   // SSH密钥对名称（阿里云密钥对名称，可选）
 	SshPrivateKey string `json:"ssh_private_key"` // SSH私钥内容（PEM格式，用于保存到数据库）
+	AutoRenew     bool   `json:"auto_renew"`      // 是否自动续费（仅包年包月生效）
+	AutoRenewPeriod int32 `json:"auto_renew_period"` // 自动续费周期（月），默认与购买周期一致
 }
 
 // CreateInstanceResult 创建实例的结果
@@ -191,6 +193,14 @@ func CreateInstance(req *CreateInstanceRequest) (*CreateInstanceResult, error) {
 	if req.InstanceChargeType == "PrePaid" {
 		request.PeriodUnit = tea.String(req.PeriodUnit)
 		request.Period = tea.Int32(req.Period)
+		if req.AutoRenew {
+			request.AutoRenew = tea.Bool(true)
+			if req.AutoRenewPeriod > 0 {
+				request.AutoRenewPeriod = tea.Int32(req.AutoRenewPeriod)
+			} else {
+				request.AutoRenewPeriod = tea.Int32(req.Period)
+			}
+		}
 	}
 
 	response, err := client.CreateInstance(request)

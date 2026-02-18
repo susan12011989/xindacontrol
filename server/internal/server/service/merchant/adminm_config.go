@@ -22,11 +22,8 @@ func getMerchantAPIURL(merchantNo string, path string) (string, error) {
 	if merchant.ServerIP == "" {
 		return "", fmt.Errorf("商户服务器IP为空")
 	}
-	// 使用商户配置的端口，默认 8084（商户后台管理端口）
-	port := merchant.Port
-	if port == 0 {
-		port = 8084
-	}
+	// 使用商户 tsdd-server API 端口（默认5003）
+	port := 5003
 	return fmt.Sprintf("http://%s:%d%s", merchant.ServerIP, port, path), nil
 }
 
@@ -194,3 +191,4 @@ func ClearMerchantData(merchantNo string) error {
 	logx.Infof("商户数据已清除: merchant=%s", merchantNo)
 	return nil
 }
+

@@ -9,6 +9,7 @@ import (
 	"server/internal/server/middleware"
 	"server/internal/server/service/audit"
 	"server/internal/server/service/merchant"
+	resourceOverview "server/internal/server/service/resource_overview"
 	"server/pkg/consts"
 	"server/pkg/entity"
 	"server/pkg/result"
@@ -39,6 +40,7 @@ func Routes(ge gin.IRouter) {
 	merchantGroup.POST("/:id/oss-configs", createMerchantOssConfig)
 	merchantGroup.PUT("/oss-configs/:config_id", updateMerchantOssConfig)
 	merchantGroup.DELETE("/oss-configs/:config_id", deleteMerchantOssConfig)
+	merchantGroup.POST("/:id/check-oss-health", checkMerchantOssHealth)
 
 	// 商户 GOST 服务器管理
 	merchantGroup.GET("/:id/gost-servers", listMerchantGostServers)
@@ -349,6 +351,33 @@ func updateMerchantOssConfig(c *gin.Context) {
 		return
 	}
 	result.GOK(c, nil)
+}
+
+// 检测商户 OSS 健康状态
+func checkMerchantOssHealth(c *gin.Context) {
+	merchantId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+
+	// 获取该商户的所有 OSS 配置 ID
+	configs, err := merchant.ListMerchantOssConfigs(merchantId)
+	if err != nil {
+		result.GErr(c, err)
+		return
+	}
+	ids := make([]int, len(configs))
+	for i, cfg := range configs {
+		ids[i] = cfg.Id
+	}
+	if len(ids) == 0 {
+		result.GOK(c, []interface{}{})
+		return
+	}
+
+	data := resourceOverview.CheckOssHealth(ids)
+	result.GOK(c, data)
 }
 
 // 删除商户 OSS 配置

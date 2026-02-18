@@ -225,7 +225,7 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 		Broadcast   bool              `json:"broadcast"`
 		Config      *entity.SmsConfig `json:"config"`
 	}
-	group.POST("sms_config", func(c *gin.Context) {
+	group.POST("sms", func(c *gin.Context) {
 		var req smsSaveReq
 		if err := c.ShouldBindJSON(&req); err != nil {
 			result.GParamErr(c, err)
@@ -293,6 +293,7 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 		}
 		result.GOK(c, gin.H{"updated": successCount, "total": len(req.MerchantNos)})
 	})
+
 
 	// 清除商户数据
 	group.POST("clear_data", func(c *gin.Context) {

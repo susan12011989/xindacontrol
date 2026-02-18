@@ -209,6 +209,10 @@ func UpdateMerchantOssConfig(id int, req MerchantOssConfigReq) error {
 // DeleteMerchantOssConfig 删除商户 OSS 配置
 func DeleteMerchantOssConfig(id int) error {
 	_, err := dbs.DBAdmin.ID(id).Delete(&entity.MerchantOssConfigs{})
+	if err == nil {
+		// 清理关联的标签
+		_, _ = dbs.DBAdmin.Where("resource_type = ? AND resource_id = ?", entity.ResourceTypeOssConfig, id).Delete(&entity.ResourceTagRelations{})
+	}
 	return err
 }
 
@@ -419,6 +423,10 @@ func UpdateMerchantGostServer(id int, req MerchantGostServerReq) error {
 // DeleteMerchantGostServer 删除商户 GOST 服务器关联
 func DeleteMerchantGostServer(id int) error {
 	_, err := dbs.DBAdmin.ID(id).Delete(&entity.MerchantGostServers{})
+	if err == nil {
+		// 清理关联的标签
+		_, _ = dbs.DBAdmin.Where("resource_type = ? AND resource_id = ?", entity.ResourceTypeGostServer, id).Delete(&entity.ResourceTagRelations{})
+	}
 	return err
 }
 

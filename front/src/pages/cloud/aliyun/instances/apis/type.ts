@@ -92,6 +92,9 @@ export interface CreateInstanceData {
   // PeriodUnit=Week 时，Period 取值：1、2、3、4
   // PeriodUnit=Month 时，Period 取值：1、2、3、4、5、6、7、8、9、12、24、36、48、60。
   period?: number // 时长
+  // 自动续费（仅包年包月生效）
+  auto_renew?: boolean // 是否自动续费
+  auto_renew_period?: number // 自动续费周期（月），默认与购买周期一致
   // SSH认证信息（用于自动注册服务器）
   use_password?: boolean // 是否使用密码认证（true=密码，false=自动创建密钥对）
   password?: string // SSH登录密码，8-30个字符，必须包含大小写字母、数字

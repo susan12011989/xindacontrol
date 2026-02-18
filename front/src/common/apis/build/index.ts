@@ -103,6 +103,14 @@ export function retryBuildTask(id: number) {
   })
 }
 
+/** 获取构建任务实时进度 */
+export function getTaskProgress(id: number) {
+  return request<Build.BuildTaskProgress>({
+    url: `/build/tasks/${id}/progress`,
+    method: "get",
+  })
+}
+
 // ========== 产物管理 ==========
 
 /** 获取构建产物列表 */

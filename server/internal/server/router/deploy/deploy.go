@@ -88,6 +88,10 @@ func Routes(gi gin.IRouter) {
 	group.DELETE("gost/forward/clear", clearGostForward)   // 清除转发规则
 	group.GET("gost/forward/status", getGostForwardStatus) // 获取转发状态
 
+	// GOST 配置持久化
+	group.POST("gost/config/persist", persistGostConfig)          // 持久化运行配置到文件
+	group.GET("gost/config/sync-status", getGostConfigSyncStatus) // 获取配置同步状态
+
 	// Nginx 缓存管理
 	group.POST("nginx/install", installNginx)           // 安装 Nginx（流式API）
 	group.GET("nginx/cache/status", getNginxCacheStatus) // 获取缓存状态
@@ -117,14 +121,6 @@ func Routes(gi gin.IRouter) {
 	group.POST("tls/upgrade", batchUpgradeTls)                // 批量升级为 TLS
 	group.POST("tls/rollback", batchRollbackTls)              // 批量回滚为 TCP
 
-	// ========== 版本管理 ==========
-	group.GET("versions", listVersions)                    // 版本列表
-	group.POST("versions/upload", uploadVersion)           // 上传新版本
-	group.DELETE("versions/:id", deleteVersion)            // 删除版本
-	group.POST("versions/:id/set-current", setCurrentVersion) // 设为当前版本
-	group.POST("versions/deploy", deployVersion)           // 部署版本到服务器
-	group.POST("versions/rollback", rollbackVersion)       // 回滚版本
-	group.GET("deployment-history", getDeploymentHistory)  // 部署历史
 }
 
 // listServers 查询服务器列表
@@ -955,159 +951,6 @@ func queryLogs(ctx *gin.Context) {
 	result.GOK(ctx, data)
 }
 
-// ========== 版本管理 ==========
-
-// listVersions 获取版本列表
-func listVersions(ctx *gin.Context) {
-	var req model.ListVersionsReq
-	if err := ctx.ShouldBindQuery(&req); err != nil {
-		result.GParamErr(ctx, err)
-		return
-	}
-
-	data, err := deployService.ListVersions(req)
-	if err != nil {
-		result.GErr(ctx, err)
-		return
-	}
-
-	result.GOK(ctx, data)
-}
-
-// uploadVersion 上传新版本
-func uploadVersion(ctx *gin.Context) {
-	serviceName := ctx.PostForm("service_name")
-	if serviceName != "server" && serviceName != "wukongim" {
-		result.GParamErr(ctx, fmt.Errorf("仅支持上传 server 或 wukongim"))
-		return
-	}
-
-	version := ctx.PostForm("version")
-	if version == "" {
-		result.GParamErr(ctx, fmt.Errorf("version 不能为空"))
-		return
-	}
-
-	changelog := ctx.PostForm("changelog")
-
-	file, _, err := ctx.Request.FormFile("file")
-	if err != nil {
-		result.GParamErr(ctx, fmt.Errorf("读取文件失败: %v", err))
-		return
-	}
-	defer file.Close()
-
-	operator := middleware.GetUsername(ctx)
-	if operator == "" {
-		operator = "admin"
-	}
-
-	data, err := deployService.UploadVersion(serviceName, version, changelog, operator, file)
-	if err != nil {
-		result.GErr(ctx, err)
-		return
-	}
-
-	result.GOK(ctx, data)
-}
-
-// deleteVersion 删除版本
-func deleteVersion(ctx *gin.Context) {
-	idStr := ctx.Param("id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		result.GParamErr(ctx, err)
-		return
-	}
-
-	err = deployService.DeleteVersion(id)
-	if err != nil {
-		result.GErr(ctx, err)
-		return
-	}
-
-	result.GOK(ctx, gin.H{"message": "删除成功"})
-}
-
-// setCurrentVersion 设置当前版本
-func setCurrentVersion(ctx *gin.Context) {
-	idStr := ctx.Param("id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		result.GParamErr(ctx, err)
-		return
-	}
-
-	err = deployService.SetCurrentVersion(id)
-	if err != nil {
-		result.GErr(ctx, err)
-		return
-	}
-
-	result.GOK(ctx, gin.H{"message": "设置成功"})
-}
-
-// deployVersion 部署版本到服务器
-func deployVersion(ctx *gin.Context) {
-	var req model.DeployVersionReq
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		result.GParamErr(ctx, err)
-		return
-	}
-
-	operator := middleware.GetUsername(ctx)
-	if operator == "" {
-		operator = "admin"
-	}
-
-	data, err := deployService.DeployVersion(req, operator)
-	if err != nil {
-		result.GErr(ctx, err)
-		return
-	}
-
-	result.GOK(ctx, data)
-}
-
-// rollbackVersion 回滚版本
-func rollbackVersion(ctx *gin.Context) {
-	var req model.RollbackReq
-	if err := ctx.ShouldBindJSON(&req); err != nil {
-		result.GParamErr(ctx, err)
-		return
-	}
-
-	operator := middleware.GetUsername(ctx)
-	if operator == "" {
-		operator = "admin"
-	}
-
-	data, err := deployService.RollbackVersion(req, operator)
-	if err != nil {
-		result.GErr(ctx, err)
-		return
-	}
-
-	result.GOK(ctx, data)
-}
-
-// getDeploymentHistory 获取部署历史
-func getDeploymentHistory(ctx *gin.Context) {
-	var req model.DeploymentHistoryReq
-	if err := ctx.ShouldBindQuery(&req); err != nil {
-		result.GParamErr(ctx, err)
-		return
-	}
-
-	data, err := deployService.GetDeploymentHistory(req)
-	if err != nil {
-		result.GErr(ctx, err)
-		return
-	}
-
-	result.GOK(ctx, data)
-}
-
 // ========== GOST 转发配置（一键部署） ==========
 
 // setupGostForward 配置 GOST 转发目标
@@ -1153,6 +996,42 @@ func getGostForwardStatus(ctx *gin.Context) {
 	}
 
 	data, err := deployService.GetGostForwardStatus(serverID)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// ========== GOST 配置持久化 ==========
+
+// persistGostConfig 持久化 GOST 运行配置到文件
+func persistGostConfig(ctx *gin.Context) {
+	var req model.PersistGostConfigReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	err := deployService.PersistGostConfig(req.ServerId)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, gin.H{"message": "配置已保存到文件"})
+}
+
+// getGostConfigSyncStatus 获取 GOST 配置同步状态
+func getGostConfigSyncStatus(ctx *gin.Context) {
+	serverID, _ := strconv.Atoi(ctx.Query("server_id"))
+	if serverID == 0 {
+		result.GParamErr(ctx, fmt.Errorf("server_id 不能为空"))
+		return
+	}
+
+	data, err := deployService.GetGostConfigSyncStatus(serverID)
 	if err != nil {
 		result.GErr(ctx, err)
 		return

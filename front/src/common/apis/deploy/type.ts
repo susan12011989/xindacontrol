@@ -477,117 +477,6 @@ export type BatchHealthCheckResponseData = ApiResponseData<BatchHealthCheckResp>
 export type BatchCommandResponseData = ApiResponseData<BatchCommandResp>
 export type LogQueryResponseData = ApiResponseData<LogQueryResp>
 
-// ========== 版本管理 ==========
-
-// 版本列表请求
-export interface ListVersionsReq {
-  service_name?: string
-  page?: number
-  page_size?: number
-}
-
-// 版本信息
-export interface VersionInfo {
-  id: number
-  service_name: string
-  version: string
-  file_hash: string
-  file_size: number
-  file_path: string
-  changelog: string
-  is_current: boolean
-  uploaded_by: string
-  created_at: string
-}
-
-// 版本列表响应
-export interface ListVersionsResp {
-  total: number
-  list: VersionInfo[]
-}
-
-// 部署版本请求
-export interface DeployVersionReq {
-  version_id: number
-  server_ids: number[]
-  parallel?: boolean
-}
-
-// 部署结果
-export interface DeployResult {
-  server_id: number
-  server_name: string
-  success: boolean
-  message: string
-  duration: number
-}
-
-// 部署版本响应
-export interface DeployVersionResp {
-  total: number
-  success: number
-  failed: number
-  results: DeployResult[]
-  started_at: string
-  ended_at: string
-}
-
-// 回滚请求
-export interface RollbackReq {
-  server_id: number
-  service_name: string
-}
-
-// 回滚响应
-export interface RollbackResp {
-  success: boolean
-  message: string
-  rolled_back_to: string
-  previous_version: string
-}
-
-// 部署历史请求
-export interface DeploymentHistoryReq {
-  server_id?: number
-  service_name?: string
-  page?: number
-  page_size?: number
-}
-
-// 部署记录
-export interface DeploymentRecord {
-  id: number
-  server_id: number
-  server_name: string
-  service_name: string
-  version_id: number
-  version: string
-  previous_version_id: number
-  previous_version: string
-  action: string
-  status: number
-  status_text: string
-  operator: string
-  backup_path: string
-  output: string
-  started_at: string
-  completed_at: string
-  created_at: string
-}
-
-// 部署历史响应
-export interface DeploymentHistoryResp {
-  total: number
-  list: DeploymentRecord[]
-}
-
-// 版本管理响应类型
-export type ListVersionsResponseData = ApiResponseData<ListVersionsResp>
-export type VersionInfoResponseData = ApiResponseData<VersionInfo>
-export type DeployVersionResponseData = ApiResponseData<DeployVersionResp>
-export type RollbackResponseData = ApiResponseData<RollbackResp>
-export type DeploymentHistoryResponseData = ApiResponseData<DeploymentHistoryResp>
-
 // ========== TSDD AMI 部署 ==========
 
 // 使用 AMI 部署 TSDD 请求
@@ -617,6 +506,64 @@ export interface DeployTSDDWithAMIResp {
 }
 
 export type DeployTSDDWithAMIResponseData = ApiResponseData<DeployTSDDWithAMIResp>
+
+// ========== TSDD Docker 部署 ==========
+
+// 部署 TSDD 到已注册服务器
+export interface DeployTSDDReq {
+  server_id: number // 目标服务器ID
+  merchant_id: number // 商户ID（用于获取配置）
+  use_images?: boolean // true=使用官方镜像, false=使用自定义二进制
+  force_reset?: boolean // 强制重置（删除现有容器和数据）
+}
+
+// 通过IP直接部署 TSDD（新服务器，未注册到系统）
+export interface DeployTSDDByIPReq {
+  host: string // 服务器IP
+  port?: number // SSH端口，默认22
+  username?: string // SSH用户名，默认root
+  password: string // SSH密码
+  merchant_id: number // 商户ID
+  server_name?: string // 服务器名称（用于注册）
+  use_images?: boolean // true=使用官方镜像
+  force_reset?: boolean // 强制重置
+}
+
+// 部署步骤
+export interface DeployStep {
+  name: string // 步骤名称
+  status: string // pending/running/success/failed
+  message: string // 详细信息
+  output: string // 命令输出
+}
+
+// 部署 TSDD 响应
+export interface DeployTSDDResp {
+  success: boolean
+  message: string
+  steps: DeployStep[] // 各步骤执行结果
+  server_id: number // 服务器ID（新注册时返回）
+  api_url?: string // 部署后的API地址
+  web_url?: string // 部署后的Web地址
+  admin_url?: string // 管理后台地址
+}
+
+// 获取部署状态请求
+export interface GetDeployStatusReq {
+  server_id: number
+}
+
+// 部署状态响应
+export interface GetDeployStatusResp {
+  deployed: boolean // 是否已部署
+  services: string[] // 已部署的服务列表
+  healthy: boolean // 服务是否健康
+  last_deploy: string // 最后部署时间
+  version: string // 部署版本
+}
+
+export type DeployTSDDResponseData = ApiResponseData<DeployTSDDResp>
+export type GetDeployStatusResponseData = ApiResponseData<GetDeployStatusResp>
 
 // ========== GOST 转发配置（一键部署） ==========
 
@@ -651,6 +598,20 @@ export interface GostForwardStatusResp {
 }
 
 export type GostForwardStatusResponseData = ApiResponseData<GostForwardStatusResp>
+
+// ========== GOST 配置持久化 ==========
+
+// GOST 配置同步状态响应
+export interface GostConfigSyncStatusResp {
+  synced: boolean
+  running_service_count: number
+  running_chain_count: number
+  file_service_count: number
+  file_chain_count: number
+  message: string
+}
+
+export type GostConfigSyncStatusResponseData = ApiResponseData<GostConfigSyncStatusResp>
 
 // ========== Nginx 缓存管理 ==========
 

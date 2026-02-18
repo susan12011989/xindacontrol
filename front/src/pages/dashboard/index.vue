@@ -392,8 +392,8 @@ function resetSmsForm() {
 async function fetchSmsConfig(merchantNo: string) {
   configLoading.value = true
   try {
-    const res = await getAdminmSmsConfigApi(merchantNo)
-    const data = res.data
+    const smsRes = await getAdminmSmsConfigApi(merchantNo)
+    const data = smsRes.data
     if (data) {
       smsConfigForm.provider = data.provider || "aliyun"
       smsConfigForm.region_id = data.region_id || ""
@@ -422,9 +422,11 @@ function openSmsConfig(row: any) {
   if (!row?.no) return
   configMerchantNo.value = row.no
   resetSmsForm()
+  selectedSmsClientId.value = undefined
   configDialogVisible.value = true
   isBatchConfig.value = false
   fetchSmsConfig(row.no)
+  fetchClients("")
 }
 
 // 批量修改：打开短信配置
@@ -434,7 +436,9 @@ function openBatchSmsConfig() {
   batchTarget.mode = "broadcast"
   batchTarget.selectedNos = []
   resetSmsForm()
+  selectedSmsClientId.value = undefined
   configDialogVisible.value = true
+  fetchClients("")
 }
 
 function openBatchNicknameDialog() {
@@ -506,18 +510,18 @@ watch(
 async function handleSaveSms() {
   try {
     if (isBatchConfig.value) {
-      const payload: any = { config: { ...smsConfigForm } }
+      const smsPayload: any = { config: { ...smsConfigForm } }
       if (batchTarget.mode === "broadcast") {
-        payload.broadcast = true
+        smsPayload.broadcast = true
       } else {
         const nos = batchTarget.selectedNos
         if (!nos || nos.length === 0) {
           ElMessage.error("请填写至少一个企业号")
           return
         }
-        payload.merchant_nos = nos
+        smsPayload.merchant_nos = nos
       }
-      await saveAdminmSmsConfigApi(payload)
+      await saveAdminmSmsConfigApi(smsPayload)
       ElMessage.success("短信配置已推送更新")
       return
     }
@@ -1167,14 +1171,16 @@ async function handlePush() {
         </el-form>
       </template>
       <el-form label-width="120px" v-loading="configLoading">
-        <el-form-item label="选择Client">
+        <el-form-item>
+          <template #label>
+            <span>从模板导入</span>
+            <el-text type="info" size="small" style="margin-left: 4px;">（可选）</el-text>
+          </template>
           <el-select
             v-model="selectedSmsClientId"
             filterable
-            remote
             clearable
-            placeholder="搜索APP名称或包名以预填配置"
-            :remote-method="fetchClients"
+            placeholder="选择已有客户端配置快速填充"
             :loading="clientLoading"
             style="width: 100%;"
             @change="onSelectSmsClient"
@@ -1227,8 +1233,8 @@ async function handlePush() {
           <el-form-item label="账号">
             <el-input v-model="smsConfigForm.smsbao_account" placeholder="短信宝账号" clearable />
           </el-form-item>
-          <el-form-item label="API Key">
-            <el-input v-model="smsConfigForm.smsbao_api_key" placeholder="短信宝 API Key（原文密码）" clearable show-password />
+          <el-form-item label="密码">
+            <el-input v-model="smsConfigForm.smsbao_api_key" placeholder="短信宝登录密码（原文）" clearable show-password />
           </el-form-item>
           <el-form-item label="模板">
             <el-input v-model="smsConfigForm.smsbao_template" type="textarea" :rows="2" placeholder="模板内容，用 {code} 作为验证码占位符" clearable />

@@ -556,52 +556,6 @@ type APIMonitorHistory struct {
 	CreatedAt time.Time `xorm:"default CURRENT_TIMESTAMP index DATETIME"`
 }
 
-// ========== 版本管理系统 ==========
-
-// ServiceVersions 服务版本注册表
-type ServiceVersions struct {
-	Id          int       `xorm:"not null pk autoincr INT"`
-	ServiceName string    `xorm:"not null comment('服务名称:server/wukongim') index VARCHAR(32)"`
-	Version     string    `xorm:"not null comment('版本号') VARCHAR(64)"`
-	FileHash    string    `xorm:"not null comment('文件SHA256') VARCHAR(64)"`
-	FileSize    int64     `xorm:"not null default 0 comment('文件大小') BIGINT"`
-	FilePath    string    `xorm:"not null comment('存储路径') VARCHAR(255)"`
-	Changelog   string    `xorm:"comment('更新日志') TEXT"`
-	IsCurrent   int       `xorm:"not null default 0 comment('是否当前版本') TINYINT"`
-	UploadedBy  string    `xorm:"default '' comment('上传者') VARCHAR(32)"`
-	CreatedAt   time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
-}
-
-// DeploymentRecords 部署记录
-type DeploymentRecords struct {
-	Id                int64     `xorm:"not null pk autoincr BIGINT"`
-	ServerId          int       `xorm:"not null comment('服务器ID') index INT"`
-	ServiceName       string    `xorm:"not null comment('服务名称') VARCHAR(32)"`
-	VersionId         int       `xorm:"not null comment('版本ID') INT"`
-	PreviousVersionId int       `xorm:"default 0 comment('上一版本ID') INT"`
-	Action            string    `xorm:"not null comment('操作:deploy/rollback') VARCHAR(16)"`
-	Status            int       `xorm:"not null default 0 comment('状态:0-进行中 1-成功 2-失败') TINYINT"`
-	Operator          string    `xorm:"default '' comment('操作人') VARCHAR(32)"`
-	BackupPath        string    `xorm:"default '' comment('备份路径') VARCHAR(255)"`
-	Output            string    `xorm:"comment('执行输出') TEXT"`
-	StartedAt         time.Time `xorm:"comment('开始时间') DATETIME"`
-	CompletedAt       time.Time `xorm:"comment('完成时间') DATETIME"`
-	CreatedAt         time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
-}
-
-// 部署操作类型常量
-const (
-	DeployActionDeploy   = "deploy"
-	DeployActionRollback = "rollback"
-)
-
-// 部署状态常量
-const (
-	DeployStatusPending = 0
-	DeployStatusSuccess = 1
-	DeployStatusFailed  = 2
-)
-
 // ========== 项目管理 ==========
 
 // Projects 项目表
@@ -667,6 +621,31 @@ const (
 	AuditActionUpdateStorageConfig = "update_storage_config"
 	AuditActionDeleteStorageConfig = "delete_storage_config"
 	AuditActionPushStorageConfig   = "push_storage_config"
+)
+
+// ResourceTags 资源标签
+type ResourceTags struct {
+	Id          int       `xorm:"not null pk autoincr INT"`
+	Name        string    `xorm:"not null unique comment('标签名称') VARCHAR(32)"`
+	Color       string    `xorm:"default '' comment('显示颜色') VARCHAR(16)"`
+	Description string    `xorm:"default '' comment('标签描述') VARCHAR(128)"`
+	CreatedAt   time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+}
+
+// ResourceTagRelations 资源标签关联（多对多）
+type ResourceTagRelations struct {
+	Id           int       `xorm:"not null pk autoincr INT"`
+	TagId        int       `xorm:"not null comment('标签ID') INT"`
+	ResourceType string    `xorm:"not null comment('资源类型: oss_config/gost_server/storage_config') VARCHAR(32)"`
+	ResourceId   int       `xorm:"not null comment('资源ID') INT"`
+	CreatedAt    time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+}
+
+// 资源类型常量
+const (
+	ResourceTypeOssConfig     = "oss_config"
+	ResourceTypeGostServer    = "gost_server"
+	ResourceTypeStorageConfig = "storage_config"
 )
 
 // 审计日志目标类型 - 存储配置
