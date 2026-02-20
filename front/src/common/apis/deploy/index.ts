@@ -351,6 +351,18 @@ export function getDeployStatus(server_id: number) {
   })
 }
 
+// ========== 集群节点部署 ==========
+
+/** 部署集群节点（支持水平扩容） */
+export function deployNode(data: Deploy.DeployNodeReq) {
+  return request<Deploy.DeployNodeResponseData>({
+    url: "deploy/tsdd/deploy-node",
+    method: "post",
+    data,
+    timeout: 600000 // 10分钟超时
+  })
+}
+
 // ========== GOST 一键部署（流式API） ==========
 
 /** 一键部署 GOST 转发服务器（流式） */

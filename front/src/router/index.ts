@@ -241,6 +241,16 @@ export const constantRoutes: RouteRecordRaw[] = [
         }
       },
       {
+        path: "cluster",
+        component: () => import("@/pages/deploy/cluster.vue"),
+        name: "DeployCluster",
+        meta: {
+          title: "集群部署",
+          elIcon: "Grid",
+          keepAlive: false
+        }
+      },
+      {
         path: "docker",
         component: () => import("@/pages/deploy/docker.vue"),
         name: "DeployDocker",

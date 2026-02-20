@@ -574,6 +574,24 @@ export interface GetDeployStatusResp {
 export type DeployTSDDResponseData = ApiResponseData<DeployTSDDResp>
 export type GetDeployStatusResponseData = ApiResponseData<GetDeployStatusResp>
 
+// ========== 集群节点部署 ==========
+
+// 节点角色
+export type NodeRole = "allinone" | "db" | "app"
+
+// 集群节点部署请求
+export interface DeployNodeReq {
+  server_id: number
+  merchant_id: number
+  node_role: NodeRole
+  force_reset?: boolean
+  db_host?: string        // app 节点必填，DB 节点内网 IP
+  wk_node_id?: number     // WuKongIM 节点 ID
+  wk_seed_node?: string   // 种子节点
+}
+
+export type DeployNodeResponseData = ApiResponseData<DeployTSDDResp>
+
 // ========== GOST 转发配置（一键部署） ==========
 
 // 配置 GOST 转发请求
