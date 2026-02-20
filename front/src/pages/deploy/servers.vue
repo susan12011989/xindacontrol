@@ -13,23 +13,25 @@ defineOptions({
 // 服务器类型
 const serverType = ref(1) // 1-商户服务器 2-系统服务器
 
-// 商户筛选
+// 商户选项（VXE表单筛选用）
+const merchantOptions: { label: string; value: number }[] = reactive([])
+// 商户完整列表（编辑表单用）
 const merchantList = ref<MerchantResp[]>([])
-const selectedMerchantId = ref<number | undefined>(undefined)
 
 // 加载商户列表
 async function loadMerchantList() {
   try {
     const res = await getMerchantList({ page: 1, size: 2000 })
-    merchantList.value = Array.isArray(res.data?.list) ? res.data.list : []
+    const list = Array.isArray(res.data?.list) ? res.data.list : []
+    merchantList.value = list
+    merchantOptions.length = 0
+    merchantOptions.push(...list.map((m: MerchantResp) => ({
+      label: `${m.name} (${m.no})`,
+      value: m.id
+    })))
   } catch (e) {
     console.error("加载商户列表失败:", e)
   }
-}
-
-// 商户筛选变化
-function onMerchantChange() {
-  crudStore.commitQuery()
 }
 
 // 根据服务器类型生成表格列
@@ -41,10 +43,8 @@ function getColumns() {
     { field: "host", title: "主机地址", width: "140px" }
   ]
 
-  // 商户服务器显示商户名称
-  if (serverType.value === 1) {
-    baseColumns.push({ title: "商户", width: "140px", slots: { default: "merchant-slot" } })
-  }
+  // 两种类型都显示商户名称
+  baseColumns.push({ title: "商户", width: "140px", slots: { default: "merchant-slot" } })
 
   // 系统服务器显示辅助IP和TLS状态，商户服务器显示SSH端口、用户名
   if (serverType.value === 2) {
@@ -101,6 +101,14 @@ const xGridOpt: VxeGridProps = reactive({
         }
       },
       {
+        field: "merchant_id",
+        itemRender: {
+          name: "$select",
+          options: merchantOptions,
+          props: { placeholder: "选择商户", clearable: true, filterable: true }
+        }
+      },
+      {
         itemRender: {
           name: "$buttons",
           children: [
@@ -125,7 +133,7 @@ const xGridOpt: VxeGridProps = reactive({
             server_type: serverType.value,
             name: form.name || "",
             host: form.host || "",
-            merchant_id: selectedMerchantId.value || undefined,
+            merchant_id: form.merchant_id || undefined,
             size: page.pageSize,
             page: page.currentPage
           }
@@ -176,6 +184,7 @@ const xFormOpt: VxeFormProps = reactive({
   data: {
     server_type: 1,
     forward_type: 1,
+    merchant_id: 0,
     name: "",
     host: "",
     auxiliary_ip: "",
@@ -209,6 +218,11 @@ const xFormOpt: VxeFormProps = reactive({
           { label: "直连 (tcp)", value: 2 }
         ]
       }
+    },
+    {
+      field: "merchant_id",
+      title: "所属商户",
+      slots: { default: "merchant-form-slot" }
     },
     {
       field: "name",
@@ -536,6 +550,7 @@ const crudStore = reactive({
       xFormOpt.data = {
         server_type: row.server_type,
         forward_type: row.forward_type || 1,
+        merchant_id: row.merchant_id || 0,
         name: row.name,
         host: row.host,
         auxiliary_ip: row.auxiliary_ip || "",
@@ -595,6 +610,7 @@ const crudStore = reactive({
         ...xFormOpt.data,
         server_type: Number(xFormOpt.data.server_type),
         forward_type: Number(xFormOpt.data.forward_type),
+        merchant_id: Number(xFormOpt.data.merchant_id) || 0,
         port: Number(xFormOpt.data.port),
         auth_type: Number(xFormOpt.data.auth_type)
       }
@@ -675,30 +691,13 @@ onMounted(() => {
 <template>
   <div class="app-container">
     <!-- 搜索区域 -->
-    <el-card v-loading="!!xGridOpt.loading" shadow="never" class="search-wrapper">
+    <el-card shadow="never" class="search-wrapper">
       <div class="flex items-center gap-4 flex-wrap">
         <span class="text-base font-bold">服务器类型:</span>
         <el-radio-group v-model="serverType">
           <el-radio :value="1">商户服务器</el-radio>
           <el-radio :value="2">系统服务器</el-radio>
         </el-radio-group>
-        <el-divider direction="vertical" />
-        <span class="font-bold">商户筛选:</span>
-        <el-select
-          v-model="selectedMerchantId"
-          placeholder="全部商户"
-          style="width: 220px"
-          filterable
-          clearable
-          @change="onMerchantChange"
-        >
-          <el-option
-            v-for="m in merchantList"
-            :key="m.id"
-            :label="`${m.name} (${m.no})`"
-            :value="m.id"
-          />
-        </el-select>
       </div>
     </el-card>
 
@@ -790,7 +789,25 @@ onMounted(() => {
 
     <!-- 服务器编辑弹窗 -->
     <vxe-modal ref="xModalDom" v-bind="xModalOpt">
-      <vxe-form ref="xFormDom" v-bind="xFormOpt" />
+      <vxe-form ref="xFormDom" v-bind="xFormOpt">
+        <template #merchant-form-slot>
+          <el-select
+            v-model="xFormOpt.data.merchant_id"
+            placeholder="不绑定商户"
+            style="width: 100%"
+            filterable
+            clearable
+            @clear="xFormOpt.data.merchant_id = 0"
+          >
+            <el-option
+              v-for="m in merchantList"
+              :key="m.id"
+              :label="`${m.name} (${m.no})`"
+              :value="m.id"
+            />
+          </el-select>
+        </template>
+      </vxe-form>
     </vxe-modal>
 
     <!-- 批量更新弹窗 -->

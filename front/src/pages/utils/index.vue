@@ -6,6 +6,7 @@ import { useUserStore } from "@/pinia/stores/user"
 import { createTarget, deleteTarget, executeEmbedAndUpload, getSelectedIPs, getSourceFiles, getSystemIPs, getTargets, toggleTarget, updateTarget } from "@@/apis/ip_embed"
 import type { CreateTargetReq, UpdateTargetReq } from "@@/apis/ip_embed/type"
 import { getCloudAccountOptions } from "@@/apis/cloud_account"
+import { getMerchantList } from "@@/apis/merchant"
 import { aliyunListBuckets, awsListBuckets, tencentListBuckets } from "@@/apis/cloud_storage"
 import type { CloudBucketItem } from "@@/apis/cloud_storage/type"
 import { decryptVersion, embedIPs, embedIPsBatch, embedURLs, embedURLsBatch, enterprise2Port, extractIPs, extractURLs, generateVersion, port2Enterprise } from "@@/apis/utils"
@@ -18,8 +19,6 @@ import {
   Plus,
   Refresh,
   Right,
-  Setting,
-  Unlock,
   Upload,
   UploadFilled,
   View
@@ -818,6 +817,27 @@ const cloudTypeColors: Record<string, "success" | "warning" | "info" | "primary"
   tencent: "success"
 }
 
+// ========== 商户选项 ==========
+interface MerchantOpt {
+  value: number
+  label: string
+}
+const merchantOptions: MerchantOpt[] = reactive([])
+
+async function loadMerchantOptions() {
+  try {
+    const res = await getMerchantList({ page: 1, size: 1000 })
+    const list = (res.data.list || []).map((m: any) => ({
+      label: `${m.name} (${m.no})`,
+      value: m.id
+    }))
+    merchantOptions.length = 0
+    merchantOptions.push(...list)
+  } catch (e) {
+    console.error("加载商户列表失败", e)
+  }
+}
+
 // ========== 目标管理 ==========
 interface CloudAccountOpt {
   value: number
@@ -836,13 +856,14 @@ const targetManagement = reactive({
   editingTarget: null as TargetItem | null,
   form: {
     name: "",
-    cloud_type: "aliyun" as string,
+    merchant_id: 0 as number,
     cloud_account_id: undefined as number | undefined,
     region_id: "",
     bucket: "",
     object_prefix: "",
     enabled: true,
-    sort_order: 0
+    sort_order: 0,
+    group_id: 0
   },
 
   // 打开创建弹窗
@@ -851,17 +872,19 @@ const targetManagement = reactive({
     targetManagement.editingTarget = null
     targetManagement.buckets = []
     targetManagement.selectedBuckets = []
+    targetManagement.cloudAccounts = []
     targetManagement.form = {
       name: "",
-      cloud_type: "aliyun",
+      merchant_id: 0,
       cloud_account_id: undefined,
       region_id: "",
       bucket: "",
       object_prefix: "",
       enabled: true,
-      sort_order: ipUploadTool.targets.length
+      sort_order: ipUploadTool.targets.length,
+      group_id: 0
     }
-    await targetManagement.loadCloudAccounts()
+    await loadMerchantOptions()
     targetManagement.showDialog = true
   },
 
@@ -873,15 +896,22 @@ const targetManagement = reactive({
     targetManagement.selectedBuckets = []
     targetManagement.form = {
       name: target.name,
-      cloud_type: target.cloud_type,
+      merchant_id: target.merchant_id || 0,
       cloud_account_id: target.cloud_account_id,
       region_id: target.region_id,
       bucket: target.bucket,
       object_prefix: target.object_prefix,
       enabled: target.enabled,
-      sort_order: target.sort_order
+      sort_order: target.sort_order,
+      group_id: target.group_id || 0
     }
-    await targetManagement.loadCloudAccounts()
+    await loadMerchantOptions()
+    // 加载该商户的云账号
+    if (target.merchant_id) {
+      await targetManagement.loadCloudAccounts(target.merchant_id)
+    } else {
+      await targetManagement.loadCloudAccounts()
+    }
     // 编辑时自动加载该账号的bucket列表
     if (target.cloud_account_id) {
       await targetManagement.loadBuckets(target.cloud_account_id)
@@ -898,10 +928,11 @@ const targetManagement = reactive({
     }
   },
 
-  // 加载云账号选项
-  loadCloudAccounts: async () => {
+  // 加载云账号选项（按商户过滤）
+  loadCloudAccounts: async (merchantId?: number) => {
     try {
-      const res = await getCloudAccountOptions()
+      const params = merchantId ? { merchant_id: merchantId } : undefined
+      const res = await getCloudAccountOptions(params)
       targetManagement.cloudAccounts = res.data || []
     } catch (e: any) {
       ElMessage.error("加载云账号失败")
@@ -947,10 +978,13 @@ const targetManagement = reactive({
 
   // 保存目标
   saveTarget: async () => {
-    const { form, dialogMode, editingTarget, selectedBuckets, buckets } = targetManagement
+    const { form, dialogMode, editingTarget, selectedBuckets, buckets, cloudAccounts } = targetManagement
     if (!form.cloud_account_id) {
       return ElMessage.warning("请选择云账号")
     }
+    // 从选中的云账号获取 cloud_type
+    const selectedAccount = cloudAccounts.find(a => a.value === form.cloud_account_id)
+    const cloudType = selectedAccount?.type || ""
 
     // 创建模式：批量创建
     if (dialogMode === "create") {
@@ -979,13 +1013,14 @@ const targetManagement = reactive({
           }
           const data: CreateTargetReq = {
             name: bucketName, // 使用bucket名称作为目标名称
-            cloud_type: form.cloud_type,
+            cloud_type: cloudType,
             cloud_account_id: form.cloud_account_id,
             region_id: regionId,
             bucket: bucketName,
             object_prefix: form.object_prefix,
             enabled: form.enabled,
-            sort_order: ipUploadTool.targets.length + i
+            sort_order: ipUploadTool.targets.length + i,
+            group_id: form.group_id || undefined
           }
           try {
             await createTarget(data)
@@ -1021,13 +1056,14 @@ const targetManagement = reactive({
         const bucketInfo = buckets.find(b => b.name === form.bucket)
         const data: UpdateTargetReq = {
           name: form.name,
-          cloud_type: form.cloud_type,
+          cloud_type: cloudType,
           cloud_account_id: form.cloud_account_id,
           region_id: bucketInfo?.location || form.region_id,
           bucket: form.bucket,
           object_prefix: form.object_prefix,
           enabled: form.enabled,
-          sort_order: form.sort_order
+          sort_order: form.sort_order,
+          group_id: form.group_id
         }
         await updateTarget(editingTarget.id, data)
         ElMessage.success("更新成功")
@@ -1069,19 +1105,142 @@ const targetManagement = reactive({
   }
 })
 
-// 按云类型过滤的云账号
-const filteredCloudAccounts = computed(() => {
-  return targetManagement.cloudAccounts.filter(
-    acc => acc.type === targetManagement.form.cloud_type
-  )
+// 商户筛选
+const filterMerchantId = ref<number | undefined>(undefined)
+
+// 从已有目标中提取商户列表（去重）
+const targetMerchantOptions = computed(() => {
+  const map = new Map<number, string>()
+  for (const t of ipUploadTool.targets) {
+    const mid = t.merchant_id || 0
+    if (!map.has(mid)) {
+      map.set(mid, mid > 0 ? (t.merchant_name || `商户#${mid}`) : "系统")
+    }
+  }
+  return Array.from(map.entries())
+    .sort((a, b) => {
+      if (a[0] === 0) return 1
+      if (b[0] === 0) return -1
+      return a[0] - b[0]
+    })
+    .map(([id, name]) => ({ value: id, label: name }))
 })
 
-// 云类型变化时清空云账号和bucket选择
-watch(() => targetManagement.form.cloud_type, () => {
+// 按商户→云账号两级分组的目标列表
+interface TargetSubGroup {
+  accountId: number
+  accountName: string
+  cloudType: string
+  targets: TargetItem[]
+}
+interface TargetGroup {
+  groupId: number
+  groupName: string
+  subGroups: TargetSubGroup[]
+  allTargets: TargetItem[] // 便于全选操作
+}
+const groupedTargets = computed<TargetGroup[]>(() => {
+  const map = new Map<number, TargetGroup>()
+
+  // 根据筛选条件过滤目标
+  const filteredTargets = filterMerchantId.value !== undefined
+    ? ipUploadTool.targets.filter(t => (t.merchant_id || 0) === filterMerchantId.value)
+    : ipUploadTool.targets
+
+  for (const t of filteredTargets) {
+    const mid = t.merchant_id || 0
+    if (!map.has(mid)) {
+      map.set(mid, {
+        groupId: mid,
+        groupName: mid > 0 ? (t.merchant_name || `商户#${mid}`) : "系统",
+        subGroups: [],
+        allTargets: []
+      })
+    }
+    const group = map.get(mid)!
+    group.allTargets.push(t)
+
+    // 按云账号二级分组
+    const accId = t.cloud_account_id || 0
+    let sub = group.subGroups.find(s => s.accountId === accId)
+    if (!sub) {
+      sub = {
+        accountId: accId,
+        accountName: t.account_name || `账号#${accId}`,
+        cloudType: t.cloud_type,
+        targets: []
+      }
+      group.subGroups.push(sub)
+    }
+    sub.targets.push(t)
+  }
+  // 按商户ID排序，系统(0)放最后
+  return Array.from(map.values()).sort((a, b) => {
+    if (a.groupId === 0) return 1
+    if (b.groupId === 0) return -1
+    return a.groupId - b.groupId
+  })
+})
+
+// 按商户组全选/取消
+function toggleGroupTargets(group: TargetGroup) {
+  const groupIndexes = group.allTargets.map(t => t.index)
+  const allSelected = groupIndexes.every(idx => ipUploadTool.selectedTargetIndexes.includes(idx))
+  if (allSelected) {
+    ipUploadTool.selectedTargetIndexes = ipUploadTool.selectedTargetIndexes.filter(idx => !groupIndexes.includes(idx))
+  } else {
+    const set = new Set([...ipUploadTool.selectedTargetIndexes, ...groupIndexes])
+    ipUploadTool.selectedTargetIndexes = Array.from(set)
+  }
+}
+
+// 检查商户组是否全选
+function isGroupAllSelected(group: TargetGroup): boolean {
+  return group.allTargets.every(t => ipUploadTool.selectedTargetIndexes.includes(t.index))
+}
+
+// 检查商户组是否部分选中
+function isGroupIndeterminate(group: TargetGroup): boolean {
+  const some = group.allTargets.some(t => ipUploadTool.selectedTargetIndexes.includes(t.index))
+  const all = group.allTargets.every(t => ipUploadTool.selectedTargetIndexes.includes(t.index))
+  return some && !all
+}
+
+// 按云账号子组全选/取消
+function toggleSubGroupTargets(sub: TargetSubGroup) {
+  const subIndexes = sub.targets.map(t => t.index)
+  const allSelected = subIndexes.every(idx => ipUploadTool.selectedTargetIndexes.includes(idx))
+  if (allSelected) {
+    ipUploadTool.selectedTargetIndexes = ipUploadTool.selectedTargetIndexes.filter(idx => !subIndexes.includes(idx))
+  } else {
+    const set = new Set([...ipUploadTool.selectedTargetIndexes, ...subIndexes])
+    ipUploadTool.selectedTargetIndexes = Array.from(set)
+  }
+}
+
+// 检查子组是否全选
+function isSubGroupAllSelected(sub: TargetSubGroup): boolean {
+  return sub.targets.every(t => ipUploadTool.selectedTargetIndexes.includes(t.index))
+}
+
+// 检查子组是否部分选中
+function isSubGroupIndeterminate(sub: TargetSubGroup): boolean {
+  const some = sub.targets.some(t => ipUploadTool.selectedTargetIndexes.includes(t.index))
+  const all = sub.targets.every(t => ipUploadTool.selectedTargetIndexes.includes(t.index))
+  return some && !all
+}
+
+// 商户变化时加载该商户的云账号
+watch(() => targetManagement.form.merchant_id, async (newMerchantId) => {
   targetManagement.form.cloud_account_id = undefined
   targetManagement.form.bucket = ""
   targetManagement.form.region_id = ""
   targetManagement.buckets = []
+  if (newMerchantId && newMerchantId > 0) {
+    await targetManagement.loadCloudAccounts(newMerchantId)
+  } else {
+    targetManagement.cloudAccounts = []
+  }
 })
 
 // 云账号变化时加载bucket列表
@@ -1456,11 +1615,26 @@ function handleDecryptFileChange(file: UploadFile) {
 
             <el-divider />
 
-            <!-- 上传目标选择 -->
+            <!-- 上传目标选��� -->
             <div class="tool-section">
               <div class="section-header">
                 <div class="section-title" style="margin-bottom: 0;">上传目标选择</div>
                 <div class="section-actions">
+                  <el-select
+                    v-model="filterMerchantId"
+                    placeholder="全部商户"
+                    clearable
+                    size="small"
+                    style="width: 160px;"
+                    @clear="filterMerchantId = undefined"
+                  >
+                    <el-option
+                      v-for="m in targetMerchantOptions"
+                      :key="m.value"
+                      :label="m.label"
+                      :value="m.value"
+                    />
+                  </el-select>
                   <el-button size="small" type="primary" :icon="Plus" @click="targetManagement.openCreate">
                     新增目标
                   </el-button>
@@ -1470,29 +1644,59 @@ function handleDecryptFileChange(file: UploadFile) {
                 </div>
               </div>
               <el-checkbox-group v-model="ipUploadTool.selectedTargetIndexes" class="target-list">
-                <div v-for="target in ipUploadTool.targets" :key="target.index" class="target-item">
-                  <el-checkbox :value="target.index">
-                    <div class="target-info">
-                      <el-tag :type="cloudTypeColors[target.cloud_type]" size="small">
-                        {{ target.cloud_type.toUpperCase() }}
-                      </el-tag>
-                      <span class="target-name">{{ target.name }}</span>
-                      <span class="target-detail">
-                        {{ target.bucket }} / {{ target.object_prefix || '(根目录)' }}
-                      </span>
-                      <el-tag v-if="!target.enabled" type="info" size="small">已禁用</el-tag>
+                <div v-for="group in groupedTargets" :key="group.groupId" class="target-group">
+                  <!-- 商户级别 -->
+                  <div class="target-group-header">
+                    <el-checkbox
+                      :model-value="isGroupAllSelected(group)"
+                      :indeterminate="isGroupIndeterminate(group)"
+                      @change="toggleGroupTargets(group)"
+                    >
+                      <div class="target-group-title">
+                        <span>{{ group.groupName }}</span>
+                        <span class="target-group-count">({{ group.allTargets.length }})</span>
+                      </div>
+                    </el-checkbox>
+                  </div>
+                  <!-- 云账号子级 -->
+                  <div v-for="sub in group.subGroups" :key="sub.accountId" class="target-sub-group">
+                    <div class="target-sub-group-header">
+                      <el-checkbox
+                        :model-value="isSubGroupAllSelected(sub)"
+                        :indeterminate="isSubGroupIndeterminate(sub)"
+                        @change="toggleSubGroupTargets(sub)"
+                      >
+                        <div class="target-sub-group-title">
+                          <el-tag :type="cloudTypeColors[sub.cloudType]" size="small">
+                            {{ sub.cloudType.toUpperCase() }}
+                          </el-tag>
+                          <span>{{ sub.accountName }}</span>
+                          <span class="target-group-count">({{ sub.targets.length }})</span>
+                        </div>
+                      </el-checkbox>
                     </div>
-                  </el-checkbox>
-                  <div class="target-actions" @click.stop>
-                    <el-button size="small" link type="primary" @click="targetManagement.openEdit(target)">
-                      编辑
-                    </el-button>
-                    <el-button size="small" link :type="target.enabled ? 'warning' : 'success'" @click="targetManagement.handleToggle(target)">
-                      {{ target.enabled ? '禁用' : '启用' }}
-                    </el-button>
-                    <el-button size="small" link type="danger" @click="targetManagement.handleDelete(target)">
-                      删除
-                    </el-button>
+                    <div v-for="target in sub.targets" :key="target.index" class="target-item target-item-grouped">
+                      <el-checkbox :value="target.index">
+                        <div class="target-info">
+                          <span class="target-name">{{ target.name }}</span>
+                          <span class="target-detail">
+                            {{ target.bucket }} / {{ target.object_prefix || '(根目录)' }}
+                          </span>
+                          <el-tag v-if="!target.enabled" type="info" size="small">已禁用</el-tag>
+                        </div>
+                      </el-checkbox>
+                      <div class="target-actions" @click.stop>
+                        <el-button size="small" link type="primary" @click="targetManagement.openEdit(target)">
+                          编辑
+                        </el-button>
+                        <el-button size="small" link :type="target.enabled ? 'warning' : 'success'" @click="targetManagement.handleToggle(target)">
+                          {{ target.enabled ? '禁用' : '启用' }}
+                        </el-button>
+                        <el-button size="small" link type="danger" @click="targetManagement.handleDelete(target)">
+                          删除
+                        </el-button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </el-checkbox-group>
@@ -1527,7 +1731,7 @@ function handleDecryptFileChange(file: UploadFile) {
                 </el-table>
               </el-checkbox-group>
               <div class="file-tip">
-                提示：不选择则处理所有文件（已选 {{ ipUploadTool.selectedFileNames.length || ipUploadTool.sourceFiles.length }} 个）
+                提示：不选择则处���所有文件（已选 {{ ipUploadTool.selectedFileNames.length || ipUploadTool.sourceFiles.length }} 个）
               </div>
             </div>
 
@@ -1600,24 +1804,27 @@ function handleDecryptFileChange(file: UploadFile) {
             <el-form-item v-if="targetManagement.dialogMode === 'edit'" label="目标名称" required>
               <el-input v-model="targetManagement.form.name" placeholder="请输入目标名称" />
             </el-form-item>
-            <el-form-item label="云类型" required>
-              <el-select v-model="targetManagement.form.cloud_type" placeholder="请选择云类型" style="width: 100%;">
-                <el-option label="阿里云" value="aliyun" />
-                <el-option label="腾讯云" value="tencent" />
-                <el-option label="AWS" value="aws" />
+            <el-form-item label="所属商户" required>
+              <el-select v-model="targetManagement.form.merchant_id" placeholder="请选择商户" style="width: 100%;" filterable>
+                <el-option
+                  v-for="m in merchantOptions"
+                  :key="m.value"
+                  :label="m.label"
+                  :value="m.value"
+                />
               </el-select>
             </el-form-item>
             <el-form-item label="云账号" required>
               <el-select
                 v-model="targetManagement.form.cloud_account_id"
-                placeholder="请先选择云类型，再选择云账号"
+                placeholder="请先选择商户，再选择云账号"
                 style="width: 100%;"
-                :disabled="!targetManagement.form.cloud_type"
+                :disabled="!targetManagement.form.merchant_id"
               >
                 <el-option
-                  v-for="acc in filteredCloudAccounts"
+                  v-for="acc in targetManagement.cloudAccounts"
                   :key="acc.value"
-                  :label="acc.label"
+                  :label="`${acc.label} (${acc.type})`"
                   :value="acc.value"
                 />
               </el-select>
@@ -1976,6 +2183,60 @@ function handleDecryptFileChange(file: UploadFile) {
   width: 100%;
 }
 
+.target-group {
+  border: 1px solid #e4e7ed;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.target-group-header {
+  display: flex;
+  align-items: center;
+  padding: 10px 16px;
+  background: #eef1f6;
+  border-bottom: 1px solid #e4e7ed;
+}
+
+.target-sub-group {
+  border-top: 1px solid #ebeef5;
+
+  &:first-child {
+    border-top: none;
+  }
+}
+
+.target-sub-group-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px 8px 32px;
+  background: #f5f7fa;
+  border-bottom: 1px solid #ebeef5;
+}
+
+.target-sub-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  font-size: 13px;
+  color: #606266;
+}
+
+.target-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 14px;
+  color: #303133;
+}
+
+.target-group-count {
+  color: #909399;
+  font-weight: normal;
+  font-size: 13px;
+}
+
 .target-item {
   display: flex;
   justify-content: space-between;
@@ -1987,6 +2248,17 @@ function handleDecryptFileChange(file: UploadFile) {
 
   &:hover {
     background: #f5f7fa;
+  }
+}
+
+.target-item-grouped {
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid #ebeef5;
+  padding-left: 48px;
+
+  &:last-child {
+    border-bottom: none;
   }
 }
 
@@ -2112,6 +2384,50 @@ function handleDecryptFileChange(file: UploadFile) {
   font-size: 12px;
   color: #909399;
   margin-left: 6px;
+}
+
+// 分组管理弹窗样式
+.group-create-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.group-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  transition: background 0.2s;
+
+  &:hover {
+    background: #f5f7fa;
+  }
+}
+
+.group-list-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.group-list-name {
+  font-weight: 500;
+  color: #303133;
+  font-size: 14px;
+}
+
+.group-list-actions {
+  display: flex;
+  gap: 8px;
 }
 
 // 响应式

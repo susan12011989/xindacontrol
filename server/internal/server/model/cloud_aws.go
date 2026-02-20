@@ -328,6 +328,12 @@ type DeployTSDDWithAMIReq struct {
 	VolumeSizeGiB  int32  `json:"volume_size_gib"`                   // 可选，默认 30
 	ServerName     string `json:"server_name"`                       // 服务器名称
 	SourceServerId int    `json:"source_server_id"`                  // 可选，从某服务器克隆（会先创建 AMI）
+	// EBS 额外数据卷配置
+	EnableExtraEBS     bool  `json:"enable_extra_ebs"`               // 是否创建额外 EBS 数据卷
+	DBVolumeSizeGiB    int32 `json:"db_volume_size_gib"`             // DB 数据卷大小(GB)，默认 20
+	DBVolumeIOPS       int32 `json:"db_volume_iops"`                 // DB 数据卷 IOPS，默认 3000
+	MinioVolumeSizeGiB int32 `json:"minio_volume_size_gib"`          // MinIO 数据卷大小(GB)，默认 50
+	MinioVolumeIOPS    int32 `json:"minio_volume_iops"`              // MinIO 数据卷 IOPS，默认 3000
 }
 
 // 使用 AMI 部署响应
@@ -340,4 +346,40 @@ type DeployTSDDWithAMIResp struct {
 	APIUrl     string `json:"api_url"`
 	WebUrl     string `json:"web_url"`
 	AdminUrl   string `json:"admin_url"`
+	// EBS 卷信息
+	DBVolumeId    string `json:"db_volume_id,omitempty"`
+	MinioVolumeId string `json:"minio_volume_id,omitempty"`
+}
+
+// ========== CloudWatch 监控 ==========
+
+// CloudWatch 监控请求
+type AwsCloudWatchMetricsReq struct {
+	ServerId int    `form:"server_id" binding:"required"`
+	Period   string `form:"period"` // "1h","6h","24h","7d", default "1h"
+}
+
+// CloudWatch 单条时间序列数据点
+type MetricDataPoint struct {
+	Timestamp int64   `json:"timestamp"` // Unix seconds
+	Value     float64 `json:"value"`
+}
+
+// CloudWatch 单个指标序列
+type MetricSeries struct {
+	MetricName string            `json:"metric_name"` // e.g. "VolumeReadOps"
+	Label      string            `json:"label"`       // e.g. "Read IOPS (vol-xxx)"
+	Unit       string            `json:"unit"`        // e.g. "Count", "Seconds", "Percent"
+	DataPoints []MetricDataPoint `json:"data_points"`
+}
+
+// CloudWatch 监控响应
+type AwsCloudWatchMetricsResp struct {
+	InstanceId string         `json:"instance_id"`
+	RegionId   string         `json:"region_id"`
+	VolumeIds  []string       `json:"volume_ids"`
+	Period     int32          `json:"period"`     // granularity in seconds
+	StartTime  int64          `json:"start_time"` // Unix seconds
+	EndTime    int64          `json:"end_time"`   // Unix seconds
+	Metrics    []MetricSeries `json:"metrics"`
 }

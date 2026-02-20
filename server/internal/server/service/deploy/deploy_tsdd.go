@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"fmt"
+	"os"
 	awscloud "server/internal/server/cloud/aws"
 	"server/internal/server/model"
 	cloudaws "server/internal/server/service/cloud_aws"
@@ -652,9 +653,34 @@ func init() {
 
 // ========== AMI 方案部署 ==========
 
-// TSDD 默认 AMI ID（按区域）
+// TSDD 默认 AMI ID（按区域）— 使用 Ubuntu 22.04 LTS 官方公共镜像
 var DefaultTSDDAMI = map[string]string{
-	"ap-east-1": "ami-0e26671de387eded1", // 香港
+	"us-east-1":      "ami-0c7217cdde317cfec", // 美东
+	"us-west-2":      "ami-0efcece6bed30fd98", // 美西(俄勒冈)
+	"eu-west-1":      "ami-0905a3c97561e0b69", // 欧洲(爱尔兰)
+	"ap-southeast-1": "ami-078c1149d8ad719a7", // 新加坡
+	"ap-northeast-1": "ami-0d52744d6551d851e", // 东京
+	"ap-east-1":      "ami-0d96ec8a788679eb2", // 香港
+}
+
+// trySSHConnect 尝试用 root 密码连接 SSH（cloud-init 设置的）
+// 创建 AMI 前已执行 cloud-init clean，确保新实例会重新设置 root 密码登录
+func trySSHConnect(host, password string) (*utils.SSHClient, string) {
+	client := &utils.SSHClient{
+		Host:     host,
+		Port:     22,
+		Username: "root",
+		Password: password,
+	}
+	// 最多等待 3 分钟（cloud-init 需要时间执行）
+	for i := 0; i < 18; i++ {
+		if _, err := client.ExecuteCommand("echo 'SSH ready'"); err == nil {
+			return client, "root"
+		}
+		time.Sleep(10 * time.Second)
+	}
+	logx.Errorf("SSH root@%s 连接失败（3分钟超时）", host)
+	return nil, ""
 }
 
 // DeployTSDDWithAMI 使用 AMI 方式部署 TSDD
@@ -679,10 +705,17 @@ func DeployTSDDWithAMI(req model.DeployTSDDWithAMIReq, operator string) (model.D
 			}
 			amiId = createdAMI
 		} else {
-			// 使用默认 AMI
-			amiId = DefaultTSDDAMI[req.RegionId]
+			// 动态查找最新 Ubuntu 22.04 AMI（通过 AWS API）
+			logx.Infof("动态查找 Ubuntu AMI (region: %s)...", req.RegionId)
+			foundAMI, findErr := cloudaws.FindLatestUbuntuAMI(acc, req.RegionId)
+			if findErr != nil {
+				logx.Errorf("动态查找 AMI 失败，使用硬编码回退: %v", findErr)
+				amiId = DefaultTSDDAMI[req.RegionId]
+			} else {
+				amiId = foundAMI
+			}
 			if amiId == "" {
-				return resp, fmt.Errorf("该区域 %s 没有预置的 TSDD AMI，请指定 ami_id 或 source_server_id", req.RegionId)
+				return resp, fmt.Errorf("该区域 %s 无法获取可用的 Ubuntu AMI，请手动指定 ami_id", req.RegionId)
 			}
 		}
 	}
@@ -693,7 +726,9 @@ func DeployTSDDWithAMI(req model.DeployTSDDWithAMIReq, operator string) (model.D
 		instanceType = "t3.medium"
 	}
 	volumeSize := req.VolumeSizeGiB
-	if volumeSize == 0 {
+	if volumeSize == 0 && req.AMIId == "" && req.SourceServerId == 0 {
+		// 仅在使用自动查找的 Ubuntu AMI 时设置默认 30GB
+		// 用户指定的自定义 AMI 使用 AMI 自身的卷配置（volumeSize=0 不覆盖）
 		volumeSize = 30
 	}
 	serverName := req.ServerName
@@ -742,39 +777,152 @@ func DeployTSDDWithAMI(req model.DeployTSDDWithAMIReq, operator string) (model.D
 	resp.PublicIP = publicIP
 	logx.Infof("实例公网 IP: %s", publicIP)
 
-	// SSH 连接并更新配置
-	logx.Info("SSH 连接更新配置...")
-	err = updateTSDDConfig(publicIP, publicIP)
-	if err != nil {
-		logx.Errorf("更新配置失败: %v", err)
-		resp.Message = fmt.Sprintf("实例已创建，但配置更新失败: %v", err)
+	// EBS 数据卷设置（如果启用）
+	if req.EnableExtraEBS {
+		logx.Info("创建并挂载额外 EBS 数据卷...")
+		dbVolId, minioVolId, ebsErr := setupExtraEBSVolumes(acc, req, instanceId, publicIP)
+		resp.DBVolumeId = dbVolId
+		resp.MinioVolumeId = minioVolId
+		if ebsErr != nil {
+			logx.Errorf("EBS 卷设置失败: %v", ebsErr)
+			resp.Message = fmt.Sprintf("实例已创建，但EBS卷设置失败: %v", ebsErr)
+			// 不中断流程，实例仍可使用
+		}
 	}
 
-	// 注册服务器到数据库
-	newServer := &entity.Servers{
-		MerchantId: req.MerchantId,
-		Name:       serverName,
-		Host:       publicIP,
-		Port:       22,
-		Username:   "root",
-		Password:   consts.DefaultPassword,
-		Status:     1,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+	// 判断是自定义 AMI 还是纯 Ubuntu AMI
+	isCustomAMI := req.AMIId != "" || req.SourceServerId > 0
+
+	// 尝试 SSH 连接：先用 root（cloud-init 设置的），再 fallback 到 ubuntu（自定义 AMI 可能保留原用户）
+	sshClient, sshUser := trySSHConnect(publicIP, consts.DefaultPassword)
+	if sshClient == nil {
+		resp.Message = fmt.Sprintf("实例已创建(IP: %s)，但 SSH 连接失败（已尝试 root 和 ubuntu 用户）", publicIP)
+		// 仍然更新服务器记录，方便后续手动修复
+		goto updateServerRecord
 	}
-	if _, err := dbs.DBAdmin.Insert(newServer); err != nil {
-		logx.Errorf("注册服务器失败: %v", err)
+	logx.Infof("SSH 连接成功: %s@%s", sshUser, publicIP)
+
+	{
+		deployOK := true // 跟踪部署是否真正成功
+
+		if isCustomAMI {
+			// 自定义 AMI：Docker 和服务已预装，只需把旧 IP 全局替换为新 IP，然后重启
+			logx.Infof("自定义 AMI 部署：全局替换 IP 为 %s (SSH用户: %s)...", publicIP, sshUser)
+
+			// 如果启用了独立数据磁盘(fresh EBS)且是克隆部署，预先 dump 源数据库 schema
+			// 避免 tsdd-server migration 在全新数据库上因冲突 panic
+			var schemaDump string
+			if req.EnableExtraEBS && req.SourceServerId > 0 {
+				logx.Infof("Fresh EBS + 克隆部署：从源服务器 %d dump 数据库 schema...", req.SourceServerId)
+				if dump, dumpErr := dumpSourceDBSchema(req.SourceServerId); dumpErr != nil {
+					logx.Errorf("dump 源数据库 schema 失败（非致命）: %v", dumpErr)
+				} else {
+					schemaDump = dump
+				}
+			}
+
+			if err := updateCustomAMIConfig(sshClient, publicIP, schemaDump); err != nil {
+				logx.Errorf("更新自定义 AMI 配置失败: %v", err)
+				resp.Message = fmt.Sprintf("实例已创建(IP: %s)，但配置更新失败: %v", publicIP, err)
+				deployOK = false
+			} else {
+				logx.Infof("自定义 AMI 配置更新成功: %s", publicIP)
+			}
+		} else {
+			// 纯 Ubuntu AMI：需要完整安装 TSDD（Docker + docker-compose + 拉镜像）
+			logx.Info("开始完整 TSDD 部署（Docker 安装 + 服务启动）...")
+
+			deployConfig := model.DefaultDeployConfig
+			deployConfig.ExternalIP = publicIP
+			deployResult := executeDeployment(sshClient, deployConfig, false)
+			if !deployResult.Success {
+				logx.Errorf("TSDD 部署失败: %s", deployResult.Message)
+				resp.Message = fmt.Sprintf("实例已创建(IP: %s)，但 TSDD 部署失败: %s", publicIP, deployResult.Message)
+				deployOK = false
+			} else {
+				logx.Infof("TSDD 部署成功: %s", publicIP)
+			}
+
+			// 上传 TSDD 服务器资源（修复后的二进制 + assets 默认头像，非致命）
+			logx.Info("上传TSDD服务器资源...")
+			if resErr := sshUploadAndSetupResources(sshClient); resErr != nil {
+				logx.Errorf("资源上传失败（非致命）: %v", resErr)
+			}
+
+			// 最终重启确保使用最新二进制
+			sshClient.ExecuteCommandWithTimeout("cd /opt/tsdd && docker compose up -d tsdd-server 2>/dev/null || docker-compose up -d tsdd-server 2>/dev/null", 2*time.Minute)
+		}
+
+		resp.Success = deployOK
+	}
+
+updateServerRecord:
+	// 更新商户服务器记录（创建商户时已自动创建，这里更新 IP 等信息）
+	// 使用实际连接成功的 SSH 用户名（而非硬编码 root）
+	actualUser := sshUser
+	if actualUser == "" {
+		actualUser = "root" // SSH 失败时的默认值
+	}
+	if req.MerchantId > 0 {
+		var existingServer entity.Servers
+		has, _ := dbs.DBAdmin.Where("merchant_id = ? AND server_type = 1", req.MerchantId).Get(&existingServer)
+		if has {
+			existingServer.Host = publicIP
+			existingServer.Name = serverName
+			existingServer.Username = actualUser
+			existingServer.Password = consts.DefaultPassword
+			existingServer.Port = 22
+			existingServer.AwsInstanceId = instanceId
+			existingServer.AwsRegionId = req.RegionId
+			existingServer.UpdatedAt = time.Now()
+			if _, err := dbs.DBAdmin.ID(existingServer.Id).Cols("host", "name", "username", "password", "port", "aws_instance_id", "aws_region_id", "updated_at").Update(&existingServer); err != nil {
+				logx.Errorf("更新商户服务器失败: %v", err)
+			}
+			resp.ServerId = existingServer.Id
+		} else {
+			newServer := &entity.Servers{
+				ServerType:    1,
+				MerchantId:    req.MerchantId,
+				Name:          serverName,
+				Host:          publicIP,
+				Port:          22,
+				Username:      actualUser,
+				Password:      consts.DefaultPassword,
+				AwsInstanceId: instanceId,
+				AwsRegionId:   req.RegionId,
+				Status:        1,
+				CreatedAt:     time.Now(),
+				UpdatedAt:     time.Now(),
+			}
+			if _, err := dbs.DBAdmin.Insert(newServer); err != nil {
+				logx.Errorf("注册服务器失败: %v", err)
+			} else {
+				resp.ServerId = newServer.Id
+			}
+		}
+	}
+
+	// 同步更新商户的 server_ip
+	if req.MerchantId > 0 && publicIP != "" {
+		if _, err := dbs.DBAdmin.Where("id = ?", req.MerchantId).Cols("server_ip").Update(&entity.Merchants{ServerIP: publicIP}); err != nil {
+			logx.Errorf("更新商户 server_ip 失败: %v", err)
+		}
+	}
+
+	// 设置响应 URL（自定义 AMI 检测实际端口，全新部署用默认端口）
+	if resp.Message == "" {
+		resp.Message = "部署成功"
+	}
+	if isCustomAMI && sshClient != nil {
+		detectedAPI, detectedWeb, detectedManager := detectCustomAMIPorts(sshClient)
+		resp.APIUrl = fmt.Sprintf("http://%s:%d", publicIP, detectedAPI)
+		resp.WebUrl = fmt.Sprintf("http://%s:%d", publicIP, detectedWeb)
+		resp.AdminUrl = fmt.Sprintf("http://%s:%d", publicIP, detectedManager)
 	} else {
-		resp.ServerId = newServer.Id
+		resp.APIUrl = fmt.Sprintf("http://%s:%d", publicIP, model.DefaultDeployConfig.APIPort)
+		resp.WebUrl = fmt.Sprintf("http://%s:%d", publicIP, model.DefaultDeployConfig.WebPort)
+		resp.AdminUrl = fmt.Sprintf("http://%s:%d", publicIP, model.DefaultDeployConfig.ManagerPort)
 	}
-
-	// 设置响应
-	config := model.DefaultDeployConfig
-	resp.Success = true
-	resp.Message = "部署成功"
-	resp.APIUrl = fmt.Sprintf("http://%s:%d", publicIP, config.APIPort)
-	resp.WebUrl = fmt.Sprintf("http://%s:%d", publicIP, config.WebPort)
-	resp.AdminUrl = fmt.Sprintf("http://%s:%d", publicIP, config.ManagerPort)
 
 	// 记录部署历史
 	if resp.ServerId > 0 {
@@ -820,6 +968,12 @@ func createAMIFromServer(acc *entity.CloudAccounts, serverId int, region string)
 		return "", fmt.Errorf("无法获取实例 ID")
 	}
 
+	// 清理 cloud-init 状态，确保从此 AMI 启动的新实例会重新执行 user-data（设置 root 密码登录）
+	logx.Infof("清理 cloud-init 状态: %s", server.Host)
+	if output, cleanErr := client.ExecuteCommand("sudo cloud-init clean 2>&1 || true"); cleanErr != nil {
+		logx.Errorf("cloud-init clean 失败（非致命）: %v, output: %s", cleanErr, output)
+	}
+
 	// 创建 AMI
 	amiName := fmt.Sprintf("TSDD-Clone-%s-%d", server.Name, time.Now().Unix())
 	createReq := model.AwsCreateAMIReq{
@@ -846,30 +1000,253 @@ func createAMIFromServer(acc *entity.CloudAccounts, serverId int, region string)
 	return resp.ImageId, nil
 }
 
-// updateTSDDConfig 通过 SSH 更新 TSDD 配置中的外网 IP
-func updateTSDDConfig(host, newExternalIP string) error {
-	client := &utils.SSHClient{
-		Host:     host,
-		Port:     22,
-		Username: "root",
-		Password: consts.DefaultPassword,
+// dumpSourceDBSchema 从源服务器 dump 数据库 schema（无数据）+ gorp_migrations 记录
+// 用于克隆部署时初始化全新数据库，避免 migration 冲突
+func dumpSourceDBSchema(sourceServerId int) (string, error) {
+	var server entity.Servers
+	has, err := dbs.DBAdmin.Where("id = ?", sourceServerId).Get(&server)
+	if err != nil || !has {
+		return "", fmt.Errorf("源服务器不存在: id=%d", sourceServerId)
 	}
 
-	// 等待 SSH 可用
-	var lastErr error
-	for i := 0; i < 12; i++ { // 最多等待 2 分钟
-		_, err := client.ExecuteCommand("echo 'SSH ready'")
-		if err == nil {
+	client := &utils.SSHClient{
+		Host:     server.Host,
+		Port:     server.Port,
+		Username: server.Username,
+		Password: server.Password,
+	}
+
+	// Dump schema (no data) + gorp_migrations data
+	dumpCmd := `docker exec tsdd-mysql bash -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump --no-data tsdd 2>/dev/null && MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqldump tsdd gorp_migrations --no-create-info --complete-insert 2>/dev/null'`
+	output, err := client.ExecuteCommandWithTimeout(dumpCmd, 2*time.Minute)
+	if err != nil {
+		return "", fmt.Errorf("dump 源数据库失败: %v", err)
+	}
+
+	logx.Infof("[CloneDeploy] 从源服务器 %s dump schema 完成, 大小: %d bytes", server.Host, len(output))
+	return output, nil
+}
+
+// detectCustomAMIPorts 从远程 docker-compose.yml 中检测实际端口映射
+func detectCustomAMIPorts(client *utils.SSHClient) (apiPort, webPort, managerPort int) {
+	apiPort = model.DefaultDeployConfig.APIPort       // 8090
+	webPort = model.DefaultDeployConfig.WebPort        // 82
+	managerPort = model.DefaultDeployConfig.ManagerPort // 8084
+
+	// 检测 tsdd-server 的 API 端口（映射到容器内 5002 或 8090）
+	output, err := client.ExecuteCommand(`cd /opt/tsdd && grep -A 30 'tsdd-server:' docker-compose.yml | grep -E '^\s+-\s+.+:(5002|8090)' | head -1 | grep -oP '(\d+):' | tr -d ':' || true`)
+	if err == nil {
+		output = strings.TrimSpace(output)
+		if p := parsePort(output); p > 0 {
+			apiPort = p
+		}
+	}
+
+	// 检测 web 端口（映射到容器内 80）
+	output, err = client.ExecuteCommand(`cd /opt/tsdd && grep -A 20 'tsdd-web:\|web:' docker-compose.yml | grep -E '^\s+-\s+\d+:80$' | head -1 | grep -oP '\d+:' | tr -d ':' || true`)
+	if err == nil {
+		output = strings.TrimSpace(output)
+		if p := parsePort(output); p > 0 {
+			webPort = p
+		}
+	}
+
+	// 检测 manager 端口（映射到容器内 80，容器名含 manager）
+	output, err = client.ExecuteCommand(`cd /opt/tsdd && grep -A 20 'manager:' docker-compose.yml | grep -E '^\s+-\s+\d+:80$' | head -1 | grep -oP '\d+:' | tr -d ':' || true`)
+	if err == nil {
+		output = strings.TrimSpace(output)
+		if p := parsePort(output); p > 0 {
+			managerPort = p
+		}
+	}
+
+	logx.Infof("[CustomAMI] 检测到端口: API=%d, Web=%d, Manager=%d", apiPort, webPort, managerPort)
+	return
+}
+
+// parsePort 安全地将字符串解析为端口号
+func parsePort(s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	var port int
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			port = port*10 + int(c-'0')
+		} else {
 			break
 		}
-		lastErr = err
-		time.Sleep(10 * time.Second)
 	}
-	if lastErr != nil {
-		return fmt.Errorf("SSH 连接失败: %v", lastErr)
+	if port > 0 && port <= 65535 {
+		return port
+	}
+	return 0
+}
+
+// updateCustomAMIConfig 自定义 AMI 部署：只做 IP 全局替换，完全保留原有配置（端口、镜像、挂载等）
+// schemaDump: 可选的源数据库 schema dump（用于 fresh EBS 场景，避免 migration 冲突）
+func updateCustomAMIConfig(client *utils.SSHClient, newIP string, schemaDump string) error {
+	// ==================== Phase 1: IP 替换 + SSL 证书 ====================
+	phase1Script := fmt.Sprintf(`
+set -euo pipefail
+cd /opt/tsdd
+
+# 1. 从 .env 中提取旧 IP
+OLD_IP=""
+if [ -f .env ]; then
+    OLD_IP=$(grep '^EXTERNAL_IP=' .env | cut -d= -f2 | tr -d '[:space:]')
+fi
+if [ -z "$OLD_IP" ]; then
+    echo "WARNING: 无法从 .env 提取旧 IP，尝试从 docker-compose.yml 提取"
+    OLD_IP=$(grep -oP '\d+\.\d+\.\d+\.\d+' docker-compose.yml | head -1 || true)
+fi
+
+NEW_IP="%s"
+echo "IP 替换: $OLD_IP -> $NEW_IP"
+
+if [ -n "$OLD_IP" ] && [ "$OLD_IP" != "$NEW_IP" ]; then
+    for f in .env docker-compose.yml configs/hxd.yaml; do
+        if [ -f "$f" ]; then
+            sed -i "s|$OLD_IP|$NEW_IP|g" "$f"
+            echo "Updated: $f"
+        fi
+    done
+else
+    if [ -f .env ]; then
+        sed -i "s/^EXTERNAL_IP=.*/EXTERNAL_IP=$NEW_IP/" .env
+    else
+        echo "EXTERNAL_IP=$NEW_IP" > .env
+    fi
+    echo "EXTERNAL_IP set to $NEW_IP"
+fi
+
+# 2. 重新生成自签名 SSL 证书
+if [ -d /opt/tsdd/ssl ]; then
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout /opt/tsdd/ssl/server.key \
+        -out /opt/tsdd/ssl/server.crt \
+        -subj "/CN=$NEW_IP" \
+        -addext "subjectAltName=IP:$NEW_IP" 2>/dev/null && \
+    echo "SSL cert regenerated for $NEW_IP" || \
+    echo "SSL cert generation failed (non-critical)"
+fi
+
+# 3. 清理 docker-compose.yml 中废弃的 version 字段
+sed -i '/^version:/d' docker-compose.yml 2>/dev/null || true
+echo "Phase 1 done"
+`, newIP)
+
+	output, err := client.ExecuteCommandWithTimeout(phase1Script, 2*time.Minute)
+	if err != nil {
+		return fmt.Errorf("Phase 1 (IP替换) 失败: %v, output: %s", err, output)
+	}
+	logx.Infof("[CustomAMI] Phase 1 完成: %s", output)
+
+	// ==================== Phase 2: 启动基础设施 + 导入 schema ====================
+	if schemaDump != "" {
+		// Fresh EBS 场景：先启动 MySQL，导入 schema，再启动 tsdd-server
+		logx.Info("[CustomAMI] Fresh EBS 模式：分阶段启动，先导入源数据库 schema...")
+
+		// 2a. 启动基础设施（不启动 tsdd-server, web, manager）
+		phase2a := `
+cd /opt/tsdd
+docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
+docker compose up -d mysql redis minio wukongim 2>/dev/null || docker-compose up -d mysql redis minio wukongim 2>/dev/null
+
+echo "Waiting for MySQL..."
+for i in $(seq 1 60); do
+    if docker exec tsdd-mysql mysqladmin ping -h localhost --silent 2>/dev/null; then
+        echo "MySQL ready (attempt $i)"
+        break
+    fi
+    [ "$i" -eq 60 ] && echo "WARNING: MySQL timeout"
+    sleep 2
+done
+echo "Phase 2a done"
+`
+		output, err = client.ExecuteCommandWithTimeout(phase2a, 3*time.Minute)
+		if err != nil {
+			return fmt.Errorf("Phase 2a (启动MySQL) 失败: %v, output: %s", err, output)
+		}
+		logx.Infof("[CustomAMI] Phase 2a 完成: %s", output)
+
+		// 2b. 上传 schema dump 并导入
+		logx.Infof("[CustomAMI] 导入源数据库 schema (%d bytes)...", len(schemaDump))
+
+		// 先写入文件到远程服务器
+		writeCmd := fmt.Sprintf(`cat > /tmp/source_schema.sql << 'SCHEMA_DUMP_EOF'
+%s
+SCHEMA_DUMP_EOF
+echo "Schema file written: $(wc -l < /tmp/source_schema.sql) lines"`, schemaDump)
+		output, err = client.ExecuteCommandWithTimeout(writeCmd, 1*time.Minute)
+		if err != nil {
+			logx.Errorf("[CustomAMI] 写入 schema 文件失败: %v", err)
+			// 不中断，继续尝试正常启动
+		} else {
+			logx.Infof("[CustomAMI] Schema 文件已写入: %s", output)
+
+			// 导入 schema
+			importCmd := `
+cd /opt/tsdd
+MYSQL_PASS=$(grep '^MYSQL_ROOT_PASSWORD=' .env | cut -d= -f2)
+
+# 先清空数据库（可能有部分表）再导入完整 schema
+docker exec tsdd-mysql bash -c "mysql -uroot -p\"$MYSQL_PASS\" -e 'DROP DATABASE IF EXISTS tsdd; CREATE DATABASE tsdd CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'" 2>/dev/null
+
+# 导入 schema + gorp_migrations
+docker cp /tmp/source_schema.sql tsdd-mysql:/tmp/source_schema.sql
+docker exec tsdd-mysql bash -c "mysql -uroot -p\"$MYSQL_PASS\" tsdd < /tmp/source_schema.sql" 2>/dev/null
+
+# 验证
+TABLES=$(docker exec tsdd-mysql bash -c "mysql -uroot -p\"$MYSQL_PASS\" tsdd -N -e 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=\"tsdd\"'" 2>/dev/null)
+MIGRATIONS=$(docker exec tsdd-mysql bash -c "mysql -uroot -p\"$MYSQL_PASS\" tsdd -N -e 'SELECT COUNT(*) FROM gorp_migrations'" 2>/dev/null)
+echo "Schema imported: ${TABLES} tables, ${MIGRATIONS} migration records"
+`
+			output, err = client.ExecuteCommandWithTimeout(importCmd, 2*time.Minute)
+			if err != nil {
+				logx.Errorf("[CustomAMI] Schema 导入失败（非致命）: %v, output: %s", err, output)
+			} else {
+				logx.Infof("[CustomAMI] Schema 导入完成: %s", output)
+			}
+		}
+
+		// 2c. 启动剩余服务
+		phase2c := `
+cd /opt/tsdd
+docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null
+sleep 10
+echo "=== Container Status ==="
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" | grep -E "tsdd|NAME"
+`
+		output, err = client.ExecuteCommandWithTimeout(phase2c, 3*time.Minute)
+		if err != nil {
+			return fmt.Errorf("Phase 2c (启动全部服务) 失败: %v, output: %s", err, output)
+		}
+		logx.Infof("[CustomAMI] Phase 2c 完成: %s", output)
+	} else {
+		// AMI 自带数据（无 fresh EBS）：直接重启所有服务
+		phase2Script := `
+cd /opt/tsdd
+docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
+docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null
+sleep 10
+echo "=== Container Status ==="
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" | grep -E "tsdd|NAME"
+`
+		output, err = client.ExecuteCommandWithTimeout(phase2Script, 3*time.Minute)
+		if err != nil {
+			return fmt.Errorf("Phase 2 (重启服务) 失败: %v, output: %s", err, output)
+		}
+		logx.Infof("[CustomAMI] Phase 2 完成: %s", output)
 	}
 
-	// 更新 .env 文件中的 EXTERNAL_IP
+	return nil
+}
+
+// updateTSDDConfig 通过已建立的 SSH 连接更新 TSDD 配置中的外网 IP（用于非自定义 AMI 场景）
+func updateTSDDConfig(client *utils.SSHClient, newExternalIP string) error {
+	// 更新 .env + configs/hxd.yaml + SSL 证书 + DB 迁移
 	updateCmd := fmt.Sprintf(`
 cd /opt/tsdd
 # 备份原配置
@@ -882,6 +1259,44 @@ else
     echo "EXTERNAL_IP=%s" > .env
 fi
 
+# 更新 configs/hxd.yaml 中的外网 IP（替换所有旧 IP 为新 IP）
+if [ -f configs/hxd.yaml ]; then
+    # 提取当前配置中的 IP（从 external.ip 行）
+    OLD_IP=$(grep '^\s*ip:' configs/hxd.yaml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    if [ -n "$OLD_IP" ] && [ "$OLD_IP" != "%s" ]; then
+        sed -i "s|$OLD_IP|%s|g" configs/hxd.yaml
+        echo "Updated hxd.yaml IP: $OLD_IP -> %s"
+    fi
+    # 确保 baseURL 端口正确
+    sed -i 's|baseURL: "http://%s:[0-9]*"|baseURL: "http://%s:8090"|' configs/hxd.yaml
+    sed -i 's|webLoginURL: "http://%s:[0-9]*"|webLoginURL: "http://%s:82"|' configs/hxd.yaml
+fi
+
+# 重新生成自签名 SSL 证书（绑定新 IP）
+if [ -d /opt/tsdd/ssl ]; then
+    openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+        -keyout /opt/tsdd/ssl/server.key \
+        -out /opt/tsdd/ssl/server.crt \
+        -subj "/CN=%s" \
+        -addext "subjectAltName=IP:%s" 2>/dev/null && \
+    echo "SSL cert regenerated for %s" || \
+    echo "SSL cert generation failed (non-critical)"
+fi
+
+# DB 迁移：添加自定义 HXD 表字段（如果不存在）
+echo "Running DB migration..."
+MYSQL_PASS=$(grep '^MYSQL_ROOT_PASSWORD=' .env | cut -d= -f2)
+docker exec tsdd-mysql mysql -uroot -p"$MYSQL_PASS" tsdd -e "
+ALTER TABLE app_config ADD COLUMN redpacket_on smallint NOT NULL DEFAULT 0 COMMENT '红包功能开关';
+ALTER TABLE app_config ADD COLUMN checkin_on smallint NOT NULL DEFAULT 0 COMMENT '签到功能开关';
+ALTER TABLE app_config ADD COLUMN checkin_reward_on smallint NOT NULL DEFAULT 0 COMMENT '签到奖金开关';
+ALTER TABLE app_config ADD COLUMN checkin_base_reward decimal(10,2) NOT NULL DEFAULT 0 COMMENT '签到基础奖金';
+ALTER TABLE app_config ADD COLUMN checkin_max_reward decimal(10,2) NOT NULL DEFAULT 0 COMMENT '签到最大连续奖金';
+ALTER TABLE app_config ADD COLUMN checkin_increment decimal(10,2) NOT NULL DEFAULT 0 COMMENT '签到连续递增奖金';
+ALTER TABLE app_config ADD COLUMN receipt_on smallint NOT NULL DEFAULT 0 COMMENT '已读回执全局开关';
+ALTER TABLE app_config ADD COLUMN recommended_sites_on smallint NOT NULL DEFAULT 0 COMMENT '推荐网址开关';
+" 2>&1 || echo "DB migration columns may already exist (OK)"
+
 # 重启服务
 docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
 docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null
@@ -889,7 +1304,11 @@ docker compose up -d 2>/dev/null || docker-compose up -d 2>/dev/null
 # 等待服务启动
 sleep 10
 docker ps --format "table {{.Names}}\t{{.Status}}" | grep tsdd
-`, newExternalIP, newExternalIP)
+`, newExternalIP, newExternalIP,
+		newExternalIP, newExternalIP, newExternalIP,
+		newExternalIP, newExternalIP,
+		newExternalIP, newExternalIP,
+		newExternalIP, newExternalIP, newExternalIP)
 
 	output, err := client.ExecuteCommandWithTimeout(updateCmd, 3*time.Minute)
 	if err != nil {
@@ -897,5 +1316,325 @@ docker ps --format "table {{.Names}}\t{{.Status}}" | grep tsdd
 	}
 
 	logx.Infof("配置更新完成: %s", output)
+	return nil
+}
+
+// ========== EBS 数据卷部署 ==========
+
+// setupExtraEBSVolumes 创建、挂载、格式化额外的 EBS 数据卷
+// 返回 (dbVolumeId, minioVolumeId, error)
+func setupExtraEBSVolumes(acc *entity.CloudAccounts, req model.DeployTSDDWithAMIReq,
+	instanceId, publicIP string) (string, string, error) {
+
+	region := req.RegionId
+
+	// 1. 获取实例可用区
+	az, err := cloudaws.GetInstanceAZ(acc, region, instanceId)
+	if err != nil {
+		return "", "", fmt.Errorf("获取实例可用区失败: %v", err)
+	}
+	logx.Infof("[EBS] 实例 %s 位于可用区: %s", instanceId, az)
+
+	// 2. 设置默认值
+	dbSize := req.DBVolumeSizeGiB
+	if dbSize == 0 {
+		dbSize = 20
+	}
+	dbIOPS := req.DBVolumeIOPS
+	if dbIOPS == 0 {
+		dbIOPS = 3000
+	}
+	minioSize := req.MinioVolumeSizeGiB
+	if minioSize == 0 {
+		minioSize = 50
+	}
+	minioIOPS := req.MinioVolumeIOPS
+	if minioIOPS == 0 {
+		minioIOPS = 3000
+	}
+	serverName := req.ServerName
+	if serverName == "" {
+		serverName = "TSDD"
+	}
+
+	// 3. 创建两块数据卷
+	logx.Infof("[EBS] 创建DB数据卷: %dGiB, %d IOPS", dbSize, dbIOPS)
+	dbVolId, err := cloudaws.CreateEBSVolume(acc, region, az, dbSize, dbIOPS,
+		fmt.Sprintf("%s-db-data", serverName))
+	if err != nil {
+		return "", "", fmt.Errorf("创建DB数据卷失败: %v", err)
+	}
+	logx.Infof("[EBS] DB数据卷已创建: %s", dbVolId)
+
+	logx.Infof("[EBS] 创建MinIO数据卷: %dGiB, %d IOPS", minioSize, minioIOPS)
+	minioVolId, err := cloudaws.CreateEBSVolume(acc, region, az, minioSize, minioIOPS,
+		fmt.Sprintf("%s-minio-data", serverName))
+	if err != nil {
+		return dbVolId, "", fmt.Errorf("创建MinIO数据卷失败: %v", err)
+	}
+	logx.Infof("[EBS] MinIO数据卷已创建: %s", minioVolId)
+
+	// 4. 等待卷可用
+	if err := cloudaws.WaitForVolumeAvailable(acc, region, dbVolId, 2*time.Minute); err != nil {
+		return dbVolId, minioVolId, fmt.Errorf("等待DB数据卷可用超时: %v", err)
+	}
+	if err := cloudaws.WaitForVolumeAvailable(acc, region, minioVolId, 2*time.Minute); err != nil {
+		return dbVolId, minioVolId, fmt.Errorf("等待MinIO数据卷可用超时: %v", err)
+	}
+
+	// 5. 挂载卷到实例
+	logx.Info("[EBS] 挂载DB数据卷到 /dev/xvdb")
+	if err := cloudaws.AttachEBSVolume(acc, region, dbVolId, instanceId, "/dev/xvdb"); err != nil {
+		return dbVolId, minioVolId, fmt.Errorf("挂载DB数据卷失败: %v", err)
+	}
+	logx.Info("[EBS] 挂载MinIO数据卷到 /dev/xvdc")
+	if err := cloudaws.AttachEBSVolume(acc, region, minioVolId, instanceId, "/dev/xvdc"); err != nil {
+		return dbVolId, minioVolId, fmt.Errorf("挂载MinIO数据卷失败: %v", err)
+	}
+
+	// 6. 等待挂载完成
+	if err := cloudaws.WaitForVolumeAttached(acc, region, dbVolId, 2*time.Minute); err != nil {
+		return dbVolId, minioVolId, fmt.Errorf("等待DB数据卷挂载完成超时: %v", err)
+	}
+	if err := cloudaws.WaitForVolumeAttached(acc, region, minioVolId, 2*time.Minute); err != nil {
+		return dbVolId, minioVolId, fmt.Errorf("等待MinIO数据卷挂载完成超时: %v", err)
+	}
+
+	// 7. SSH 格式化和挂载
+	logx.Info("[EBS] SSH 格式化和挂载磁盘...")
+	if err := sshFormatAndMountEBS(publicIP); err != nil {
+		return dbVolId, minioVolId, fmt.Errorf("SSH格式化挂载失败: %v", err)
+	}
+
+	// 8. 更新 docker-compose.yml
+	logx.Info("[EBS] 更新 docker-compose.yml 使用宿主机路径...")
+	if err := sshUpdateDockerComposeVolumes(publicIP); err != nil {
+		return dbVolId, minioVolId, fmt.Errorf("更新docker-compose失败: %v", err)
+	}
+
+	return dbVolId, minioVolId, nil
+}
+
+// sshFormatAndMountEBS SSH 到实例执行格式化、挂载、写 fstab
+func sshFormatAndMountEBS(host string) error {
+	client := &utils.SSHClient{
+		Host:     host,
+		Port:     22,
+		Username: "root",
+		Password: consts.DefaultPassword,
+	}
+
+	// Nitro 实例上 /dev/xvdb 可能显示为 /dev/nvme1n1，脚本自动处理
+	script := `
+set -euo pipefail
+
+# 解析设备名（兼容 NVMe）
+resolve_dev() {
+    local DEV="$1"
+    if [ -b "$DEV" ]; then echo "$DEV"; return; fi
+    local IDX
+    case "$DEV" in
+        /dev/xvdb) IDX=1 ;;
+        /dev/xvdc) IDX=2 ;;
+        *) echo "$DEV"; return ;;
+    esac
+    local NVME="/dev/nvme${IDX}n1"
+    if [ -b "$NVME" ]; then echo "$NVME"; return; fi
+    sleep 5
+    if [ -b "$DEV" ]; then echo "$DEV"; return; fi
+    if [ -b "$NVME" ]; then echo "$NVME"; return; fi
+    echo "ERROR: device not found for $DEV" >&2
+    return 1
+}
+
+DB_DEV=$(resolve_dev /dev/xvdb)
+MINIO_DEV=$(resolve_dev /dev/xvdc)
+echo "DB device: $DB_DEV"
+echo "MinIO device: $MINIO_DEV"
+
+mkdir -p /data/db /data/minio
+
+# 格式化（仅无文件系统时）
+if ! blkid "$DB_DEV" | grep -q TYPE; then
+    mkfs.ext4 -F "$DB_DEV"
+    echo "Formatted $DB_DEV as ext4"
+fi
+if ! blkid "$MINIO_DEV" | grep -q TYPE; then
+    mkfs.ext4 -F "$MINIO_DEV"
+    echo "Formatted $MINIO_DEV as ext4"
+fi
+
+mount "$DB_DEV" /data/db
+mount "$MINIO_DEV" /data/minio
+
+# 用 UUID 写 fstab（更可靠）
+DB_UUID=$(blkid -s UUID -o value "$DB_DEV")
+MINIO_UUID=$(blkid -s UUID -o value "$MINIO_DEV")
+
+grep -q "$DB_UUID" /etc/fstab 2>/dev/null || echo "UUID=$DB_UUID /data/db ext4 defaults,nofail 0 2" >> /etc/fstab
+grep -q "$MINIO_UUID" /etc/fstab 2>/dev/null || echo "UUID=$MINIO_UUID /data/minio ext4 defaults,nofail 0 2" >> /etc/fstab
+
+echo "EBS volumes mounted successfully"
+df -h /data/db /data/minio
+`
+
+	output, err := client.ExecuteCommandWithTimeout(script, 3*time.Minute)
+	if err != nil {
+		return fmt.Errorf("格式化/挂载EBS失败: %v, output: %s", err, output)
+	}
+	logx.Infof("[EBS] 格式化/挂载完成: %s", output)
+	return nil
+}
+
+// sshUpdateDockerComposeVolumes 更新 docker-compose.yml 把 named volumes 替换为宿主机路径
+func sshUpdateDockerComposeVolumes(host string) error {
+	client := &utils.SSHClient{
+		Host:     host,
+		Port:     22,
+		Username: "root",
+		Password: consts.DefaultPassword,
+	}
+
+	script := `
+set -euo pipefail
+cd /opt/tsdd
+
+# 先停止服务
+docker compose down 2>/dev/null || docker-compose down 2>/dev/null || true
+
+# 创建数据目录
+mkdir -p /data/db/mysql /data/db/redis /data/db/wukongim /data/minio/data
+
+# 替换 named volumes 为宿主机路径
+sed -i 's|^\(\s*-\s*\)mysql_data:/var/lib/mysql|\1/data/db/mysql:/var/lib/mysql|' docker-compose.yml
+sed -i 's|^\(\s*-\s*\)redis_data:/data|\1/data/db/redis:/data|' docker-compose.yml
+sed -i 's|^\(\s*-\s*\)minio_data:/data|\1/data/minio/data:/data|' docker-compose.yml
+sed -i 's|^\(\s*-\s*\)wukongim_data:/root/wukongim|\1/data/db/wukongim:/root/wukongim|' docker-compose.yml
+
+# 删除底部的 named volumes 声明
+# 匹配 "^volumes:" 到文件末尾的 volume 声明行
+sed -i '/^volumes:$/,$ { /^volumes:$/d; /^  [a-z_]*:$/d; }' docker-compose.yml
+
+echo "=== docker-compose.yml volume mappings ==="
+grep -n "/data/" docker-compose.yml || echo "No host path volumes found"
+`
+
+	output, err := client.ExecuteCommandWithTimeout(script, 3*time.Minute)
+	if err != nil {
+		return fmt.Errorf("更新docker-compose失败: %v, output: %s", err, output)
+	}
+	logx.Infof("[EBS] docker-compose更新完成: %s", output)
+	return nil
+}
+
+// sshUploadAndSetupResources 上传 TSDD 服务器资源（修复后的二进制 + assets 默认头像）
+// 资源包存放在 /opt/control/tsdd-resources.tar.gz，包含:
+//   - assets/assets/*.png  (默认头像文件)
+//   - TangSengDaoDaoServer (修复后的服务器二进制)
+//
+// 如果资源包不存在则跳过（非致命），AMI 可能已经包含这些资源
+func sshUploadAndSetupResources(client *utils.SSHClient) error {
+	const resourcesPath = "/opt/control/tsdd-resources.tar.gz"
+
+	f, err := os.Open(resourcesPath)
+	if err != nil {
+		logx.Infof("[Deploy] 资源包 %s 未找到，跳过资源上传", resourcesPath)
+		return nil
+	}
+	defer f.Close()
+
+	// 上传资源包
+	logx.Info("[Deploy] 上传TSDD资源包...")
+	if err := client.UploadFile("/tmp/tsdd-resources.tar.gz", f); err != nil {
+		return fmt.Errorf("上传资源包失败: %v", err)
+	}
+
+	// 解压并配置 docker-compose 挂载
+	script := `
+set -euo pipefail
+cd /opt/tsdd
+
+# 解压资源包
+tar xzf /tmp/tsdd-resources.tar.gz
+chmod +x /opt/tsdd/TangSengDaoDaoServer 2>/dev/null || true
+rm -f /tmp/tsdd-resources.tar.gz
+
+# 确保 configs 目录存在
+mkdir -p /opt/tsdd/configs
+
+# 如果 configs/hxd.yaml 不存在，生成默认配置
+if [ ! -f /opt/tsdd/configs/hxd.yaml ]; then
+    EXTERNAL_IP=$(grep '^EXTERNAL_IP=' .env 2>/dev/null | cut -d= -f2 || echo "0.0.0.0")
+    MYSQL_PASS=$(grep '^MYSQL_ROOT_PASSWORD=' .env 2>/dev/null | cut -d= -f2 || echo "TsddSecure2024!")
+    MINIO_USER=$(grep '^MINIO_ROOT_USER=' .env 2>/dev/null | cut -d= -f2 || echo "admin")
+    MINIO_PASS=$(grep '^MINIO_ROOT_PASSWORD=' .env 2>/dev/null | cut -d= -f2 || echo "TsddMinio2024!")
+    cat > /opt/tsdd/configs/hxd.yaml << CFGEOF
+mode: "release"
+addr: ":8090"
+grpcAddr: "0.0.0.0:6979"
+rootDir: "tsdddata"
+appName: "唐僧叨叨"
+messageSaveAcrossDevice: true
+onlineStatusOn: true
+onlineStatusOnForMember: true
+onlineStatusOnForRegular: true
+groupUpgradeWhenMemberCount: 1000
+eventPoolSize: 100
+wukongIM:
+  apiURL: "http://wukongim:5001"
+db:
+  mysqlAddr: "root:${MYSQL_PASS}@tcp(mysql:3306)/tsdd?charset=utf8mb4&parseTime=true&loc=Local"
+  redisAddr: "redis:6379"
+  redisPass: ""
+external:
+  ip: "${EXTERNAL_IP}"
+  baseURL: "http://${EXTERNAL_IP}:8090"
+  webLoginURL: "http://${EXTERNAL_IP}:82"
+smsCode: "123456"
+logger:
+  level: 2
+  dir: "./logs"
+  lineNum: false
+fileService: "minio"
+minio:
+  url: "http://minio:9000"
+  accessKeyID: "${MINIO_USER}"
+  secretAccessKey: "${MINIO_PASS}"
+CFGEOF
+    echo "Generated configs/hxd.yaml"
+fi
+
+# 添加 volume 挂载到 tsdd-server（如果还没有）
+if ! grep -q '/home/configs/hxd.yaml' docker-compose.yml && ! grep -q '/home/assets' docker-compose.yml; then
+    python3 -c "
+path = 'docker-compose.yml'
+with open(path) as f:
+    content = f.read()
+
+# 在 condition: service_started 后面插入 volumes
+old = 'condition: service_started\n'
+new = old + '    volumes:\n      - ./configs/hxd.yaml:/home/configs/hxd.yaml:ro\n      - ./assets:/home/assets:ro\n      - ./TangSengDaoDaoServer:/home/app\n'
+
+if old in content:
+    content = content.replace(old, new, 1)
+    with open(path, 'w') as f:
+        f.write(content)
+    print('Volume mounts added')
+else:
+    print('WARNING: insertion point not found')
+"
+fi
+
+echo "=== Resources setup ==="
+ls -la /opt/tsdd/assets/assets/ 2>/dev/null && echo "Assets OK" || echo "No assets"
+ls -lh /opt/tsdd/TangSengDaoDaoServer 2>/dev/null && echo "Binary OK" || echo "No binary"
+ls -la /opt/tsdd/configs/hxd.yaml 2>/dev/null && echo "Config OK" || echo "No config"
+grep '/home/configs/hxd.yaml\|/home/assets\|/home/app' docker-compose.yml && echo "Mount OK" || echo "No mount"
+`
+	output, err := client.ExecuteCommandWithTimeout(script, 5*time.Minute)
+	if err != nil {
+		return fmt.Errorf("资源部署失败: %v, output: %s", err, output)
+	}
+	logx.Infof("[Deploy] 资源部署完成: %s", output)
 	return nil
 }

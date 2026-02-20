@@ -539,6 +539,10 @@ func ListObjects(acc *entity.CloudAccounts, req model.AwsS3ListObjectsReq) (mode
 }
 
 func UploadObject(acc *entity.CloudAccounts, region, bucket, key string, r io.Reader) error {
+	region, err := resolveS3Region(acc, region, bucket)
+	if err != nil {
+		return err
+	}
 	// 增加超时时间至10分钟，支持大文件上传
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -550,7 +554,44 @@ func UploadObject(acc *entity.CloudAccounts, region, bucket, key string, r io.Re
 	return err
 }
 
+// GetBucketRegion 获取 S3 Bucket 所在的 Region
+func GetBucketRegion(acc *entity.CloudAccounts, bucket string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	// GetBucketLocation 可以从任意 region 调用，用 us-east-1
+	cli, err := awscloud.NewS3Client(ctx, acc, "us-east-1")
+	if err != nil {
+		return "", err
+	}
+	out, err := cli.GetBucketLocation(ctx, &s3.GetBucketLocationInput{Bucket: &bucket})
+	if err != nil {
+		return "", fmt.Errorf("获取Bucket区域失败: %v", err)
+	}
+	region := string(out.LocationConstraint)
+	if region == "" {
+		region = "us-east-1" // S3 默认区域不返回 LocationConstraint
+	}
+	return region, nil
+}
+
+// resolveS3Region 如果 region 为空则自动检测 bucket 所在 region
+func resolveS3Region(acc *entity.CloudAccounts, region, bucket string) (string, error) {
+	if region != "" {
+		return region, nil
+	}
+	detected, err := GetBucketRegion(acc, bucket)
+	if err != nil {
+		return "", fmt.Errorf("未指定region且自动检测失败: %v", err)
+	}
+	return detected, nil
+}
+
 func SetBucketPublicAccess(acc *entity.CloudAccounts, region, bucket string, public bool) error {
+	region, err := resolveS3Region(acc, region, bucket)
+	if err != nil {
+		return err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cli, err := awscloud.NewS3Client(ctx, acc, region)
@@ -559,6 +600,21 @@ func SetBucketPublicAccess(acc *entity.CloudAccounts, region, bucket string, pub
 	}
 
 	if public {
+		// 先禁用 S3 Block Public Access，否则 PutBucketPolicy 会被拒绝
+		falseVal := false
+		_, err = cli.PutPublicAccessBlock(ctx, &s3.PutPublicAccessBlockInput{
+			Bucket: &bucket,
+			PublicAccessBlockConfiguration: &s3types.PublicAccessBlockConfiguration{
+				BlockPublicAcls:       &falseVal,
+				IgnorePublicAcls:      &falseVal,
+				BlockPublicPolicy:     &falseVal,
+				RestrictPublicBuckets: &falseVal,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("禁用Block Public Access失败: %v", err)
+		}
+
 		// 设置为公开：允许所有人读取
 		policy := `{
 	"Version": "2012-10-17",
@@ -586,11 +642,26 @@ func SetBucketPublicAccess(acc *entity.CloudAccounts, region, bucket string, pub
 		if err != nil && !strings.Contains(err.Error(), "NoSuchBucketPolicy") {
 			return err
 		}
+		// 重新启用 Block Public Access
+		trueVal := true
+		_, _ = cli.PutPublicAccessBlock(ctx, &s3.PutPublicAccessBlockInput{
+			Bucket: &bucket,
+			PublicAccessBlockConfiguration: &s3types.PublicAccessBlockConfiguration{
+				BlockPublicAcls:       &trueVal,
+				IgnorePublicAcls:      &trueVal,
+				BlockPublicPolicy:     &trueVal,
+				RestrictPublicBuckets: &trueVal,
+			},
+		})
 		return nil
 	}
 }
 
 func DownloadObject(acc *entity.CloudAccounts, region, bucket, key string) ([]byte, string, string, error) {
+	region, err := resolveS3Region(acc, region, bucket)
+	if err != nil {
+		return nil, "", "", err
+	}
 	// 增加超时时间至10分钟，支持大文件下载
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -618,6 +689,10 @@ func DownloadObject(acc *entity.CloudAccounts, region, bucket, key string) ([]by
 
 // DeleteObject 删除 S3 对象
 func DeleteObject(acc *entity.CloudAccounts, region, bucket, key string) error {
+	region, err := resolveS3Region(acc, region, bucket)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cli, err := awscloud.NewS3Client(ctx, acc, region)
@@ -651,6 +726,10 @@ func CreateBucket(acc *entity.CloudAccounts, region, bucket string) error {
 
 // DeleteBucket 删除 S3 Bucket（Bucket必须为空）
 func DeleteBucket(acc *entity.CloudAccounts, region, bucket string) error {
+	region, err := resolveS3Region(acc, region, bucket)
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cli, err := awscloud.NewS3Client(ctx, acc, region)
@@ -703,28 +782,191 @@ func GetCostAndUsage(acc *entity.CloudAccounts, region, startDate, endDate, gran
 	return out, nil
 }
 
-// getDefaultAwsAmiId 获取默认的AWS Ubuntu AMI ID
+// getDefaultAwsAmiId 获取默认的AWS Ubuntu AMI ID（静态回退表）
 func getDefaultAwsAmiId(region string) string {
-	// AWS各地区Ubuntu 22.04 LTS AMI ID (HVM, SSD Volume Type)
-	// 这些是官方Ubuntu AMI，需要定期更新
 	defaultAmis := map[string]string{
-		"us-east-1":      "ami-0c7217cdde317cfec", // 美东
-		"us-west-2":      "ami-0efcece6bed30fd98", // 美西(俄勒冈)
-		"eu-west-1":      "ami-0905a3c97561e0b69", // 欧洲(爱尔兰)
-		"ap-southeast-1": "ami-078c1149d8ad719a7", // 新加坡
-		"ap-northeast-1": "ami-0d52744d6551d851e", // 东京
-		"ap-east-1":      "ami-0d96ec8a788679eb2", // 香港
+		"us-east-1":      "ami-0c7217cdde317cfec",
+		"us-west-2":      "ami-0efcece6bed30fd98",
+		"eu-west-1":      "ami-0905a3c97561e0b69",
+		"ap-southeast-1": "ami-078c1149d8ad719a7",
+		"ap-northeast-1": "ami-0d52744d6551d851e",
+		"ap-east-1":      "ami-0d96ec8a788679eb2",
 	}
 	if ami, ok := defaultAmis[region]; ok {
 		return ami
 	}
-	// 默认返回美东的AMI
 	return "ami-0c7217cdde317cfec"
+}
+
+// FindLatestUbuntuAMI 通过 AWS API 动态查找指定区域最新的 Ubuntu 22.04 LTS AMI
+// 比硬编码 AMI ID 更可靠，始终返回当前可用的镜像
+func FindLatestUbuntuAMI(acc *entity.CloudAccounts, region string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cli, err := awscloud.NewEc2Client(ctx, acc, region)
+	if err != nil {
+		return "", fmt.Errorf("创建 EC2 客户端失败: %v", err)
+	}
+
+	// Canonical 官方 Owner ID
+	canonicalOwner := "099720109477"
+	nameFilter := "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"
+	stateFilter := "available"
+
+	out, err := cli.DescribeImages(ctx, &ec2.DescribeImagesInput{
+		Owners: []string{canonicalOwner},
+		Filters: []ec2types.Filter{
+			{Name: strPtr("name"), Values: []string{nameFilter}},
+			{Name: strPtr("state"), Values: []string{stateFilter}},
+			{Name: strPtr("architecture"), Values: []string{"x86_64"}},
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("查询 Ubuntu AMI 失败: %v", err)
+	}
+	if len(out.Images) == 0 {
+		return "", fmt.Errorf("未找到可用的 Ubuntu 22.04 AMI (region: %s)", region)
+	}
+
+	// 按创建时间排序，选最新的
+	latest := out.Images[0]
+	for _, img := range out.Images[1:] {
+		if img.CreationDate != nil && latest.CreationDate != nil && *img.CreationDate > *latest.CreationDate {
+			latest = img
+		}
+	}
+
+	amiId := ""
+	if latest.ImageId != nil {
+		amiId = *latest.ImageId
+	}
+	logx.Infof("动态查找到最新 Ubuntu AMI: %s (region: %s, name: %s)", amiId, region, safeStr(latest.Name))
+	return amiId, nil
+}
+
+func safeStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+// checkInstanceTypeAvailability 检查实例类型在目标区域是否可用，并返回兼容的子网
+// 如果实例类型在整个区域都不支持，返回明确错误并建议替代方案
+func checkInstanceTypeAvailability(ctx context.Context, cli *ec2.Client, instanceType, region string) (subnetId string, err error) {
+	if instanceType == "" {
+		return "", nil
+	}
+
+	// 1. 查询该实例类型在哪些 AZ 可用
+	offerOut, qErr := cli.DescribeInstanceTypeOfferings(ctx, &ec2.DescribeInstanceTypeOfferingsInput{
+		LocationType: ec2types.LocationTypeAvailabilityZone,
+		Filters: []ec2types.Filter{
+			{Name: strPtr("instance-type"), Values: []string{instanceType}},
+		},
+	})
+	if qErr != nil {
+		return "", fmt.Errorf("查询实例类型 %s 可用区失败: %v", instanceType, qErr)
+	}
+
+	if len(offerOut.InstanceTypeOfferings) == 0 {
+		// 实例类型在整个区域不可用，查找同系列替代方案
+		alternatives := suggestAlternativeInstanceTypes(ctx, cli, instanceType)
+		altMsg := ""
+		if len(alternatives) > 0 {
+			altMsg = fmt.Sprintf("，可用替代方案: %s", strings.Join(alternatives, ", "))
+		}
+		return "", fmt.Errorf("实例类型 %s 在区域 %s 不可用%s", instanceType, region, altMsg)
+	}
+
+	azSet := make(map[string]bool)
+	for _, o := range offerOut.InstanceTypeOfferings {
+		if o.Location != nil {
+			azSet[*o.Location] = true
+		}
+	}
+
+	// 2. 查询默认 VPC 的子网，选择一个兼容 AZ 内的
+	subOut, sErr := cli.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{
+		Filters: []ec2types.Filter{
+			{Name: strPtr("default-for-az"), Values: []string{"true"}},
+		},
+	})
+	if sErr != nil || len(subOut.Subnets) == 0 {
+		return "", nil // 找不到默认子网，让 AWS 自行选择
+	}
+
+	for _, sn := range subOut.Subnets {
+		if sn.AvailabilityZone != nil && azSet[*sn.AvailabilityZone] && sn.SubnetId != nil {
+			return *sn.SubnetId, nil
+		}
+	}
+	return "", nil
+}
+
+// suggestAlternativeInstanceTypes 为不可用的实例类型建议同规格替代方案
+func suggestAlternativeInstanceTypes(ctx context.Context, cli *ec2.Client, instanceType string) []string {
+	// 解析 family.size，如 "c7a.8xlarge" → family="c7a", size="8xlarge"
+	parts := strings.SplitN(instanceType, ".", 2)
+	if len(parts) != 2 {
+		return nil
+	}
+	size := parts[1]
+	family := parts[0]
+
+	// 提取系列前缀（如 c7a → c）和代数（如 c7a → 7）
+	prefix := ""
+	for _, ch := range family {
+		if ch >= 'a' && ch <= 'z' {
+			prefix = string(ch)
+			break
+		}
+	}
+	if prefix == "" {
+		return nil
+	}
+
+	// 候选同系列不同代（如 c7a → c7i, c6i, c6a, c5）
+	candidates := []string{}
+	switch prefix {
+	case "c":
+		candidates = []string{"c7i." + size, "c7g." + size, "c6i." + size, "c6a." + size, "c5." + size}
+	case "m":
+		candidates = []string{"m7i." + size, "m7g." + size, "m6i." + size, "m6a." + size, "m5." + size}
+	case "r":
+		candidates = []string{"r7i." + size, "r7g." + size, "r6i." + size, "r6a." + size, "r5." + size}
+	case "t":
+		candidates = []string{"t3." + size, "t3a." + size, "t2." + size}
+	default:
+		return nil
+	}
+
+	// 批量查询哪些候选类型在该区域可用
+	var available []string
+	for _, c := range candidates {
+		if c == instanceType {
+			continue
+		}
+		out, err := cli.DescribeInstanceTypeOfferings(ctx, &ec2.DescribeInstanceTypeOfferingsInput{
+			LocationType: ec2types.LocationTypeRegion,
+			Filters: []ec2types.Filter{
+				{Name: strPtr("instance-type"), Values: []string{c}},
+			},
+		})
+		if err == nil && len(out.InstanceTypeOfferings) > 0 {
+			available = append(available, c)
+		}
+		if len(available) >= 3 {
+			break
+		}
+	}
+	return available
 }
 
 // CreateEc2Instance 根据镜像创建单台实例
 func CreateEc2Instance(acc *entity.CloudAccounts, req model.AwsCreateEc2InstanceReq) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cli, err := awscloud.NewEc2Client(ctx, acc, req.RegionId)
 	if err != nil {
@@ -746,10 +988,27 @@ func CreateEc2Instance(acc *entity.CloudAccounts, req model.AwsCreateEc2Instance
 			}
 		}
 	}
+	volType := ec2types.VolumeTypeGp3
 	blockDevice := &ec2types.BlockDeviceMapping{
 		DeviceName: deviceName,
-		Ebs:        &ec2types.EbsBlockDevice{VolumeSize: &req.VolumeSizeGiB},
+		Ebs:        &ec2types.EbsBlockDevice{VolumeSize: &req.VolumeSizeGiB, VolumeType: volType},
 	}
+
+	// 检查实例类型在目标区域是否可用，并自动选择兼容子网
+	subnetId := req.SubnetId
+	if subnetId == "" {
+		found, checkErr := checkInstanceTypeAvailability(ctx, cli, req.InstanceType, req.RegionId)
+		if checkErr != nil {
+			return "", checkErr // 实例类型在该区域不可用，直接返回友好错误
+		}
+		if found != "" {
+			subnetId = found
+			logx.Infof("[CreateEc2Instance] 自动选择子网 %s (实例类型: %s)", subnetId, req.InstanceType)
+		}
+	}
+
+	logx.Infof("[CreateEc2Instance] 参数: region=%s, ami=%s, type=%s, subnet=%s, volumeSize=%d",
+		req.RegionId, req.ImageId, req.InstanceType, subnetId, req.VolumeSizeGiB)
 
 	runIn := &ec2.RunInstancesInput{
 		ImageId:      &req.ImageId,
@@ -757,8 +1016,8 @@ func CreateEc2Instance(acc *entity.CloudAccounts, req model.AwsCreateEc2Instance
 		MinCount:     int32Ptr(1),
 		MaxCount:     int32Ptr(1),
 	}
-	if req.SubnetId != "" {
-		runIn.SubnetId = &req.SubnetId
+	if subnetId != "" {
+		runIn.SubnetId = &subnetId
 	}
 	if req.KeyName != "" {
 		runIn.KeyName = &req.KeyName
@@ -774,6 +1033,8 @@ func CreateEc2Instance(acc *entity.CloudAccounts, req model.AwsCreateEc2Instance
 
 	out, err := cli.RunInstances(ctx, runIn)
 	if err != nil {
+		logx.Errorf("[CreateEc2Instance] RunInstances 失败: region=%s, type=%s, ami=%s, subnet=%s, err=%v",
+			req.RegionId, req.InstanceType, req.ImageId, subnetId, err)
 		return "", err
 	}
 	if len(out.Instances) == 0 || out.Instances[0].InstanceId == nil {
@@ -828,8 +1089,16 @@ func OpenRequiredPortsForSecurityGroups(ctx context.Context, cli *ec2.Client, se
 		requiredPorts = append(requiredPorts, PortRange{port, port}) // 指定端口
 	} else {
 		requiredPorts = append(requiredPorts, PortRange{22, 22})       // SSH
+		requiredPorts = append(requiredPorts, PortRange{82, 82})       // Web 前端
+		requiredPorts = append(requiredPorts, PortRange{8090, 8090})   // TSDD API
+		requiredPorts = append(requiredPorts, PortRange{6979, 6979})   // TSDD gRPC
+		requiredPorts = append(requiredPorts, PortRange{5001, 5001})   // WuKongIM API
+		requiredPorts = append(requiredPorts, PortRange{5100, 5100})   // WuKongIM TCP
+		requiredPorts = append(requiredPorts, PortRange{5200, 5200})   // WuKongIM WS
+		requiredPorts = append(requiredPorts, PortRange{5300, 5300})   // WuKongIM Manager
 		requiredPorts = append(requiredPorts, PortRange{10010, 10012}) // gost端口
 		requiredPorts = append(requiredPorts, PortRange{10000, 10002}) // 业务端口
+		requiredPorts = append(requiredPorts, PortRange{5003, 5003})   // TSDD API (自定义 docker-compose 端口映射)
 		requiredPorts = append(requiredPorts, PortRange{8084, 8084})   // 管理后台端口
 		requiredPorts = append(requiredPorts, PortRange{54321, 54321}) // 总控后台端口
 	}
@@ -1443,6 +1712,151 @@ func WaitForInstanceRunning(acc *entity.CloudAccounts, region, instanceId string
 		time.Sleep(5 * time.Second)
 	}
 	return errors.New("等待实例启动超时")
+}
+
+// ========== EBS 数据卷操作 ==========
+
+// GetInstanceAZ 获取实例的可用区
+func GetInstanceAZ(acc *entity.CloudAccounts, region, instanceId string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cli, err := awscloud.NewEc2Client(ctx, acc, region)
+	if err != nil {
+		return "", err
+	}
+
+	out, err := cli.DescribeInstances(ctx, &ec2.DescribeInstancesInput{
+		InstanceIds: []string{instanceId},
+	})
+	if err != nil {
+		return "", err
+	}
+	if len(out.Reservations) == 0 || len(out.Reservations[0].Instances) == 0 {
+		return "", errors.New("实例不存在")
+	}
+
+	ins := out.Reservations[0].Instances[0]
+	if ins.Placement != nil && ins.Placement.AvailabilityZone != nil {
+		return *ins.Placement.AvailabilityZone, nil
+	}
+	return "", errors.New("无法获取实例可用区")
+}
+
+// CreateEBSVolume 创建 gp3 EBS 数据卷
+func CreateEBSVolume(acc *entity.CloudAccounts, region, az string, sizeGiB int32, iops int32, name string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cli, err := awscloud.NewEc2Client(ctx, acc, region)
+	if err != nil {
+		return "", err
+	}
+
+	volumeType := ec2types.VolumeTypeGp3
+	input := &ec2.CreateVolumeInput{
+		AvailabilityZone: &az,
+		Size:             &sizeGiB,
+		VolumeType:       volumeType,
+		TagSpecifications: []ec2types.TagSpecification{
+			{
+				ResourceType: ec2types.ResourceTypeVolume,
+				Tags: []ec2types.Tag{
+					{Key: strPtr("Name"), Value: strPtr(name)},
+				},
+			},
+		},
+	}
+	if iops > 3000 {
+		input.Iops = &iops
+	}
+
+	out, err := cli.CreateVolume(ctx, input)
+	if err != nil {
+		return "", fmt.Errorf("创建EBS卷失败: %v", err)
+	}
+	return deref(out.VolumeId), nil
+}
+
+// WaitForVolumeAvailable 等待 EBS 卷变为 available 状态
+func WaitForVolumeAvailable(acc *entity.CloudAccounts, region, volumeId string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cli, err := awscloud.NewEc2Client(ctx, acc, region)
+	if err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, err := cli.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+			VolumeIds: []string{volumeId},
+		})
+		if err != nil {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if len(out.Volumes) > 0 {
+			state := out.Volumes[0].State
+			if state == ec2types.VolumeStateAvailable {
+				return nil
+			}
+			if state == ec2types.VolumeStateError {
+				return errors.New("EBS卷创建失败")
+			}
+		}
+		time.Sleep(5 * time.Second)
+	}
+	return errors.New("等待EBS卷可用超时")
+}
+
+// AttachEBSVolume 将 EBS 卷挂载到实例
+func AttachEBSVolume(acc *entity.CloudAccounts, region, volumeId, instanceId, device string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	cli, err := awscloud.NewEc2Client(ctx, acc, region)
+	if err != nil {
+		return err
+	}
+
+	_, err = cli.AttachVolume(ctx, &ec2.AttachVolumeInput{
+		VolumeId:   &volumeId,
+		InstanceId: &instanceId,
+		Device:     &device,
+	})
+	if err != nil {
+		return fmt.Errorf("挂载EBS卷失败: %v", err)
+	}
+	return nil
+}
+
+// WaitForVolumeAttached 等待 EBS 卷挂载完成（in-use 状态）
+func WaitForVolumeAttached(acc *entity.CloudAccounts, region, volumeId string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cli, err := awscloud.NewEc2Client(ctx, acc, region)
+	if err != nil {
+		return err
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		out, err := cli.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{
+			VolumeIds: []string{volumeId},
+		})
+		if err != nil {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		if len(out.Volumes) > 0 && out.Volumes[0].State == ec2types.VolumeStateInUse {
+			return nil
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return errors.New("等待EBS卷挂载超时")
 }
 
 // ConfigureTSDDServicesIP 在 EC2 实例创建后配置 TSDD 服务 IP

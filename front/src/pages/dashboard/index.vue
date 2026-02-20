@@ -14,7 +14,8 @@ import {
   Search,
   Shop
 } from "@element-plus/icons-vue"
-import { changeMerchantGostPortApi, changeMerchantIPApi, clearMerchantDataApi, getAdminmSmsConfigApi, getTunnelStatsApi, merchantQueryApi, saveAdminmNicknameApi, saveAdminmSensitiveContentsApi, saveAdminmSmsConfigApi, tunnelCheckApi, updateMerchantApi } from "./apis/index"
+import { changeMerchantGostPortApi, changeMerchantIPApi, clearMerchantDataApi, exportMerchantDatabaseApi, getAdminmSmsConfigApi, getTunnelStatsApi, merchantQueryApi, saveAdminmNicknameApi, saveAdminmSensitiveContentsApi, saveAdminmSmsConfigApi, tunnelCheckApi, updateMerchantApi } from "./apis/index"
+import { getTwoFAStatusApi } from "@/common/apis/twofa"
 import ImageUploader from "@/common/components/ImageUploader.vue"
 import AdminmUsersDialog from "./components/AdminmUsersDialog.vue"
 import MerchantDetail from "./components/MerchantDetail.vue"
@@ -262,31 +263,82 @@ function handleQuickBuild(row: any) {
   })
 }
 
+// 导出商户数据库
+const exportDbLoading = ref(false)
+async function handleExportDatabase(row: any) {
+  if (!row?.no) return
+
+  try {
+    await ElMessageBox.confirm(
+      `确定导出商户 "${row.name}" 的数据库吗？\n\n导出使用 --single-transaction 快照读取，不会影响线上服务。`,
+      "导出数据库",
+      { confirmButtonText: "开始导出", cancelButtonText: "取消", type: "info" }
+    )
+  } catch {
+    return
+  }
+
+  exportDbLoading.value = true
+  ElMessage.info("正在导出数据库，请稍候...")
+  try {
+    const blob = (await exportMerchantDatabaseApi(row.no)) as unknown as Blob
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "")
+    a.download = `${row.name || row.no}_${dateStr}.sql.gz`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    ElMessage.success("数据库导出完成")
+  } catch (err: any) {
+    ElMessage.error(err?.message || "导出失败")
+  } finally {
+    exportDbLoading.value = false
+  }
+}
+
 // 清除商户数据
 const clearDataLoading = ref(false)
-function handleClearData(row: any) {
+async function handleClearData(row: any) {
   if (!row?.no) return
-  ElMessageBox.prompt(
-    `此操作将清除商户 "${row.name}" 的所有用户数据（用户、消息、群组、好友等），但保留系统账号和配置。\n\n请输入商户企业号 "${row.no}" 确认操作：`,
-    "危险操作 - 清除数据",
-    {
-      confirmButtonText: "确认清除",
-      cancelButtonText: "取消",
-      type: "error",
-      inputValidator: (value: string) => {
-        if (value !== row.no) return `请输入正确的企业号: ${row.no}`
-        return true
-      },
-      inputPlaceholder: `请输入 ${row.no}`
+
+  // 检查当前用户 2FA 状态
+  let has2FA = false
+  try {
+    const statusRes = await getTwoFAStatusApi()
+    has2FA = !!(statusRes as any)?.data?.enabled
+  } catch { /* ignore */ }
+
+  const promptMsg = has2FA
+    ? `此操作将清除商户 "${row.name}" 的所有数据（用户、消息、文件等），但保留系统账号和管理账号。\n\n请输入 2FA 验证码确认：`
+    : `此操作将清除商户 "${row.name}" 的所有数据（用户、消息、文件等），但保留系统账号和管理账号。\n\n请输入登录密码确认：`
+
+  const inputType = has2FA ? "text" : "password"
+  const placeholder = has2FA ? "请输入6位验证码" : "请输入登录密码"
+
+  ElMessageBox.prompt(promptMsg, "危险操作 - 清除数据", {
+    confirmButtonText: "确认清除",
+    cancelButtonText: "取消",
+    type: "error",
+    inputType,
+    inputPlaceholder: placeholder,
+    inputValidator: (value: string) => {
+      if (!value) return "不能为空"
+      if (has2FA && !/^\d{6}$/.test(value)) return "请输入6位数字验证码"
+      return true
     }
-  )
-    .then(() => {
+  })
+    .then(({ value }) => {
       clearDataLoading.value = true
-      return clearMerchantDataApi(row.no)
+      const password = has2FA ? undefined : value
+      const totp_code = has2FA ? value : undefined
+      return clearMerchantDataApi(row.no, password, totp_code)
     })
     .then((res: any) => {
       if (!res) return
-      ElMessage.success(`商户 "${row.name}" 的用户数据已清除`)
+      ElMessage.success(`商户 "${row.name}" 的数据已清除（MySQL + Redis + MinIO + 消息缓存）`)
     })
     .catch(() => {})
     .finally(() => {
@@ -1056,6 +1108,7 @@ async function handlePush() {
                       <el-dropdown-item @click="handleChangeGostPort(row)" :disabled="changeGostPortLoading">更换隧道端口</el-dropdown-item>
                       <el-dropdown-item @click="$router.push({ name: 'MerchantEdit', params: { id: row.id }, query: { data: JSON.stringify(row) } })">编辑</el-dropdown-item>
                       <el-dropdown-item @click="handleQuickBuild(row)">一键打包</el-dropdown-item>
+                      <el-dropdown-item :disabled="exportDbLoading" @click="handleExportDatabase(row)">导出数据库</el-dropdown-item>
                       <el-dropdown-item divided class="danger-item" :disabled="clearDataLoading" @click="handleClearData(row)">清除数据</el-dropdown-item>
                       <el-dropdown-item class="danger-item" :disabled="changeIpLoading" @click="handleChangeIP(row)">更换IP</el-dropdown-item>
                       <el-dropdown-item class="danger-item" @click="handleDelete(row)">删除</el-dropdown-item>

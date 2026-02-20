@@ -120,3 +120,23 @@ export function registerInstanceWithSSHKey(data: Types.RegisterInstanceWithSSHKe
     data
   })
 }
+
+// ========== 实例商户绑定 ==========
+
+// 绑定商户
+export function bindInstanceMerchant(data: { instance_id: string; region_id: string; merchant_id: number }) {
+  return request<null>({
+    url: "/cloud/ecs/instance/bind-merchant",
+    method: "post",
+    data
+  })
+}
+
+// 解绑商户
+export function unbindInstanceMerchant(data: { instance_id: string; cloud_type?: string }) {
+  return request<null>({
+    url: "/cloud/ecs/instance/unbind-merchant",
+    method: "post",
+    data
+  })
+}

@@ -45,11 +45,14 @@ export function deleteCloudAccount(id: number) {
 }
 
 /** 获取云账号选项（用于下拉框） */
-export function getCloudAccountOptions(cloud_type?: string) {
+export function getCloudAccountOptions(paramsOrCloudType?: string | { cloud_type?: string, merchant_id?: number }) {
+  const params = typeof paramsOrCloudType === "string"
+    ? { cloud_type: paramsOrCloudType }
+    : paramsOrCloudType
   return request<CloudAccount.CloudAccountOptionsResponseData>({
     url: "cloud_account/options",
     method: "get",
-    params: { cloud_type }
+    params
   })
 }
 

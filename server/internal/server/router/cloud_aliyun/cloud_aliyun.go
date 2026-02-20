@@ -32,6 +32,9 @@ func Routes(ge gin.IRouter) {
 	cloudGroup.POST("/ecs/instance/modify-charge", modifyInstanceChargeType)               // 修改实例付费类型
 	cloudGroup.POST("/ecs/instance/create-secondary-nic", createSecondaryNetworkInterface) // 创建辅助网卡 流式api
 	cloudGroup.POST("/ecs/instance/register-with-ssh-key", registerInstanceWithSSHKey)     // 注册实例并自动创建SSH密钥
+	cloudGroup.POST("/ecs/instance/bind-merchant", bindInstanceMerchant)                   // 绑定商户
+	cloudGroup.POST("/ecs/instance/unbind-merchant", unbindInstanceMerchant)               // 解绑商户
+	cloudGroup.POST("/ecs/instance/bindings", getInstanceBindings)                         // 批量查询绑定
 
 	// 镜像管理
 	cloudGroup.GET("/ecs/image", listImage)
@@ -230,11 +233,61 @@ func listEcsInstance(c *gin.Context) {
 		return
 	}
 
+	// 查询实例的商户绑定信息
+	instanceIds := make([]string, 0, len(allInstances))
+	for _, inst := range allInstances {
+		if inst.InstanceId != nil {
+			instanceIds = append(instanceIds, *inst.InstanceId)
+		}
+	}
+	bindings, _ := cloud_aliyun.GetInstanceBindings(instanceIds, "aliyun")
+
 	result.GOK(c, gin.H{
 		"list":        allInstances,
 		"total":       len(allInstances),
-		"nic_eip_map": allNicEipMap, // 添加网卡EIP映射
+		"nic_eip_map": allNicEipMap,
+		"bindings":    bindings,
 	})
+}
+
+func bindInstanceMerchant(c *gin.Context) {
+	var req model.BindInstanceMerchantReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.GErr(c, err)
+		return
+	}
+	if err := cloud_aliyun.BindInstanceMerchant(req); err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, nil)
+}
+
+func unbindInstanceMerchant(c *gin.Context) {
+	var req model.UnbindInstanceMerchantReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.GErr(c, err)
+		return
+	}
+	if err := cloud_aliyun.UnbindInstanceMerchant(req.InstanceId, req.CloudType); err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, nil)
+}
+
+func getInstanceBindings(c *gin.Context) {
+	var req model.GetInstanceBindingsReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.GErr(c, err)
+		return
+	}
+	bindings, err := cloud_aliyun.GetInstanceBindings(req.InstanceIds, req.CloudType)
+	if err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, bindings)
 }
 
 func operateEcsInstance(c *gin.Context) {

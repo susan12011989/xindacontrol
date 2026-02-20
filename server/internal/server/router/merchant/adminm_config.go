@@ -2,12 +2,17 @@ package merchant
 
 import (
 	"fmt"
+	"io"
+	"net/http"
 	"server/internal/dbhelper"
 	"server/internal/server/middleware"
+	"server/internal/server/service/auth"
 	merchantService "server/internal/server/service/merchant"
 	"server/pkg/entity"
 	"server/pkg/result"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/zeromicro/go-zero/core/logx"
@@ -295,8 +300,8 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 	})
 
 
-	// 清除商户数据
-	group.POST("clear_data", func(c *gin.Context) {
+	// 导出商户数据库（mysqldump 流式下载）
+	group.POST("export_database", func(c *gin.Context) {
 		var req struct {
 			MerchantNo string `json:"merchant_no"`
 		}
@@ -308,6 +313,116 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 			result.GResult(c, 601, nil, "merchant_no不能为空")
 			return
 		}
+
+		// 获取商户 SSH 客户端
+		sshClient, err := merchantService.GetMerchantSSHClient(req.MerchantNo)
+		if err != nil {
+			result.GErr(c, err)
+			return
+		}
+		defer sshClient.Close()
+
+		timestamp := time.Now().Unix()
+		tmpFile := fmt.Sprintf("/tmp/tsdd_dump_%d.sql.gz", timestamp)
+
+		// 1. 在商户服务器上执行 mysqldump（--single-transaction 不锁表）
+		dumpCmd := fmt.Sprintf(`docker exec tsdd-mysql sh -c 'mysqldump --single-transaction --quick --routines --triggers -u root -p"$MYSQL_ROOT_PASSWORD" --databases $(mysql -u root -p"$MYSQL_ROOT_PASSWORD" -N -e "SHOW DATABASES" 2>/dev/null | grep -vE "^(mysql|information_schema|performance_schema|sys)$" | tr "\n" " ") 2>/dev/null' | gzip > %s`, tmpFile)
+
+		logx.Infof("开始导出商户数据库: merchant=%s", req.MerchantNo)
+		output, dumpErr := sshClient.ExecuteCommandWithTimeout(dumpCmd, 300*time.Second)
+		if dumpErr != nil {
+			// 清理临时文件
+			sshClient.ExecuteCommandSilent(fmt.Sprintf("rm -f %s", tmpFile))
+			logx.Errorf("mysqldump 失败: merchant=%s, err=%v, output=%s", req.MerchantNo, dumpErr, output)
+			result.GResult(c, 500, nil, fmt.Sprintf("数据库导出失败: %v", dumpErr))
+			return
+		}
+
+		// 2. 获取文件大小
+		sizeStr := strings.TrimSpace(sshClient.ExecuteCommandSilent(fmt.Sprintf("stat -c%%s %s 2>/dev/null || stat -f%%z %s 2>/dev/null", tmpFile, tmpFile)))
+		fileSize, _ := strconv.ParseInt(sizeStr, 10, 64)
+		if fileSize == 0 {
+			sshClient.ExecuteCommandSilent(fmt.Sprintf("rm -f %s", tmpFile))
+			result.GResult(c, 500, nil, "导出文件为空")
+			return
+		}
+
+		// 3. 流式读取文件
+		reader, session, streamErr := sshClient.ExecuteCommandStream(fmt.Sprintf("cat %s", tmpFile))
+		if streamErr != nil {
+			sshClient.ExecuteCommandSilent(fmt.Sprintf("rm -f %s", tmpFile))
+			result.GResult(c, 500, nil, fmt.Sprintf("读取导出文件失败: %v", streamErr))
+			return
+		}
+
+		// 4. 设置响应头并流式传输
+		filename := fmt.Sprintf("%s_%s.sql.gz", req.MerchantNo, time.Now().Format("20060102_150405"))
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+		c.Header("Content-Type", "application/gzip")
+		if fileSize > 0 {
+			c.Header("Content-Length", strconv.FormatInt(fileSize, 10))
+		}
+
+		c.Status(http.StatusOK)
+		_, copyErr := io.Copy(c.Writer, reader)
+		session.Wait()
+		session.Close()
+
+		// 5. 清理临时文件
+		sshClient.ExecuteCommandSilent(fmt.Sprintf("rm -f %s", tmpFile))
+
+		if copyErr != nil {
+			logx.Errorf("流式传输失败: merchant=%s, err=%v", req.MerchantNo, copyErr)
+		} else {
+			logx.Infof("商户数据库导出完成: merchant=%s, size=%d", req.MerchantNo, fileSize)
+		}
+	})
+
+	// 清除商户数据（需要密码或2FA验证）
+	group.POST("clear_data", func(c *gin.Context) {
+		var req struct {
+			MerchantNo string `json:"merchant_no"`
+			Password   string `json:"password"`   // 登录密码验证
+			TOTPCode   string `json:"totp_code"`   // 2FA 验证码
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			result.GParamErr(c, err)
+			return
+		}
+		if req.MerchantNo == "" {
+			result.GResult(c, 601, nil, "merchant_no不能为空")
+			return
+		}
+
+		// 身份验证：2FA 或密码
+		username := middleware.GetUsername(c)
+		user, err := dbhelper.GetSysUserByUsername(username)
+		if err != nil {
+			result.GResult(c, 401, nil, "获取用户信息失败")
+			return
+		}
+		if user.TwoFactorEnabled == 1 {
+			// 启用了2FA，验证 TOTP code
+			if req.TOTPCode == "" {
+				result.GResult(c, 401, nil, "需要2FA验证码")
+				return
+			}
+			if !auth.VerifyTwoFACode(user.TwoFactorSecret, req.TOTPCode) {
+				result.GResult(c, 401, nil, "2FA验证码错误")
+				return
+			}
+		} else {
+			// 未启用2FA，验证密码
+			if req.Password == "" {
+				result.GResult(c, 401, nil, "需要输入登录密码")
+				return
+			}
+			if user.Password != req.Password {
+				result.GResult(c, 401, nil, "密码错误")
+				return
+			}
+		}
+
 		if err := merchantService.ClearMerchantData(req.MerchantNo); err != nil {
 			result.GErr(c, err)
 			return

@@ -248,6 +248,34 @@ func (c *SSHClient) UploadFile(remotePath string, content io.Reader) error {
 	return session.Run(cmd)
 }
 
+// ExecuteCommandStream 执行命令并返回 stdout 流式读取器（用于大输出场景，避免全部加载到内存）
+// 调用方必须在读取完毕后调用 session.Wait() 和 session.Close()
+func (c *SSHClient) ExecuteCommandStream(cmd string) (io.Reader, *ssh.Session, error) {
+	if c.Client == nil {
+		if err := c.Connect(); err != nil {
+			return nil, nil, err
+		}
+	}
+
+	session, err := c.Client.NewSession()
+	if err != nil {
+		return nil, nil, fmt.Errorf("创建会话失败: %v", err)
+	}
+
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		session.Close()
+		return nil, nil, fmt.Errorf("获取stdout管道失败: %v", err)
+	}
+
+	if err := session.Start(cmd); err != nil {
+		session.Close()
+		return nil, nil, fmt.Errorf("启动命令失败: %v", err)
+	}
+
+	return stdout, session, nil
+}
+
 // Close 关闭连接
 func (c *SSHClient) Close() error {
 	// 先停止 keepAlive goroutine

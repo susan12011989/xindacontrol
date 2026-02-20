@@ -24,6 +24,19 @@ func getServerHostById(serverId int) (string, error) {
 	return server.Host, nil
 }
 
+// getServerById 查询服务器完整信息
+func getServerById(serverId int) (*entity.Servers, error) {
+	var server entity.Servers
+	has, err := dbs.DBAdmin.ID(serverId).Get(&server)
+	if err != nil {
+		return nil, fmt.Errorf("查询服务器失败: %v", err)
+	}
+	if !has {
+		return nil, fmt.Errorf("服务器不存在: %d", serverId)
+	}
+	return &server, nil
+}
+
 // ListGostServices 通过 GOST Web API 列出服务（内部分页）
 func ListGostServices(serverId int, page int, size int, port int) (*gostapi.ServiceList, error) {
 	host, err := getServerHostById(serverId)
@@ -289,10 +302,11 @@ func deriveServiceNameFromChain(chainName string) string {
 // mode: "tls"(加密，默认) 或 "tcp"(直连)
 func SetupGostForward(req model.SetupGostForwardReq) error {
 	// 获取服务器信息
-	host, err := getServerHostById(req.ServerId)
+	server, err := getServerById(req.ServerId)
 	if err != nil {
 		return err
 	}
+	host := server.Host
 
 	// 根据模式选择加密或直连
 	useTLS := req.Mode != "tcp" // 默认使用 TLS 加密
@@ -315,6 +329,13 @@ func SetupGostForward(req model.SetupGostForwardReq) error {
 
 	if err != nil {
 		return err
+	}
+
+	// 如果服务器已启用 TLS，自动将 listener 升级为 TLS（带证书路径）
+	if server.TlsEnabled == 1 {
+		if e := upgradeGostListenerToTls(host); e != nil {
+			logx.Errorf("SetupGostForward: 自动升级 TLS listener 失败(serverId=%d): %v", req.ServerId, e)
+		}
 	}
 
 	// 自动为 HTTP 端口配置 Nginx 缓存（如果 Nginx 已安装）

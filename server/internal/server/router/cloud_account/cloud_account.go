@@ -128,8 +128,9 @@ func deleteCloudAccount(ctx *gin.Context) {
 // 获取云账号选项（用于下拉框）
 func getCloudAccountOptions(ctx *gin.Context) {
 	cloudType := ctx.Query("cloud_type")
+	merchantId, _ := strconv.Atoi(ctx.Query("merchant_id"))
 
-	options, err := cloudAccountService.GetCloudAccountOptions(cloudType)
+	options, err := cloudAccountService.GetCloudAccountOptions(cloudType, merchantId)
 	if err != nil {
 		result.GErr(ctx, err)
 		return

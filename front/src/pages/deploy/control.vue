@@ -1,6 +1,9 @@
 <script lang="ts" setup>
 import type { DockerContainerStatus, ServiceName, ServiceStatusResp } from "@@/apis/deploy/type"
+import type { AwsCloudWatchMetricsResp, MetricSeries } from "@@/apis/aws/type"
 import { getDockerContainers, getProgramConfig, getServerDetail, getServerList, getServerStats, getServiceLogs, getServiceStatus, serviceAction, updateProgramConfig, uploadServerFile } from "@@/apis/deploy"
+import { getCloudWatchMetrics } from "@@/apis/aws"
+import * as echarts from "echarts"
 
 defineOptions({
   name: "DeployControl"
@@ -336,15 +339,184 @@ function getServiceDisplayName(name: string) {
   return names[name] || name
 }
 
+// ========== CloudWatch 监控 ==========
+const cwLoading = ref(false)
+const cwData = ref<AwsCloudWatchMetricsResp | null>(null)
+const cwPeriod = ref<"1h" | "6h" | "24h" | "7d">("1h")
+const cwAutoRefresh = ref(false)
+const cwAvailable = ref(true) // 服务器是否配置了 AWS 实例 ID
+let cwRefreshTimer: ReturnType<typeof setInterval> | null = null
+
+// Chart refs
+const cpuChartRef = ref<HTMLDivElement | null>(null)
+const iopsChartRef = ref<HTMLDivElement | null>(null)
+const queueChartRef = ref<HTMLDivElement | null>(null)
+const latencyChartRef = ref<HTMLDivElement | null>(null)
+
+let cpuChart: echarts.ECharts | null = null
+let iopsChart: echarts.ECharts | null = null
+let queueChart: echarts.ECharts | null = null
+let latencyChart: echarts.ECharts | null = null
+
+async function loadCloudWatchMetrics() {
+  if (!serverId.value) return
+  cwLoading.value = true
+  try {
+    const res = await getCloudWatchMetrics({
+      server_id: serverId.value,
+      period: cwPeriod.value,
+    })
+    cwData.value = res.data
+    cwAvailable.value = true
+    await nextTick()
+    renderCharts()
+  } catch (err: any) {
+    cwData.value = null
+    // 未配置 AWS 实例时不报错
+    if (err?.response?.data?.message?.includes("未配置")) {
+      cwAvailable.value = false
+    }
+  } finally {
+    cwLoading.value = false
+  }
+}
+
+function renderCharts() {
+  if (!cwData.value) return
+  const metrics = cwData.value.metrics
+
+  function findByName(name: string): MetricSeries[] {
+    return metrics.filter(m => m.metric_name === name)
+  }
+
+  function formatTime(ts: number): string {
+    const d = new Date(ts * 1000)
+    if (cwPeriod.value === "7d") {
+      return `${d.getMonth() + 1}/${d.getDate()}`
+    }
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
+  }
+
+  function buildOption(title: string, seriesList: MetricSeries[], yAxisLabel: string, markLineValue?: number) {
+    const allTs = new Set<number>()
+    for (const s of seriesList) {
+      for (const dp of s.data_points) allTs.add(dp.timestamp)
+    }
+    const timestamps = Array.from(allTs).sort((a, b) => a - b)
+
+    const chartSeries: any[] = seriesList.map(s => {
+      const valMap = new Map(s.data_points.map(dp => [dp.timestamp, dp.value]))
+      const seriesOpt: any = {
+        name: s.label,
+        type: "line",
+        smooth: true,
+        symbol: "none",
+        data: timestamps.map(ts => {
+          const v = valMap.get(ts)
+          return v !== undefined ? Math.round(v * 100) / 100 : null
+        }),
+      }
+      // 第一条线加 markLine
+      if (markLineValue !== undefined && seriesList.indexOf(s) === 0) {
+        seriesOpt.markLine = {
+          silent: true,
+          data: [{ yAxis: markLineValue, label: { formatter: `{c}`, position: "end" }, lineStyle: { type: "dashed", color: "#E6A23C" } }],
+        }
+      }
+      return seriesOpt
+    })
+
+    return {
+      title: { text: title, textStyle: { fontSize: 13 }, left: "center" },
+      tooltip: { trigger: "axis" },
+      legend: { bottom: 0, data: seriesList.map(s => s.label), textStyle: { fontSize: 11 } },
+      grid: { left: 55, right: 15, top: 35, bottom: 35 },
+      xAxis: {
+        type: "category",
+        data: timestamps.map(formatTime),
+        axisLabel: { fontSize: 10 },
+      },
+      yAxis: { type: "value", name: yAxisLabel, axisLabel: { fontSize: 10 }, nameTextStyle: { fontSize: 11 } },
+      series: chartSeries,
+    }
+  }
+
+  // CPU chart
+  const cpuSeries = findByName("CPUUtilization")
+  if (cpuSeries.length && cpuChartRef.value) {
+    if (!cpuChart) cpuChart = echarts.init(cpuChartRef.value)
+    cpuChart.setOption(buildOption("CPU Utilization", cpuSeries, "%"), true)
+  }
+
+  // IOPS chart (Read + Write per volume)
+  const readOps = findByName("VolumeReadOps")
+  const writeOps = findByName("VolumeWriteOps")
+  if ((readOps.length || writeOps.length) && iopsChartRef.value) {
+    if (!iopsChart) iopsChart = echarts.init(iopsChartRef.value)
+    iopsChart.setOption(buildOption("EBS IOPS", [...readOps, ...writeOps], "ops/s", 3000), true)
+  }
+
+  // Queue Length chart
+  const queueSeries = findByName("VolumeQueueLength")
+  if (queueSeries.length && queueChartRef.value) {
+    if (!queueChart) queueChart = echarts.init(queueChartRef.value)
+    queueChart.setOption(buildOption("EBS Queue Length", queueSeries, "", 1), true)
+  }
+
+  // Latency chart (convert seconds to ms)
+  const readLat = findByName("VolumeTotalReadTime")
+  const writeLat = findByName("VolumeTotalWriteTime")
+  if ((readLat.length || writeLat.length) && latencyChartRef.value) {
+    if (!latencyChart) latencyChart = echarts.init(latencyChartRef.value)
+    const msData = [...readLat, ...writeLat].map(s => ({
+      ...s,
+      data_points: s.data_points.map(dp => ({ ...dp, value: dp.value * 1000 })),
+    }))
+    latencyChart.setOption(buildOption("EBS IO Latency", msData, "ms"), true)
+  }
+}
+
+function onCwPeriodChange() {
+  loadCloudWatchMetrics()
+}
+
+function toggleCwAutoRefresh() {
+  cwAutoRefresh.value = !cwAutoRefresh.value
+  if (cwAutoRefresh.value) {
+    cwRefreshTimer = setInterval(loadCloudWatchMetrics, 60000)
+  } else if (cwRefreshTimer) {
+    clearInterval(cwRefreshTimer)
+    cwRefreshTimer = null
+  }
+}
+
+function handleCwResize() {
+  cpuChart?.resize()
+  iopsChart?.resize()
+  queueChart?.resize()
+  latencyChart?.resize()
+}
+
 // 初始化
 onMounted(() => {
   if (serverId.value) {
     loadServerInfo()
     refreshAll()
+    loadCloudWatchMetrics()
   } else {
     ElMessage.warning("请先选择服务器")
   }
   fetchServerOptions("")
+  window.addEventListener("resize", handleCwResize)
+})
+
+onUnmounted(() => {
+  window.removeEventListener("resize", handleCwResize)
+  cpuChart?.dispose()
+  iopsChart?.dispose()
+  queueChart?.dispose()
+  latencyChart?.dispose()
+  if (cwRefreshTimer) clearInterval(cwRefreshTimer)
 })
 
 // 路由 server_id 变化时，自动刷新
@@ -355,6 +527,7 @@ watch(() => route.query.server_id, (val) => {
     selectedServerId.value = nextId
     loadServerInfo()
     refreshAll()
+    loadCloudWatchMetrics()
   }
 })
 </script>
@@ -421,6 +594,44 @@ watch(() => route.query.server_id, (val) => {
           <div class="stat-label">系统负载</div>
           <div class="stat-value text-sm">{{ serverStats.load_avg || "-" }}</div>
         </div>
+      </div>
+    </el-card>
+
+    <!-- CloudWatch 监控 -->
+    <el-card v-if="cwAvailable" v-loading="cwLoading" class="mb-4">
+      <template #header>
+        <div class="flex justify-between items-center">
+          <span class="text-base font-bold">CloudWatch 监控</span>
+          <div class="flex items-center gap-2">
+            <el-radio-group v-model="cwPeriod" size="small" @change="onCwPeriodChange">
+              <el-radio-button value="1h">1小时</el-radio-button>
+              <el-radio-button value="6h">6小时</el-radio-button>
+              <el-radio-button value="24h">24小时</el-radio-button>
+              <el-radio-button value="7d">7天</el-radio-button>
+            </el-radio-group>
+            <el-button size="small" :type="cwAutoRefresh ? 'primary' : 'default'" @click="toggleCwAutoRefresh">
+              {{ cwAutoRefresh ? "自动刷新中" : "自动刷新" }}
+            </el-button>
+            <el-button size="small" @click="loadCloudWatchMetrics">
+              <el-icon><Refresh /></el-icon>
+            </el-button>
+          </div>
+        </div>
+      </template>
+
+      <div v-if="cwData">
+        <div class="grid grid-cols-2 gap-4">
+          <div ref="cpuChartRef" style="height: 280px" />
+          <div ref="iopsChartRef" style="height: 280px" />
+          <div ref="queueChartRef" style="height: 280px" />
+          <div ref="latencyChartRef" style="height: 280px" />
+        </div>
+        <div class="text-xs text-gray-400 mt-2 text-right">
+          Instance: {{ cwData.instance_id }} | Region: {{ cwData.region_id }} | Volumes: {{ cwData.volume_ids?.join(", ") }}
+        </div>
+      </div>
+      <div v-else-if="!cwLoading" class="text-center text-gray-400 py-8">
+        该服务器未配置 AWS 实例信息，无法获取 CloudWatch 数据
       </div>
     </el-card>
 

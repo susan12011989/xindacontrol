@@ -11,6 +11,7 @@ import { downloadObject, listBuckets, listObjects, uploadObject } from "@/pages/
 import { aliyunDeleteObject, aliyunCreateBucket, aliyunDeleteBucket, aliyunSetBucketPublic, formatFileSize, generateObjectUrl } from "@@/apis/cloud_storage"
 import CloudStorageUploadDialog from "@@/components/CloudStorageUploadDialog.vue"
 import { getCloudAccountOptions } from "@@/apis/cloud_account"
+import { getMerchantList } from "@@/apis/merchant"
 import { ArrowDown, CopyDocument, Delete, Document, Download, FolderOpened, Lock, Plus, Refresh, Search, Select, Unlock, Upload } from "@element-plus/icons-vue"
 
 defineOptions({ name: "CloudAliyunOSSStorage" })
@@ -21,6 +22,7 @@ const accountType = ref<string>("system")
 const cloudAccountList = ref<CloudAccountOption[]>([])
 const selectedCloudAccount = ref<number>()
 const selectedMerchant = ref<number>()
+const merchantList = ref<{ value: number, label: string }[]>([])
 const regionList = ref<Region[]>([])
 const buckets = ref<Array<{ name: string, location: string, creation_date: string, storage_class: string }>>([])
 const objects = ref<OssObjectItem[]>([])
@@ -48,8 +50,20 @@ const createBucketForm = reactive({
 
 // ========== 初始化 ==========
 onMounted(async () => {
-  await Promise.all([fetchCloudAccountList(), fetchRegionList()])
+  await Promise.all([fetchCloudAccountList(), fetchRegionList(), fetchMerchantList()])
 })
+
+async function fetchMerchantList() {
+  try {
+    const res = await getMerchantList({ page: 1, size: 1000 })
+    merchantList.value = (res.data.list || []).map((m: any) => ({
+      label: `${m.name} (${m.no})`,
+      value: m.id
+    }))
+  } catch {
+    console.error("获取商户列表失败")
+  }
+}
 
 async function fetchCloudAccountList() {
   try {
@@ -93,7 +107,7 @@ async function onLoadBuckets() {
     return
   }
   if (accountType.value === "merchant" && !selectedMerchant.value) {
-    ElMessage.warning("请输入商户ID")
+    ElMessage.warning("请选择商户")
     return
   }
 
@@ -311,7 +325,7 @@ function onShowCreateBucket() {
     return
   }
   if (accountType.value === "merchant" && !selectedMerchant.value) {
-    ElMessage.warning("请先输入商户ID")
+    ElMessage.warning("请先选择商户")
     return
   }
   if (!form.region_id) {
@@ -487,13 +501,22 @@ async function onSetBucketPublic(command: string) {
             </el-col>
 
             <el-col v-else :xs="24" :sm="12" :md="6">
-              <el-form-item label="商户ID">
-                <el-input
-                  v-model.number="selectedMerchant"
-                  placeholder="输入商户ID"
+              <el-form-item label="商户">
+                <el-select
+                  v-model="selectedMerchant"
+                  placeholder="请选择商户"
+                  filterable
+                  clearable
                   style="width: 100%"
                   @change="() => { form.bucket = ''; buckets = []; objects = [] }"
-                />
+                >
+                  <el-option
+                    v-for="m in merchantList"
+                    :key="m.value"
+                    :label="m.label"
+                    :value="m.value"
+                  />
+                </el-select>
               </el-form-item>
             </el-col>
 

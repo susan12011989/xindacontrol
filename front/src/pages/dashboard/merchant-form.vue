@@ -64,10 +64,37 @@ const amiDeployConfig = reactive({
   cloud_account_id: undefined as number | undefined,
   region_id: "ap-east-1", // 默认香港
   ami_id: "", // 可选，留空使用默认 TSDD AMI
+  source_server_id: undefined as number | undefined, // 从已有服务器克隆
   instance_type: "t3.medium",
-  volume_size_gib: 30
+  volume_size_gib: 30,
+  // EBS 数据卷配置
+  enable_extra_ebs: false,
+  db_volume_size_gib: 20,
+  db_volume_iops: 3000,
+  minio_volume_size_gib: 50,
+  minio_volume_iops: 3000,
 })
 const amiDeploying = ref(false)
+// AMI 来源模式: fresh=全新部署, clone=克隆已有服务器
+const amiSourceMode = ref<"fresh" | "clone">("fresh")
+// 可克隆的商户服务器列表
+const cloneableServers = ref<Array<{ id: number, name: string, host: string }>>([])
+async function loadCloneableServers() {
+  try {
+    const res = await request<any>({
+      url: "/deploy/servers",
+      method: "get",
+      params: { server_type: 1, page: 1, size: 1000 }
+    })
+    cloneableServers.value = (res.data.list || []).filter((s: any) => s.host && s.status === 1).map((s: any) => ({
+      id: s.id,
+      name: s.name || `Server #${s.id}`,
+      host: s.host
+    }))
+  } catch (error) {
+    console.error("加载可克隆服务器失败", error)
+  }
+}
 
 
 // 分页配置
@@ -212,14 +239,9 @@ function onPortChange(val: number | undefined) {
     })
 }
 
-// 端口失焦时校验端口是否可用
+// 端口失焦（端口唯一性检查已移除，每个商户配独立隧道）
 function onPortBlur() {
-  const p = formData.value.port
-  if (!isEdit.value && p && p > 0) {
-    checkPortAvailable({ port: p }).catch(() => {
-      ElMessage.error(`端口 ${p - 1}/${p}/${p + 1} 已被占用`)
-    })
-  }
+  // no-op
 }
 
 // 提交表单
@@ -240,12 +262,20 @@ async function onSubmit() {
       ElMessage.error("请选择部署区域")
       return
     }
+    if (amiSourceMode.value === "clone" && !amiDeployConfig.source_server_id) {
+      ElMessage.error("请选择要克隆的源服务器")
+      return
+    }
   }
 
   // 规范化数据
   const payload = cloneDeep(formData.value)
-  // 如果选择了系统账号
-  if (selectedSystemAccountId.value) {
+  // AMI 模式：自动使用 AMI 配置的 AWS 账号作为商户云账号
+  if (!isEdit.value && serverSourceMode.value === "ami" && amiDeployConfig.cloud_account_id) {
+    payload.selected_aws_account_id = amiDeployConfig.cloud_account_id
+    payload.remove_from_system = false // 复制一份，不移除系统账号
+  } else if (selectedSystemAccountId.value) {
+    // 手动模式：使用手动选择的系统账号
     payload.selected_aws_account_id = selectedSystemAccountId.value
     payload.remove_from_system = removeFromSystem.value
   }
@@ -291,9 +321,15 @@ async function onSubmit() {
               cloud_account_id: amiDeployConfig.cloud_account_id!,
               region_id: amiDeployConfig.region_id,
               ami_id: amiDeployConfig.ami_id || undefined,
+              source_server_id: amiSourceMode.value === "clone" ? amiDeployConfig.source_server_id : undefined,
               instance_type: amiDeployConfig.instance_type,
               volume_size_gib: amiDeployConfig.volume_size_gib,
-              server_name: payload.name
+              server_name: payload.name,
+              enable_extra_ebs: amiDeployConfig.enable_extra_ebs,
+              db_volume_size_gib: amiDeployConfig.enable_extra_ebs ? amiDeployConfig.db_volume_size_gib : undefined,
+              db_volume_iops: amiDeployConfig.enable_extra_ebs ? amiDeployConfig.db_volume_iops : undefined,
+              minio_volume_size_gib: amiDeployConfig.enable_extra_ebs ? amiDeployConfig.minio_volume_size_gib : undefined,
+              minio_volume_iops: amiDeployConfig.enable_extra_ebs ? amiDeployConfig.minio_volume_iops : undefined,
             })
 
             const publicIp = deployRes.data?.public_ip
@@ -305,7 +341,14 @@ async function onSubmit() {
                 server_ip: publicIp,
                 expired_at: payload.expired_at
               })
-              ElMessage.success(`部署成功！服务器 IP: ${publicIp}`)
+              let successMsg = `部署成功！服务器 IP: ${publicIp}`
+              if (deployRes.data?.db_volume_id) {
+                successMsg += ` | DB磁盘: ${deployRes.data.db_volume_id}`
+              }
+              if (deployRes.data?.minio_volume_id) {
+                successMsg += ` | MinIO磁盘: ${deployRes.data.minio_volume_id}`
+              }
+              ElMessage.success(successMsg)
             } else {
               ElMessage.warning("部署完成，但未获取到公网 IP，请手动更新")
             }
@@ -352,6 +395,7 @@ onMounted(() => {
   if (!isEdit.value) {
     loadSystemAwsAccounts()
     loadSystemServers()
+    loadCloneableServers()
   }
   else {
     loadMerchantDetail()
@@ -494,10 +538,97 @@ onMounted(() => {
               </el-col>
             </el-row>
 
-            <el-form-item label="AMI ID">
+            <el-form-item label="部署来源">
+              <el-radio-group v-model="amiSourceMode">
+                <el-radio-button value="clone">克隆已有服务器</el-radio-button>
+                <el-radio-button value="fresh">全新部署</el-radio-button>
+              </el-radio-group>
+              <div class="form-tip" v-if="amiSourceMode === 'clone'">从已有商户服务器创建 AMI 并部署（保留所有配置、自定义 Web、端口等）</div>
+              <div class="form-tip" v-else>使用默认 TSDD 镜像全新安装</div>
+            </el-form-item>
+
+            <el-form-item v-if="amiSourceMode === 'clone'" label="源服务器" required>
+              <el-select
+                v-model="amiDeployConfig.source_server_id"
+                placeholder="选择要克隆的服务器"
+                filterable
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="s in cloneableServers"
+                  :key="s.id"
+                  :label="`${s.name} (${s.host})`"
+                  :value="s.id"
+                />
+              </el-select>
+            </el-form-item>
+
+            <el-form-item v-if="amiSourceMode === 'fresh'" label="AMI ID">
               <el-input v-model="amiDeployConfig.ami_id" placeholder="留空使用默认 TSDD 镜像" />
               <div class="form-tip">可选，留空将使用系统预设的 TSDD AMI 镜像</div>
             </el-form-item>
+
+            <!-- EBS 独立数据磁盘 -->
+            <el-form-item label="独立数据磁盘">
+              <el-switch
+                v-model="amiDeployConfig.enable_extra_ebs"
+                active-text="启用"
+                inactive-text="关闭"
+              />
+              <div class="form-tip" style="margin-top: 4px;">创建独立 EBS 数据盘，DB 和 MinIO 数据与系统盘隔离</div>
+            </el-form-item>
+
+            <template v-if="amiDeployConfig.enable_extra_ebs">
+              <el-divider content-position="left" style="margin: 8px 0 16px;">数据库磁盘 (MySQL + Redis + WuKongIM)</el-divider>
+              <el-row :gutter="16">
+                <el-col :span="12">
+                  <el-form-item label="磁盘大小(GB)">
+                    <el-input-number
+                      v-model="amiDeployConfig.db_volume_size_gib"
+                      :min="10"
+                      :max="1000"
+                      style="width: 100%"
+                    />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
+                  <el-form-item label="IOPS">
+                    <el-input-number
+                      v-model="amiDeployConfig.db_volume_iops"
+                      :min="3000"
+                      :max="16000"
+                      :step="1000"
+                      style="width: 100%"
+                    />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+
+              <el-divider content-position="left" style="margin: 8px 0 16px;">文件存储磁盘 (MinIO)</el-divider>
+              <el-row :gutter="16">
+                <el-col :span="12">
+                  <el-form-item label="磁盘大小(GB)">
+                    <el-input-number
+                      v-model="amiDeployConfig.minio_volume_size_gib"
+                      :min="10"
+                      :max="2000"
+                      style="width: 100%"
+                    />
+                  </el-form-item>
+                </el-col>
+                <el-col :span="12">
+                  <el-form-item label="IOPS">
+                    <el-input-number
+                      v-model="amiDeployConfig.minio_volume_iops"
+                      :min="3000"
+                      :max="16000"
+                      :step="1000"
+                      style="width: 100%"
+                    />
+                  </el-form-item>
+                </el-col>
+              </el-row>
+            </template>
           </el-card>
         </template>
 
@@ -558,12 +689,12 @@ onMounted(() => {
           </div>
         </el-form-item>
 
-        <el-divider content-position="left">
+        <el-divider v-if="isEdit || serverSourceMode !== 'ami'" content-position="left">
           AWS 云账号
         </el-divider>
 
-        <!-- 创建模式：选择系统AWS账号 -->
-        <template v-if="!isEdit">
+        <!-- 创建模式：选择系统AWS账号（AMI模式下自动使用AMI配置的账号，无需手动选择） -->
+        <template v-if="!isEdit && serverSourceMode !== 'ami'">
           <el-form-item label="选择系统账号">
             <el-select
               v-model="selectedSystemAccountId"
@@ -597,31 +728,33 @@ onMounted(() => {
           </el-divider>
         </template>
 
-        <el-row :gutter="12">
-          <el-col :span="12">
-            <el-form-item label="AccessKey">
-              <el-input
-                v-model="formData.aws_access_key_id"
-                :disabled="!!selectedSystemAccountId && !isEdit"
-                :placeholder="isEdit ? '留空表示不修改' : (selectedSystemAccountId ? '已自动填充' : '请输入 AWS Access Key')"
-              />
-            </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="SecretKey">
-              <el-input
-                v-model="formData.aws_access_key_secret"
-                type="password"
-                show-password
-                :disabled="!!selectedSystemAccountId && !isEdit"
-                :placeholder="isEdit ? '留空表示不修改' : (selectedSystemAccountId ? '已自动使用系统账号密钥' : '请输入 AWS Access Secret')"
-              />
-            </el-form-item>
-          </el-col>
-        </el-row>
-        <div v-if="isEdit" class="form-tip">
-          留空表示不修改
-        </div>
+        <template v-if="isEdit || serverSourceMode !== 'ami'">
+          <el-row :gutter="12">
+            <el-col :span="12">
+              <el-form-item label="AccessKey">
+                <el-input
+                  v-model="formData.aws_access_key_id"
+                  :disabled="!!selectedSystemAccountId && !isEdit"
+                  :placeholder="isEdit ? '留空表示不修改' : (selectedSystemAccountId ? '已自动填充' : '请输入 AWS Access Key')"
+                />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="SecretKey">
+                <el-input
+                  v-model="formData.aws_access_key_secret"
+                  type="password"
+                  show-password
+                  :disabled="!!selectedSystemAccountId && !isEdit"
+                  :placeholder="isEdit ? '留空表示不修改' : (selectedSystemAccountId ? '已自动使用系统账号密钥' : '请输入 AWS Access Secret')"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <div v-if="isEdit" class="form-tip">
+            留空表示不修改
+          </div>
+        </template>
       </el-form>
     </el-card>
   </div>

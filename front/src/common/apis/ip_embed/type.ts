@@ -28,6 +28,10 @@ export interface TargetItem {
   object_prefix: string
   enabled: boolean
   sort_order: number
+  group_id: number
+  group_name: string
+  merchant_id: number
+  merchant_name: string
 }
 
 /** 获取目标响应 */
@@ -105,6 +109,7 @@ export interface CreateTargetReq {
   object_prefix?: string
   enabled?: boolean
   sort_order?: number
+  group_id?: number
 }
 
 /** 更新目标请求 */
@@ -116,5 +121,22 @@ export interface UpdateTargetReq {
   bucket?: string
   object_prefix?: string
   enabled?: boolean
+  sort_order?: number
+  group_id?: number
+}
+
+/** 资源分组项 */
+export interface ResourceGroupItem {
+  id: number
+  name: string
+  resource_type: string
+  sort_order: number
+  count: number
+  created_at: string
+}
+
+/** 资源分组请求 */
+export interface ResourceGroupReq {
+  name: string
   sort_order?: number
 }

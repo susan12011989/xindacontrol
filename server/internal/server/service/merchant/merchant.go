@@ -116,39 +116,27 @@ func getMerchantGostServerCounts(merchantIds []int) map[int]int {
 	return result
 }
 
-// CreateMerchant 创建商户
-func CreateMerchant(req *model.CreateOrEditMerchantReq) error {
+// CreateMerchant 创建商户，返回商户ID
+func CreateMerchant(req *model.CreateOrEditMerchantReq) (int, error) {
 	// 1) 校验端口 ,10000是属于测试服的
 	if req.Port < 10000 {
-		return fmt.Errorf("port 不能小于10000")
+		return 0, fmt.Errorf("port 不能小于10000")
 	}
 	if req.Port > 65535 {
-		return fmt.Errorf("port 不能大于65535")
+		return 0, fmt.Errorf("port 不能大于65535")
 	}
 	// 1.1) 校验 server_ip 必填
 	serverIP := strings.TrimSpace(req.ServerIP)
 	if serverIP == "" {
-		return fmt.Errorf("server_ip 为必填")
+		return 0, fmt.Errorf("server_ip 为必填")
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
-		return fmt.Errorf("name 为必填")
+		return 0, fmt.Errorf("name 为必填")
 	}
 	// 2) 实时计算 No
 	req.No = utilSvc.Port2Enterprise(uint16(req.Port))
-	// 3) 端口占用检查：port/port-1/port-2/port+1/port+2 均需未被占用（TCP/WS/HTTP 三端口）
-	used := make([]string, 0, 3)
-	for i := -2; i <= 2; i++ {
-		checkPort := req.Port + i
-		if inUse, err := dbhelper.CheckMerchantPortInUse(checkPort); err != nil {
-			return err
-		} else if inUse {
-			used = append(used, fmt.Sprintf("%d", checkPort))
-		}
-	}
-	if len(used) > 0 {
-		return fmt.Errorf("端口 %s 已被占用", strings.Join(used, "/"))
-	}
+	// 3) 端口占用检查已移除：每个商户配独立系统服务器+隧道，端口可复用
 	if req.Status == 0 {
 		req.Status = 1 // 默认状态为正常
 	}
@@ -166,25 +154,25 @@ func CreateMerchant(req *model.CreateOrEditMerchantReq) error {
 		has, err := dbs.DBAdmin.Where("id = ? AND account_type = ? AND cloud_type = ? AND status = 1",
 			req.SelectedAwsAccountId, "system", "aws").Get(&acc)
 		if err != nil {
-			return fmt.Errorf("查询系统AWS账号失败: %v", err)
+			return 0, fmt.Errorf("查询系统AWS账号失败: %v", err)
 		}
 		if !has {
-			return fmt.Errorf("选中的系统AWS账号不存在或不可用")
+			return 0, fmt.Errorf("选中的系统AWS账号不存在或不可用")
 		}
 		selectedAccount = &acc
 	} else {
 		// 手动填写账号
 		if strings.TrimSpace(req.AwsAccessKeyId) == "" || strings.TrimSpace(req.AwsAccessKeySecret) == "" {
-			return fmt.Errorf("aws_access_key_id 与 aws_access_key_secret 为必填，或选择系统AWS账号")
+			return 0, fmt.Errorf("aws_access_key_id 与 aws_access_key_secret 为必填，或选择系统AWS账号")
 		}
 	}
 
 	expiredAt, err := time.ParseInLocation(time.DateTime, req.ExpiredAt, time.Local)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if expiredAt.Before(now) {
-		return fmt.Errorf("expired_at 不能小于当前时间")
+		return 0, fmt.Errorf("expired_at 不能小于当前时间")
 	}
 	if req.PackageConfiguration != nil {
 		req.PackageConfiguration.ExpiredAt = expiredAt.Unix()
@@ -285,7 +273,7 @@ func CreateMerchant(req *model.CreateOrEditMerchantReq) error {
 
 		return nil
 	}); err != nil {
-		return err
+		return 0, err
 	}
 
 	// 为商户服务器创建本地 Gost 转发服务（通过任务队列，支持重试）
@@ -296,7 +284,7 @@ func CreateMerchant(req *model.CreateOrEditMerchantReq) error {
 	// 为系统服务器创建 Gost 服务（通过任务队列，支持重试）
 	enqueueGostServicesForServers(req.Port, req.ServerIP)
 
-	return nil
+	return merchant.Id, nil
 }
 
 // enqueueGostServicesForServers 为所有系统服务器入队创建商户转发任务
@@ -317,13 +305,22 @@ func enqueueGostServicesForServers(listenPort int, forwardHost string) {
 	directCount := 0
 	for _, s := range servers {
 		var err error
+		tlsEnabled := s.TlsEnabled == 1
 		if s.ForwardType == entity.ForwardTypeDirect {
 			// 直连转发：直接转发到商户业务程序 10000/10001/10002
-			err = gostapi.EnqueueCreateMerchantDirectForwards(s.Host, listenPort, forwardHost)
+			if tlsEnabled {
+				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(s.Host, listenPort, forwardHost)
+			} else {
+				err = gostapi.EnqueueCreateMerchantDirectForwards(s.Host, listenPort, forwardHost)
+			}
 			directCount++
 		} else {
 			// 加密转发（默认）：通过 relay+tls 转发到商户 GOST 10010/10011/10012
-			err = gostapi.EnqueueCreateMerchantForwards(s.Host, listenPort, forwardHost)
+			if tlsEnabled {
+				err = gostapi.EnqueueCreateMerchantForwardsWithTls(s.Host, listenPort, forwardHost)
+			} else {
+				err = gostapi.EnqueueCreateMerchantForwards(s.Host, listenPort, forwardHost)
+			}
 			encryptedCount++
 		}
 		if err != nil {

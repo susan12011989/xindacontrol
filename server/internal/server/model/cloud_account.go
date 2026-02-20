@@ -21,6 +21,7 @@ type CreateCloudAccountReq struct {
 	AccessKeySecret string `json:"access_key_secret" binding:"required"`
 	Region          string `json:"region"`
 	Description     string `json:"description"`
+	MerchantId      int    `json:"merchant_id"`                     // 商户ID，0或空表示系统账号
 }
 
 // 更新云账号请求
@@ -31,6 +32,7 @@ type UpdateCloudAccountReq struct {
 	AccessKeySecret string `json:"access_key_secret"`
 	Description     string `json:"description"`
 	Status          *int   `json:"status"`
+	MerchantId      *int   `json:"merchant_id"` // 商户ID，0表示系统账号
 }
 
 // 云账号响应
@@ -45,6 +47,7 @@ type CloudAccountResp struct {
 	Status          int    `json:"status"`
 	AccountType     string `json:"account_type"`
 	MerchantId      int    `json:"merchant_id"`
+	MerchantName    string `json:"merchant_name"` // 商户名称
 	CreatedAt       string `json:"created_at"`
 	UpdatedAt       string `json:"updated_at"`
 }

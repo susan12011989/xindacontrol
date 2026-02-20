@@ -24,6 +24,7 @@ export interface CreateCloudAccountReq {
   access_key_secret: string
   region?: string
   description?: string
+  merchant_id?: number // 商户ID，0或空表示系统账号
 }
 
 // 更新云账号请求
@@ -34,6 +35,7 @@ export interface UpdateCloudAccountReq {
   access_key_secret?: string
   description?: string
   status?: number
+  merchant_id?: number // 商户ID，0表示系统账号
 }
 
 // 云账号响应
@@ -49,6 +51,7 @@ export interface CloudAccountResp {
   status: number
   account_type: string
   merchant_id: number
+  merchant_name: string
   created_at: string
   updated_at: string
 }

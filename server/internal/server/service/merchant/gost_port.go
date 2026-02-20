@@ -30,6 +30,7 @@ func updateGostServicesOnSystemServers(merchantId int, listenPort int, forwardHo
 	directCount := 0
 	for _, s := range sysServers {
 		var err error
+		tlsEnabled := s.TlsEnabled == 1
 		if s.ForwardType == entity.ForwardTypeDirect {
 			// 直连转发：直接转发到商户业务程序
 			err = gostapi.EnqueueUpdateMerchantDirectForwards(s.Host, listenPort, forwardHost)
@@ -37,11 +38,9 @@ func updateGostServicesOnSystemServers(merchantId int, listenPort int, forwardHo
 		} else {
 			// 加密转发（默认）
 			if targetBasePort > 0 {
-				// 使用自定义目标端口
-				err = gostapi.EnqueueUpdateMerchantForwardsWithTargetPort(s.Host, listenPort, forwardHost, targetBasePort)
+				err = gostapi.EnqueueUpdateMerchantForwardsWithTargetPort(s.Host, listenPort, forwardHost, targetBasePort, tlsEnabled)
 			} else {
-				// 使用默认目标端口 (10010/10011/10012)
-				err = gostapi.EnqueueUpdateMerchantForwards(s.Host, listenPort, forwardHost)
+				err = gostapi.EnqueueUpdateMerchantForwards(s.Host, listenPort, forwardHost, tlsEnabled)
 			}
 			encryptedCount++
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path"
 	"server/internal/server/model"
 	"server/internal/server/utils"
@@ -434,7 +435,67 @@ func UploadToLocal(serviceName string, filename string, reader io.Reader) (strin
 	// 设置可执行权限
 	os.Chmod(localPath, 0755)
 
+	// 如果是 server 服务，自动更新 AMI 部署资源包
+	if serviceName == "server" {
+		go updateTSDDResourcesTarball(localPath)
+	}
+
 	return localPath, nil
+}
+
+// updateTSDDResourcesTarball 异步更新 /opt/control/tsdd-resources.tar.gz
+// 将最新的 TangSengDaoDaoServer 二进制和 assets 打包，供 AMI 新部署使用
+func updateTSDDResourcesTarball(newBinaryPath string) {
+	const resourcesDir = "/opt/control/tsdd-resources-tmp"
+	const tarballPath = "/opt/control/tsdd-resources.tar.gz"
+	const assetsDir = "/opt/control/tsdd-resources-assets"
+
+	// 创建临时打包目录
+	os.RemoveAll(resourcesDir)
+	os.MkdirAll(resourcesDir+"/assets/assets", 0755)
+
+	// 复制新二进制
+	src, err := os.Open(newBinaryPath)
+	if err != nil {
+		return
+	}
+	dst, err := os.Create(resourcesDir + "/TangSengDaoDaoServer")
+	if err != nil {
+		src.Close()
+		return
+	}
+	io.Copy(dst, src)
+	src.Close()
+	dst.Close()
+	os.Chmod(resourcesDir+"/TangSengDaoDaoServer", 0755)
+
+	// 复制 assets（从已有的资源包解压或从固定目录）
+	if entries, err := os.ReadDir(assetsDir + "/assets"); err == nil {
+		for _, e := range entries {
+			s, _ := os.Open(assetsDir + "/assets/" + e.Name())
+			if s != nil {
+				d, _ := os.Create(resourcesDir + "/assets/assets/" + e.Name())
+				if d != nil {
+					io.Copy(d, s)
+					d.Close()
+				}
+				s.Close()
+			}
+		}
+	} else {
+		// 从现有 tarball 中提取 assets
+		os.MkdirAll(resourcesDir+"/extract", 0755)
+		extractCmd := fmt.Sprintf("tar xzf %s -C %s/extract assets/ 2>/dev/null && cp -r %s/extract/assets/* %s/assets/ 2>/dev/null",
+			tarballPath, resourcesDir, resourcesDir, resourcesDir)
+		exec.Command("bash", "-c", extractCmd).Run()
+	}
+
+	// 打包
+	tarCmd := fmt.Sprintf("cd %s && tar czf %s TangSengDaoDaoServer assets/", resourcesDir, tarballPath)
+	exec.Command("bash", "-c", tarCmd).Run()
+
+	// 清理
+	os.RemoveAll(resourcesDir)
 }
 
 // DistributeFile 批量分发文件
@@ -538,9 +599,43 @@ func DistributeFile(req model.DistributeFileReq, operator string) (model.Distrib
 
 		// 如果需要重启服务
 		if req.RestartAfter {
-			systemdName := serviceSystemdNames[req.ServiceName]
-			restartCmd := fmt.Sprintf("systemctl restart %s", systemdName)
-			_, restartErr := targetClient.ExecuteCommand(restartCmd)
+			dockerName := model.ServiceDockerNames[req.ServiceName]
+
+			// 确保 docker-compose 有二进制的 volume 挂载，然后重启
+			restartScript := fmt.Sprintf(`
+cd %s
+
+# 确保有二进制 volume 挂载（server 服务）
+NEEDS_RECREATE=0
+if [ "%s" = "server" ] && [ -f docker-compose.yml ]; then
+  if ! grep -q '/home/app' docker-compose.yml; then
+    # 添加 volume 挂载（正确的容器内路径）
+    if grep -q '/home/assets' docker-compose.yml; then
+      # 已有 assets 挂载，在其后添加二进制挂载
+      sed -i '/\/home\/assets/a\      - ./%s:/home/app' docker-compose.yml
+    elif grep -q 'condition: service_started' docker-compose.yml; then
+      # 没有任何自定义挂载，添加完整 volumes 段
+      sed -i '/condition: service_started/a\    volumes:\n      - ./configs/hxd.yaml:/home/configs/hxd.yaml:ro\n      - ./assets:/home/assets:ro\n      - ./%s:/home/app' docker-compose.yml
+    fi
+    NEEDS_RECREATE=1
+  fi
+fi
+
+# 重启容器
+if [ "$NEEDS_RECREATE" = "1" ]; then
+  docker compose up -d %s 2>/dev/null || docker-compose up -d %s 2>/dev/null
+else
+  docker restart %s 2>/dev/null
+fi
+echo "restart done"
+`, remoteUploadPath,
+				req.ServiceName,
+				binaryName,
+				binaryName,
+				dockerName, dockerName,
+				dockerName)
+
+			_, restartErr := targetClient.ExecuteCommand(restartScript)
 			if restartErr != nil {
 				result.Success = true
 				result.Message = fmt.Sprintf("传输成功，但重启失败: %v", restartErr)

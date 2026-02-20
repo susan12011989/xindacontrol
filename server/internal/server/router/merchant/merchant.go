@@ -134,7 +134,8 @@ func createMerchant(c *gin.Context) {
 		return
 	}
 
-	if err := merchant.CreateMerchant(&req); err != nil {
+	id, err := merchant.CreateMerchant(&req)
+	if err != nil {
 		audit.LogErrorFromContext(c, entity.AuditActionCreateMerchant, entity.AuditTargetMerchant,
 			0, req.Name, req, err.Error())
 		result.GErr(c, err)
@@ -142,8 +143,8 @@ func createMerchant(c *gin.Context) {
 	}
 
 	audit.LogFromContext(c, entity.AuditActionCreateMerchant, entity.AuditTargetMerchant,
-		0, req.Name, map[string]interface{}{"port": req.Port, "server_ip": req.ServerIP})
-	result.GOK(c, nil)
+		id, req.Name, map[string]interface{}{"port": req.Port, "server_ip": req.ServerIP})
+	result.GOK(c, gin.H{"id": id})
 }
 
 // 更新商户

@@ -181,6 +181,7 @@ func CreateServer(req model.CreateServerReq) (int, error) {
 		PrivateKey:  req.PrivateKey,
 		ServerType:  serverType,
 		ForwardType: forwardType,
+		MerchantId:  req.MerchantId,
 		Status:      1,
 		Description: req.Description,
 		CreatedAt:   now,
@@ -305,6 +306,9 @@ func UpdateServer(id int, req model.UpdateServerReq) error {
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status
+	}
+	if req.MerchantId != nil {
+		updates["merchant_id"] = *req.MerchantId
 	}
 	if req.Description != "" {
 		updates["description"] = req.Description

@@ -85,3 +85,42 @@ export function toggleTarget(id: number) {
     method: "put"
   })
 }
+
+// ============ 资源分组 ============
+
+/** 获取资源分组列表 */
+export function getResourceGroups(type = "ip_embed_target") {
+  return request<ApiResponseData<Types.ResourceGroupItem[]>>({
+    url: "resource-groups",
+    method: "get",
+    params: { type }
+  })
+}
+
+/** 创建资源分组 */
+export function createResourceGroup(data: Types.ResourceGroupReq, type = "ip_embed_target") {
+  return request<ApiResponseData<{ id: number }>>({
+    url: "resource-groups",
+    method: "post",
+    params: { type },
+    data
+  })
+}
+
+/** 更新资源分组 */
+export function updateResourceGroup(id: number, data: Types.ResourceGroupReq) {
+  return request<ApiResponseData<null>>({
+    url: `resource-groups/${id}`,
+    method: "put",
+    data
+  })
+}
+
+/** 删除资源分组 */
+export function deleteResourceGroup(id: number, type = "ip_embed_target") {
+  return request<ApiResponseData<null>>({
+    url: `resource-groups/${id}`,
+    method: "delete",
+    params: { type }
+  })
+}

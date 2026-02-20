@@ -93,6 +93,9 @@ type Servers struct {
 	TlsDeployedAt *time.Time `xorm:"comment('TLS证书部署时间') DATETIME"`
 	Description   string     `xorm:"default '' comment('描述') VARCHAR(255)"`
 	Tags          string     `xorm:"default '' comment('标签') VARCHAR(255)"`
+	AwsInstanceId  string `xorm:"aws_instance_id default '' comment('AWS EC2实例ID') VARCHAR(32)" json:"aws_instance_id"`
+	AwsRegionId    string `xorm:"aws_region_id default '' comment('AWS区域') VARCHAR(32)" json:"aws_region_id"`
+	CloudAccountId int64  `xorm:"cloud_account_id default 0 comment('云账号ID') BIGINT" json:"cloud_account_id"`
 	CreatedAt     time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 	UpdatedAt     time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 }
@@ -297,6 +300,7 @@ type IpEmbedTargets struct {
 	ObjectPrefix   string    `xorm:"default '' comment('对象前缀') VARCHAR(128)"`
 	Enabled        int       `xorm:"not null default 1 comment('是否启用:0-禁用 1-启用') TINYINT"`
 	SortOrder      int       `xorm:"not null default 0 comment('排序顺序') INT"`
+	GroupId        int       `xorm:"not null default 0 comment('分组ID') index INT"`
 	CreatedAt      time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 	UpdatedAt      time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 }
@@ -648,7 +652,37 @@ const (
 	ResourceTypeStorageConfig = "storage_config"
 )
 
+// ========== 通用资源分组 ==========
+
+// ResourceGroups 资源分组（一对多：一个资源属于一个分组）
+type ResourceGroups struct {
+	Id           int       `xorm:"not null pk autoincr INT"`
+	Name         string    `xorm:"not null comment('分组名称') VARCHAR(64)"`
+	ResourceType string    `xorm:"not null default 'ip_embed_target' comment('资源类型') VARCHAR(32)"`
+	SortOrder    int       `xorm:"not null default 0 comment('排序') INT"`
+	CreatedAt    time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+	UpdatedAt    time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+}
+
+// 资源分组类型常量
+const (
+	ResourceGroupTypeIpEmbedTarget = "ip_embed_target"
+)
+
 // 审计日志目标类型 - 存储配置
 const (
 	AuditTargetStorageConfig = "storage_config"
 )
+
+// ========== 云实例商户绑定 ==========
+
+// CloudInstanceBindings 云实例商户绑定
+type CloudInstanceBindings struct {
+	Id         int       `xorm:"not null pk autoincr INT"`
+	InstanceId string    `xorm:"not null VARCHAR(64)"`
+	RegionId   string    `xorm:"not null VARCHAR(64)"`
+	CloudType  string    `xorm:"not null default 'aliyun' VARCHAR(16)"`
+	MerchantId int       `xorm:"not null INT"`
+	CreatedAt  time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+	UpdatedAt  time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+}

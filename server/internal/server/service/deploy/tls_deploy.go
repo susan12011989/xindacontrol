@@ -175,24 +175,38 @@ echo "证书部署完成"
 	return nil
 }
 
-// upgradeGostListenerToTls 通过 GOST API 将所有 tcp listener 改为 tls
+// upgradeGostListenerToTls 通过 GOST API 将所有 tcp listener 改为 tls，
+// 同时修复已经是 tls 但缺少证书路径的 listener
 func upgradeGostListenerToTls(serverIP string) error {
 	config, err := gostapi.GetConfig(serverIP, "")
 	if err != nil {
 		return fmt.Errorf("获取 GOST 配置失败: %v", err)
 	}
 
+	expectedCert := certRemotePath + "/server.crt"
+	expectedKey := certRemotePath + "/server.key"
+
 	for _, svc := range config.Services {
-		if svc.Listener == nil || svc.Listener.Type != "tcp" {
-			continue
-		}
-		// 只更新 tcp-relay 和 tcp-direct 类型的系统服务器转发服务
-		// 跳过不相关的服务
-		if svc.Handler == nil {
+		if svc.Listener == nil || svc.Handler == nil {
 			continue
 		}
 
-		// 更新 listener 为 tls，并配置证书路径
+		needsUpdate := false
+		switch {
+		case svc.Listener.Type == "tcp":
+			// tcp → tls 升级
+			needsUpdate = true
+		case svc.Listener.Type == "tls" && (svc.Listener.TLS == nil ||
+			svc.Listener.TLS.CertFile != expectedCert ||
+			svc.Listener.TLS.KeyFile != expectedKey):
+			// 已经是 tls 但缺少或证书路径不正确，需要修复
+			needsUpdate = true
+		}
+
+		if !needsUpdate {
+			continue
+		}
+
 		updatedSvc := &gostapi.ServiceConfig{
 			Name: svc.Name,
 			Addr: svc.Addr,
@@ -200,8 +214,8 @@ func upgradeGostListenerToTls(serverIP string) error {
 			Listener: &gostapi.ListenerConfig{
 				Type: "tls",
 				TLS: &gostapi.TLSConfig{
-					CertFile: certRemotePath + "/server.crt",
-					KeyFile:  certRemotePath + "/server.key",
+					CertFile: expectedCert,
+					KeyFile:  expectedKey,
 				},
 			},
 			Forwarder: svc.Forwarder,

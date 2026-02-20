@@ -65,6 +65,9 @@ func Routes(ge gin.IRouter) {
 
 	// Billing
 	group.GET("/billing/cost-usage", getCostAndUsage)
+
+	// CloudWatch Monitoring
+	group.GET("/cloudwatch/metrics", getCloudWatchMetrics)
 }
 
 func listEc2Instance(c *gin.Context) {
@@ -927,3 +930,19 @@ func strconvParseInt64(s string) (int64, error) {
 
 func strPtr(s string) *string { return &s }
 func int32Ptr(v int32) *int32 { return &v }
+
+// ========== CloudWatch ==========
+
+func getCloudWatchMetrics(c *gin.Context) {
+	var req model.AwsCloudWatchMetricsReq
+	if err := c.ShouldBindQuery(&req); err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+	data, err := cloudService.GetCloudWatchMetrics(req)
+	if err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, data)
+}

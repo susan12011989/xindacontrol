@@ -737,7 +737,7 @@ onMounted(() => {
   <div class="app-container">
     <!-- 服务器选择 + 视图切换 -->
     <el-card class="server-select-card" shadow="never">
-      <div class="flex items-center gap-4">
+      <div class="flex items-center gap-4 flex-wrap">
         <span class="font-bold w-24">系统服务器:</span>
         <el-select v-model="selectedServerId" placeholder="请选择服务器" style="width: 450px" filterable>
           <el-option

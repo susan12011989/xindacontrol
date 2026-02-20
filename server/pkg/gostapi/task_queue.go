@@ -292,9 +292,17 @@ func (tq *TaskQueue) processTask(task *GostTask) {
 		err = DeleteMerchantForwards(task.ServerIP, task.BasePort)
 	case TaskUpdateMerchantForwards:
 		if task.TargetBasePort > 0 {
-			err = UpdateMerchantForwardsWithTargetPort(task.ServerIP, task.BasePort, task.TargetIP, task.TargetBasePort)
+			if task.TlsListener {
+				err = UpdateMerchantForwardsWithTargetPortWithTls(task.ServerIP, task.BasePort, task.TargetIP, task.TargetBasePort)
+			} else {
+				err = UpdateMerchantForwardsWithTargetPort(task.ServerIP, task.BasePort, task.TargetIP, task.TargetBasePort)
+			}
 		} else {
-			err = UpdateMerchantForwards(task.ServerIP, task.BasePort, task.TargetIP)
+			if task.TlsListener {
+				err = UpdateMerchantForwardsWithTls(task.ServerIP, task.BasePort, task.TargetIP)
+			} else {
+				err = UpdateMerchantForwards(task.ServerIP, task.BasePort, task.TargetIP)
+			}
 		}
 	case TaskCreateMerchantDirectForwards:
 		if task.TlsListener {
@@ -420,20 +428,21 @@ func EnqueueDeleteMerchantForwards(systemServerIP string, basePort int) error {
 }
 
 // EnqueueUpdateMerchantForwards 入队：更新系统服务器转发（使用默认目标端口）
-func EnqueueUpdateMerchantForwards(systemServerIP string, basePort int, targetIP string) error {
+func EnqueueUpdateMerchantForwards(systemServerIP string, basePort int, targetIP string, tlsListener bool) error {
 	if taskQueue == nil {
 		return fmt.Errorf("task queue not initialized")
 	}
 	return taskQueue.Enqueue(&GostTask{
-		Type:     TaskUpdateMerchantForwards,
-		ServerIP: systemServerIP,
-		BasePort: basePort,
-		TargetIP: targetIP,
+		Type:        TaskUpdateMerchantForwards,
+		ServerIP:    systemServerIP,
+		BasePort:    basePort,
+		TargetIP:    targetIP,
+		TlsListener: tlsListener,
 	})
 }
 
 // EnqueueUpdateMerchantForwardsWithTargetPort 入队：更新系统服务器转发（自定义目标端口）
-func EnqueueUpdateMerchantForwardsWithTargetPort(systemServerIP string, basePort int, targetIP string, targetBasePort int) error {
+func EnqueueUpdateMerchantForwardsWithTargetPort(systemServerIP string, basePort int, targetIP string, targetBasePort int, tlsListener bool) error {
 	if taskQueue == nil {
 		return fmt.Errorf("task queue not initialized")
 	}
@@ -443,6 +452,7 @@ func EnqueueUpdateMerchantForwardsWithTargetPort(systemServerIP string, basePort
 		BasePort:       basePort,
 		TargetIP:       targetIP,
 		TargetBasePort: targetBasePort,
+		TlsListener:    tlsListener,
 	})
 }
 

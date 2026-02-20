@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"server/internal/dbhelper"
 	"server/internal/server/cfg"
+	"server/internal/server/utils"
+	"server/pkg/dbs"
 	"server/pkg/entity"
 	"time"
 
@@ -168,10 +170,39 @@ func SaveAdminmSystemNickname(merchantNo string, firstName string) error {
 	return nil
 }
 
+// ============ Export Database ============
+
+// GetMerchantSSHClient 获取商户服务器的 SSH 客户端
+func GetMerchantSSHClient(merchantNo string) (*utils.SSHClient, error) {
+	merchant, err := dbhelper.GetMerchantByNo(merchantNo)
+	if err != nil {
+		return nil, fmt.Errorf("获取商户信息失败: %v", err)
+	}
+
+	var server entity.Servers
+	has, err := dbs.DBAdmin.Where("merchant_id = ? AND server_type = 1 AND status = 1", merchant.Id).Get(&server)
+	if err != nil {
+		return nil, fmt.Errorf("查询商户服务器失败: %v", err)
+	}
+	if !has {
+		return nil, fmt.Errorf("未找到商户服务器")
+	}
+
+	return &utils.SSHClient{
+		Host:       server.Host,
+		Port:       server.Port,
+		Username:   server.Username,
+		Password:   server.Password,
+		PrivateKey: server.PrivateKey,
+	}, nil
+}
+
 // ============ Clear Data ============
 
 // ClearMerchantData 清除商户所有用户数据（保留系统账号和配置）
+// 清除范围：MySQL 用户数据 + Redis 缓存 + WuKongIM 消息 + MinIO 文件
 func ClearMerchantData(merchantNo string) error {
+	// 1. 调用 TSDD API 清除 MySQL 数据（保留系统账号、文件助手、管理员）
 	url, err := getMerchantAPIURL(merchantNo, "/v1/control/data/clear")
 	if err != nil {
 		return err
@@ -179,16 +210,84 @@ func ClearMerchantData(merchantNo string) error {
 
 	resp, err := doMerchantRequest("POST", url, nil)
 	if err != nil {
-		logx.Errorf("清除商户数据失败: merchant=%s, err=%v", merchantNo, err)
+		logx.Errorf("清除商户MySQL数据失败: merchant=%s, err=%v", merchantNo, err)
 		return fmt.Errorf("请求商户服务器失败: %v", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("清除失败，状态码: %d", resp.StatusCode)
+		return fmt.Errorf("清除MySQL数据失败，状态码: %d", resp.StatusCode)
+	}
+	logx.Infof("商户MySQL数据已清除: merchant=%s", merchantNo)
+
+	// 2. SSH 到商户服务器清除 Redis/WuKongIM/MinIO
+	merchant, err := dbhelper.GetMerchantByNo(merchantNo)
+	if err != nil {
+		logx.Errorf("获取商户信息失败（MySQL已清除）: %v", err)
+		return nil // MySQL 已清除成功，SSH 清理失败不阻塞
 	}
 
-	logx.Infof("商户数据已清除: merchant=%s", merchantNo)
+	// 查找商户服务器
+	var server entity.Servers
+	has, _ := dbs.DBAdmin.Where("merchant_id = ? AND server_type = 1 AND status = 1", merchant.Id).Get(&server)
+	if !has {
+		logx.Infof("未找到商户服务器，跳过 SSH 清理: merchant=%s", merchantNo)
+		return nil
+	}
+
+	// 构建 SSH 客户端
+	sshClient := &utils.SSHClient{
+		Host:       server.Host,
+		Port:       server.Port,
+		Username:   server.Username,
+		Password:   server.Password,
+		PrivateKey: server.PrivateKey,
+	}
+
+	// 清理脚本：Redis + WuKongIM + MinIO + 重启服务
+	cleanScript := `
+set -e
+cd /opt/tsdd
+
+echo "=== Flushing Redis ==="
+docker exec tsdd-redis redis-cli FLUSHALL 2>/dev/null || echo "Redis flush skipped"
+
+echo "=== Clearing WuKongIM data ==="
+WKIM_VOLUME=$(docker inspect tsdd-wukongim --format='{{range .Mounts}}{{if eq .Destination "/root/wukongim"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || echo "")
+if [ -n "$WKIM_VOLUME" ] && [ -d "$WKIM_VOLUME" ]; then
+    docker compose stop tsdd-wukongim 2>/dev/null || docker-compose stop tsdd-wukongim 2>/dev/null || true
+    rm -rf "$WKIM_VOLUME"/* 2>/dev/null || true
+    docker compose up -d tsdd-wukongim 2>/dev/null || docker-compose up -d tsdd-wukongim 2>/dev/null || true
+    echo "WuKongIM data cleared"
+else
+    echo "WuKongIM volume not found, skipped"
+fi
+
+echo "=== Clearing MinIO data ==="
+MINIO_VOLUME=$(docker inspect tsdd-minio --format='{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || echo "")
+if [ -n "$MINIO_VOLUME" ] && [ -d "$MINIO_VOLUME" ]; then
+    docker compose stop tsdd-minio 2>/dev/null || docker-compose stop tsdd-minio 2>/dev/null || true
+    rm -rf "$MINIO_VOLUME"/* 2>/dev/null || true
+    docker compose up -d tsdd-minio 2>/dev/null || docker-compose up -d tsdd-minio 2>/dev/null || true
+    echo "MinIO data cleared"
+else
+    echo "MinIO volume not found, skipped"
+fi
+
+echo "=== Restarting TSDD server ==="
+docker compose restart tsdd-server 2>/dev/null || docker-compose restart tsdd-server 2>/dev/null || true
+
+echo "=== All clear done ==="
+`
+
+	output, sshErr := sshClient.ExecuteCommandWithTimeout(cleanScript, 120*time.Second)
+	if sshErr != nil {
+		logx.Errorf("SSH清理失败（MySQL已清除）: merchant=%s, err=%v, output=%s", merchantNo, sshErr, output)
+		// MySQL 已成功清除，SSH 清理失败记录日志但不返回错误
+	} else {
+		logx.Infof("商户全部数据已清除: merchant=%s, output=%s", merchantNo, output)
+	}
+
 	return nil
 }
 

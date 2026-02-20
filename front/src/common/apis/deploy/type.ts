@@ -491,6 +491,12 @@ export interface DeployTSDDWithAMIReq {
   volume_size_gib?: number // 可选，默认 30
   server_name?: string // 服务器名称
   source_server_id?: number // 可选，从某服务器克隆（会先创建 AMI）
+  // EBS 额外数据卷
+  enable_extra_ebs?: boolean // 是否创建额外 EBS 数据卷
+  db_volume_size_gib?: number // DB 数据卷大小(GB)，默认 20
+  db_volume_iops?: number // DB 数据卷 IOPS，默认 3000
+  minio_volume_size_gib?: number // MinIO 数据卷大小(GB)，默认 50
+  minio_volume_iops?: number // MinIO 数据卷 IOPS，默认 3000
 }
 
 // 使用 AMI 部署响应
@@ -503,6 +509,9 @@ export interface DeployTSDDWithAMIResp {
   api_url: string
   web_url: string
   admin_url: string
+  // EBS 卷信息
+  db_volume_id?: string
+  minio_volume_id?: string
 }
 
 export type DeployTSDDWithAMIResponseData = ApiResponseData<DeployTSDDWithAMIResp>

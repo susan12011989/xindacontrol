@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"server/internal/dbhelper"
 	"server/internal/server/middleware"
 	"server/internal/server/model"
 	"server/pkg/result"
@@ -72,21 +71,7 @@ func checkPortAvailable(c *gin.Context) {
 		result.GParamErr(c, err)
 		return
 	}
-	used := make([]string, 0, 5)
-	// port/port-1/port-2/port+1/port+2 均需未被占用（TCP/WS/HTTP 三端口）
-	for i := -2; i <= 2; i++ {
-		checkPort := req.Port + i
-		if inUse, err := dbhelper.CheckMerchantPortInUse(checkPort); err != nil {
-			result.GErr(c, err)
-			return
-		} else if inUse {
-			used = append(used, fmt.Sprintf("%d", checkPort))
-		}
-	}
-	if len(used) > 0 {
-		result.GResult(c, 400, nil, fmt.Sprintf("端口 %s 已被占用", strings.Join(used, "/")))
-		return
-	}
+	// 端口唯一性检查已移除：每个商户配独立系统服务器+隧道，端口可复用
 	result.GOK(c, gin.H{"ok": true})
 }
 

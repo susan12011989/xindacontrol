@@ -3,6 +3,7 @@ import type { CloudAccountResp } from "@@/apis/cloud_account/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
 import { getBillingCostUsage } from "@@/apis/aws"
 import { createCloudAccount, deleteCloudAccount, getAliyunBalance, getCloudAccountList, updateCloudAccount } from "@@/apis/cloud_account"
+import { getMerchantList } from "@@/apis/merchant"
 import { getAwsRegions } from "@@/constants/aws-regions"
 
 defineOptions({
@@ -27,6 +28,27 @@ const statusOptions = [
   { label: "启用", value: 1 },
   { label: "禁用", value: 0 }
 ]
+
+// 商户选项
+const merchantOptions: { label: string; value: number }[] = reactive([])
+
+async function loadMerchants() {
+  try {
+    const res = await getMerchantList({ page: 1, size: 1000 })
+    const list = res.data.list?.map((m: any) => ({
+      label: `${m.name} (${m.no})`,
+      value: m.id
+    })) || []
+    merchantOptions.length = 0
+    merchantOptions.push(...list)
+  } catch (e) {
+    console.error("加载商户列表失败", e)
+  }
+}
+
+onMounted(() => {
+  loadMerchants()
+})
 
 // ========== VXE Grid 配置 ==========
 const xGridDom = ref<VxeGridInstance>()
@@ -54,14 +76,11 @@ const xGridOpt: VxeGridProps = reactive({
         }
       },
       {
-        field: "account_type",
+        field: "merchant_id",
         itemRender: {
           name: "$select",
-          options: [
-            { label: "系统", value: "system" },
-            { label: "商户", value: "merchant" }
-          ],
-          props: { placeholder: "归属类型", clearable: true }
+          options: merchantOptions,
+          props: { placeholder: "选择商户", clearable: true, filterable: true }
         }
       },
       {
@@ -104,10 +123,10 @@ const xGridOpt: VxeGridProps = reactive({
       slots: { default: "site-type-slot" }
     },
     {
-      field: "account_type",
-      title: "归属",
+      field: "merchant_name",
+      title: "商户",
       width: 180,
-      slots: { default: "owner-slot" }
+      slots: { default: "merchant-slot" }
     },
     { field: "access_key_id", title: "AccessKeyId", width: 200, showOverflow: true },
     { field: "description", title: "描述", showOverflow: true },
@@ -139,7 +158,7 @@ const xGridOpt: VxeGridProps = reactive({
             name: form.name || "",
             cloud_type: form.cloud_type || "",
             status: form.status,
-            account_type: form.account_type || "",
+            merchant_id: form.merchant_id || "",
             size: page.pageSize,
             page: page.currentPage
           }
@@ -183,6 +202,7 @@ const xFormOpt: VxeFormProps = reactive({
     name: "",
     cloud_type: "",
     site_type: "cn",
+    merchant_id: 0,
     access_key_id: "",
     access_key_secret: "",
     description: ""
@@ -203,6 +223,15 @@ const xFormOpt: VxeFormProps = reactive({
         name: "$select",
         options: cloudTypeOptions,
         props: { placeholder: "请选择云类型" }
+      }
+    },
+    {
+      field: "merchant_id",
+      title: "所属商户",
+      itemRender: {
+        name: "$select",
+        options: merchantOptions,
+        props: { placeholder: "不选则为系统账号", clearable: true, filterable: true }
       }
     },
     {
@@ -283,6 +312,7 @@ const crudStore = reactive({
         name: row.name,
         cloud_type: row.cloud_type,
         site_type: row.site_type || "cn",
+        merchant_id: row.merchant_id || 0,
         access_key_id: row.access_key_id,
         access_key_secret: row.access_key_secret,
         description: row.description
@@ -297,7 +327,7 @@ const crudStore = reactive({
     } else {
       crudStore.isUpdate = false
       crudStore.currentId = 0
-      xModalOpt.title = "新增系统云账号"
+      xModalOpt.title = "新增云账号"
       // 新增时云类型可选
       if (xFormOpt.items?.[1]?.itemRender) {
         xFormOpt.items[1].itemRender.props = {
@@ -551,7 +581,7 @@ function getCloudTypeText(type: string) {
       <!-- 工具栏按钮 -->
       <template #toolbar-btns>
         <vxe-button status="primary" icon="vxe-icon-add" @click="crudStore.onShowModal()">
-          新增系统云账号
+          新增云账号
         </vxe-button>
       </template>
 
@@ -570,11 +600,12 @@ function getCloudTypeText(type: string) {
         <span v-else>-</span>
       </template>
 
-      <!-- 归属列 -->
-      <template #owner-slot="{ row }">
-        <el-tag :type="row.account_type === 'merchant' ? 'success' : 'info'">
-          {{ row.account_type === 'merchant' ? `商户(${row.merchant_id || '-'})` : '系统' }}
+      <!-- 商户列 -->
+      <template #merchant-slot="{ row }">
+        <el-tag v-if="row.merchant_name" type="success">
+          {{ row.merchant_name }}
         </el-tag>
+        <el-tag v-else type="info">系统</el-tag>
       </template>
       <!-- 余额列 -->
       <template #balance-slot="{ row }">

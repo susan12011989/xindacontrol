@@ -67,6 +67,14 @@ export interface Instance {
   }
 }
 
+// 实例商户绑定信息
+export interface InstanceBindingResp {
+  instance_id: string
+  merchant_id: number
+  merchant_name: string
+  merchant_no: string
+}
+
 export type InstanceList = ApiResponseData<{
   list: Instance[]
   total: number
@@ -76,6 +84,7 @@ export type InstanceList = ApiResponseData<{
     AllocationId?: string
     Primary: boolean
   }>>
+  bindings?: Record<string, InstanceBindingResp>
 }>
 
 export interface CreateInstanceData {

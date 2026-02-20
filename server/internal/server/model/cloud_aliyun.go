@@ -136,6 +136,32 @@ type BatchReplaceEipConfig struct {
 	InternetChargeType string `json:"internet_charge_type,omitempty"`         // 计费方式：PayByBandwidth, PayByTraffic
 }
 
+// ========== 云实例商户绑定 ==========
+
+type BindInstanceMerchantReq struct {
+	InstanceId string `json:"instance_id" binding:"required"`
+	RegionId   string `json:"region_id" binding:"required"`
+	MerchantId int    `json:"merchant_id" binding:"required"`
+	CloudType  string `json:"cloud_type"` // 默认 aliyun
+}
+
+type UnbindInstanceMerchantReq struct {
+	InstanceId string `json:"instance_id" binding:"required"`
+	CloudType  string `json:"cloud_type"` // 默认 aliyun
+}
+
+type GetInstanceBindingsReq struct {
+	InstanceIds []string `json:"instance_ids" binding:"required"`
+	CloudType   string   `json:"cloud_type"` // 默认 aliyun
+}
+
+type InstanceBindingResp struct {
+	InstanceId   string `json:"instance_id"`
+	MerchantId   int    `json:"merchant_id"`
+	MerchantName string `json:"merchant_name"`
+	MerchantNo   string `json:"merchant_no"`
+}
+
 // ========== OSS ==========
 
 // OssListObjectsReq 列举 OSS 对象请求

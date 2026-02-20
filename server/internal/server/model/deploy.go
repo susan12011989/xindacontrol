@@ -24,6 +24,7 @@ type CreateServerReq struct {
 	PrivateKey  string `json:"private_key"`
 	ServerType  int    `json:"server_type"`  // 1-商户服务器 2-系统服务器
 	ForwardType int    `json:"forward_type"` // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
+	MerchantId  int    `json:"merchant_id"`  // 关联的商户ID
 	Description string `json:"description"`
 }
 
@@ -39,6 +40,7 @@ type UpdateServerReq struct {
 	PrivateKey  string  `json:"private_key"`
 	ServerType  *int    `json:"server_type"`  // 1-商户服务器 2-系统服务器
 	ForwardType *int    `json:"forward_type"` // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
+	MerchantId  *int    `json:"merchant_id"`  // 关联的商户ID（指针区分未传和清零）
 	Status      *int    `json:"status"`
 	Description string  `json:"description"`
 }

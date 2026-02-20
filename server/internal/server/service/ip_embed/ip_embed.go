@@ -62,13 +62,61 @@ func GetTargets() (*model.GetTargetsResp, error) {
 		return nil, err
 	}
 
+	// 批量查询分组名称
+	groupIds := make([]int, 0)
+	for _, t := range targets {
+		if t.GroupId > 0 {
+			groupIds = append(groupIds, t.GroupId)
+		}
+	}
+	groupMap := make(map[int]string)
+	if len(groupIds) > 0 {
+		var groups []entity.ResourceGroups
+		_ = dbs.DBAdmin.In("id", groupIds).Find(&groups)
+		for _, g := range groups {
+			groupMap[g.Id] = g.Name
+		}
+	}
+
+	// 批量查询云账号信息（名称、商户ID）
+	accountIds := make([]int64, 0)
+	for _, t := range targets {
+		if t.CloudAccountId > 0 {
+			accountIds = append(accountIds, t.CloudAccountId)
+		}
+	}
+	type accInfo struct {
+		Name       string
+		MerchantId int
+	}
+	accMap := make(map[int64]accInfo)
+	if len(accountIds) > 0 {
+		var accounts []entity.CloudAccounts
+		_ = dbs.DBAdmin.In("id", accountIds).Cols("id", "name", "merchant_id").Find(&accounts)
+		for _, a := range accounts {
+			accMap[a.Id] = accInfo{Name: a.Name, MerchantId: a.MerchantId}
+		}
+	}
+
+	// 批量查询商户名称
+	merchantIds := make([]int, 0)
+	for _, ai := range accMap {
+		if ai.MerchantId > 0 {
+			merchantIds = append(merchantIds, ai.MerchantId)
+		}
+	}
+	merchantMap := make(map[int]string)
+	if len(merchantIds) > 0 {
+		var merchants []entity.Merchants
+		_ = dbs.DBAdmin.In("id", merchantIds).Cols("id", "name").Find(&merchants)
+		for _, m := range merchants {
+			merchantMap[m.Id] = m.Name
+		}
+	}
+
 	items := make([]model.TargetItem, 0, len(targets))
 	for i, t := range targets {
-		// 查询云账号名称
-		accountName := ""
-		if acc, err := dbhelper.GetCloudAccountByID(t.CloudAccountId); err == nil && acc != nil {
-			accountName = acc.Name
-		}
+		ai := accMap[t.CloudAccountId]
 
 		items = append(items, model.TargetItem{
 			Id:             t.Id,
@@ -76,12 +124,16 @@ func GetTargets() (*model.GetTargetsResp, error) {
 			Name:           t.Name,
 			CloudType:      t.CloudType,
 			CloudAccountId: t.CloudAccountId,
-			AccountName:    accountName,
+			AccountName:    ai.Name,
 			RegionId:       t.RegionId,
 			Bucket:         t.Bucket,
 			ObjectPrefix:   t.ObjectPrefix,
 			Enabled:        t.Enabled == 1,
 			SortOrder:      t.SortOrder,
+			GroupId:        t.GroupId,
+			GroupName:      groupMap[t.GroupId],
+			MerchantId:     ai.MerchantId,
+			MerchantName:   merchantMap[ai.MerchantId],
 		})
 	}
 
@@ -115,6 +167,7 @@ func CreateTarget(req model.CreateTargetReq) (int, error) {
 		ObjectPrefix:   req.ObjectPrefix,
 		Enabled:        enabled,
 		SortOrder:      req.SortOrder,
+		GroupId:        req.GroupId,
 		CreatedAt:      time.Now(),
 		UpdatedAt:      time.Now(),
 	}
@@ -172,6 +225,9 @@ func UpdateTarget(id int, req model.UpdateTargetReq) error {
 	}
 	if req.SortOrder != nil {
 		updates["sort_order"] = *req.SortOrder
+	}
+	if req.GroupId != nil {
+		updates["group_id"] = *req.GroupId
 	}
 
 	if len(updates) == 0 {

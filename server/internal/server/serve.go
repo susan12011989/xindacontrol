@@ -26,6 +26,7 @@ import (
 	"server/internal/server/router/merchant_api"
 	"server/internal/server/router/merchant_storage"
 	"server/internal/server/router/project"
+	"server/internal/server/router/resource_group"
 	"server/internal/server/router/resource_overview"
 	"server/internal/server/router/utils"
 	"server/internal/server/static"
@@ -68,6 +69,10 @@ func Serve(ctx context.Context) {
 	// 自动创建表：资源标签
 	_ = dbs.DBAdmin.Sync2(new(entity.ResourceTags))
 	_ = dbs.DBAdmin.Sync2(new(entity.ResourceTagRelations))
+	// 自动创建表：资源分组
+	_ = dbs.DBAdmin.Sync2(new(entity.ResourceGroups))
+	// 同步 Servers 表结构（新增字段自动加列）
+	_ = dbs.DBAdmin.Sync2(new(entity.Servers))
 	// http api
 	ge := gin.Default()
 
@@ -116,6 +121,7 @@ func Serve(ctx context.Context) {
 	audit.Routes(group)            // 操作审计日志
 	alert.Routes(group)            // 告警通知管理
 	merchant_storage.Routes(group)  // 商户存储配置管理
+	resource_group.Routes(group)    // 资源分组管理
 	resource_overview.Routes(group) // 资源总览
 	clients.Routes(group)           // 客户端管理
 

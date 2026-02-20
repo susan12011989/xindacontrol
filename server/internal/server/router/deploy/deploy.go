@@ -101,6 +101,7 @@ func Routes(gi gin.IRouter) {
 	group.POST("tsdd/deploy", deployTSDD)              // 部署到已注册服务器 (Docker方式)
 	group.POST("tsdd/deploy-by-ip", deployTSDDByIP)    // 通过IP部署（新服务器，Docker方式）
 	group.POST("tsdd/deploy-ami", deployTSDDWithAMI)   // 使用 AMI 部署（推荐）
+	group.POST("tsdd/deploy-node", deployNode)         // 集群节点部署（水平扩容）
 	group.GET("tsdd/status", getDeployStatus)          // 获取部署状态
 
 	// ========== 批量运维操作 ==========
@@ -771,6 +772,42 @@ func deployTSDDWithAMI(ctx *gin.Context) {
 	}
 
 	data, err := deployService.DeployTSDDWithAMI(req, operator)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// deployNode 集群节点部署（支持水平扩容）
+func deployNode(ctx *gin.Context) {
+	var req model.DeployNodeReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	// 校验 node_role
+	switch req.NodeRole {
+	case "allinone", "db", "app":
+	default:
+		result.GErr(ctx, fmt.Errorf("无效的 node_role: %s，可选值: allinone/db/app", req.NodeRole))
+		return
+	}
+
+	// app 节点必须指定 db_host
+	if req.NodeRole == "app" && req.DBHost == "" {
+		result.GErr(ctx, fmt.Errorf("app 节点必须指定 db_host（DB 节点内网 IP）"))
+		return
+	}
+
+	operator := middleware.GetUsername(ctx)
+	if operator == "" {
+		operator = "admin"
+	}
+
+	data, err := deployService.DeployNodeByServerId(req, operator)
 	if err != nil {
 		result.GErr(ctx, err)
 		return

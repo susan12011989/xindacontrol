@@ -209,3 +209,13 @@ export function getBillingCostUsage(params: Aws.AwsBillingQueryReq) {
     params
   })
 }
+
+// CloudWatch Monitoring
+export function getCloudWatchMetrics(params: Aws.AwsCloudWatchMetricsReq) {
+  return request<{ code: number, data: Aws.AwsCloudWatchMetricsResp, message: string }>({
+    url: "aws/cloudwatch/metrics",
+    method: "get",
+    params,
+    timeout: 30000
+  })
+}

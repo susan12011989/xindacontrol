@@ -67,12 +67,6 @@ func Authorization(ctx *gin.Context) {
 		ctx.Abort()
 		return
 	}
-	if tokenInfo.IP != ctx.ClientIP() {
-		result.UnAuthorization(ctx, fmt.Sprintf("IP不一致：tokenIp=%s，clientIp=%s", tokenInfo.IP, ctx.ClientIP()))
-		ctx.Abort()
-		logx.Errorf("未授权, tokenIp:%s clientIp: %s 不匹配,重新登录", tokenInfo.IP, ctx.ClientIP())
-		return
-	}
 	ctx.Set("uid", tokenInfo.UserID)
 	ctx.Set("tid", tokenInfo.TokenID)
 	ctx.Set("username", tokenInfo.Username)

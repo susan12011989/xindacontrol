@@ -43,6 +43,22 @@ func QueryCloudAccounts(req model.QueryCloudAccountsReq) (model.QueryCloudAccoun
 	}
 	resp.Total = int(total)
 
+	// 收集商户ID，批量查询商户名称
+	merchantIds := make([]int, 0)
+	for _, a := range accounts {
+		if a.MerchantId > 0 {
+			merchantIds = append(merchantIds, a.MerchantId)
+		}
+	}
+	merchantNameMap := make(map[int]string)
+	if len(merchantIds) > 0 {
+		var merchants []entity.Merchants
+		_ = dbs.DBAdmin.In("id", merchantIds).Cols("id", "name").Find(&merchants)
+		for _, m := range merchants {
+			merchantNameMap[m.Id] = m.Name
+		}
+	}
+
 	// 转换为响应格式
 	for _, a := range accounts {
 		siteType := a.SiteType
@@ -60,6 +76,7 @@ func QueryCloudAccounts(req model.QueryCloudAccountsReq) (model.QueryCloudAccoun
 			Status:          a.Status,
 			AccountType:     a.AccountType,
 			MerchantId:      a.MerchantId,
+			MerchantName:    merchantNameMap[a.MerchantId],
 			CreatedAt:       a.CreatedAt.Format("2006-01-02 15:04:05"),
 			UpdatedAt:       a.UpdatedAt.Format("2006-01-02 15:04:05"),
 		})
@@ -118,9 +135,14 @@ func CreateCloudAccount(req model.CreateCloudAccountReq) (int64, error) {
 	if siteType == "" {
 		siteType = "cn" // 默认国内站
 	}
+	accountType := "system"
+	if req.MerchantId > 0 {
+		accountType = "merchant"
+	}
 	account := entity.CloudAccounts{
 		Name:            req.Name,
-		AccountType:     "system",
+		AccountType:     accountType,
+		MerchantId:      req.MerchantId,
 		CloudType:       req.CloudType,
 		SiteType:        siteType,
 		AccessKeyId:     req.AccessKeyId,
@@ -184,6 +206,14 @@ func UpdateCloudAccount(id int64, req model.UpdateCloudAccountReq) error {
 	if req.Status != nil {
 		updates["status"] = *req.Status
 	}
+	if req.MerchantId != nil {
+		updates["merchant_id"] = *req.MerchantId
+		if *req.MerchantId > 0 {
+			updates["account_type"] = "merchant"
+		} else {
+			updates["account_type"] = "system"
+		}
+	}
 
 	if len(updates) == 0 {
 		return errors.New("没有需要更新的字段")
@@ -218,12 +248,15 @@ func DeleteCloudAccount(id int64) error {
 }
 
 // GetCloudAccountOptions 获取云账号选项列表（用于下拉框）
-func GetCloudAccountOptions(cloudType string) ([]model.CloudAccountOption, error) {
+func GetCloudAccountOptions(cloudType string, merchantId int) ([]model.CloudAccountOption, error) {
 	var accounts []entity.CloudAccounts
 	session := dbs.DBAdmin.Where("status = ?", 1) // 只返回启用的账号
 
 	if cloudType != "" {
 		session = session.Where("cloud_type = ?", cloudType)
+	}
+	if merchantId > 0 {
+		session = session.Where("merchant_id = ?", merchantId)
 	}
 
 	err := session.Cols("id", "name", "cloud_type").Find(&accounts)

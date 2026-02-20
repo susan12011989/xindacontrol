@@ -115,11 +115,23 @@ export function getTunnelStatsApi() {
   })
 }
 
-/** 清除商户数据 */
-export function clearMerchantDataApi(merchant_no: string) {
+/** 导出商户数据库（SQL dump） */
+export function exportMerchantDatabaseApi(merchant_no: string) {
+  return request<Blob>({
+    url: "merchant/adminm_config/export_database",
+    method: "post",
+    data: { merchant_no },
+    responseType: "blob",
+    timeout: 300000 // 5分钟（大数据库需要时间）
+  })
+}
+
+/** 清除商户数据（需要密码或2FA验证） */
+export function clearMerchantDataApi(merchant_no: string, password?: string, totp_code?: string) {
   return request<Types.AdminmSaveResponseData>({
     url: "merchant/adminm_config/clear_data",
     method: "post",
-    data: { merchant_no }
+    data: { merchant_no, password, totp_code },
+    timeout: 120000 // 2分钟超时（包含SSH清理）
   })
 }

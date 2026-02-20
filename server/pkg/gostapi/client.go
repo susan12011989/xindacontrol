@@ -766,33 +766,43 @@ func UpdateMerchantForwards(gostServerIP string, basePort int, targetIP string) 
 
 // UpdateMerchantForwards 批量更新商户的 3 个转发服务
 func (c *Client) UpdateMerchantForwards(gostServerIP string, basePort int, targetIP string) error {
-	// 先删除旧的
 	_ = c.DeleteMerchantForwards(gostServerIP, basePort)
-
-	// 再创建新的
 	return c.CreateMerchantForwards(gostServerIP, basePort, targetIP)
+}
+
+// UpdateMerchantForwardsWithTls 批量更新商户的 3 个转发服务，监听端启用 TLS
+func UpdateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
+	return defaultClient.UpdateMerchantForwardsWithTls(gostServerIP, basePort, targetIP)
+}
+
+// UpdateMerchantForwardsWithTls 批量更新商户的 3 个转发服务，监听端启用 TLS
+func (c *Client) UpdateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
+	_ = c.DeleteMerchantForwards(gostServerIP, basePort)
+	return c.CreateMerchantForwardsWithTls(gostServerIP, basePort, targetIP)
 }
 
 // UpdateMerchantForwardsWithTargetPort 批量更新商户的 3 个转发服务，支持自定义目标基础端口
 // 用于商户修改 GOST 监听端口时更新转发目标
 // targetBasePort: 商户服务器上的基础监听端口，会转发到 targetBasePort/targetBasePort+1/targetBasePort+2
 func UpdateMerchantForwardsWithTargetPort(gostServerIP string, basePort int, targetIP string, targetBasePort int) error {
-	return defaultClient.UpdateMerchantForwardsWithTargetPort(gostServerIP, basePort, targetIP, targetBasePort)
+	return defaultClient.updateMerchantForwardsWithTargetPort(gostServerIP, basePort, targetIP, targetBasePort, false)
 }
 
-// UpdateMerchantForwardsWithTargetPort 批量更新商户的 3 个转发服务，支持自定义目标端口
-func (c *Client) UpdateMerchantForwardsWithTargetPort(gostServerIP string, basePort int, targetIP string, targetBasePort int) error {
-	// 先删除旧的
+// UpdateMerchantForwardsWithTargetPortWithTls 批量更新商户的 3 个转发服务，支持自定义目标端口，监听端启用 TLS
+func UpdateMerchantForwardsWithTargetPortWithTls(gostServerIP string, basePort int, targetIP string, targetBasePort int) error {
+	return defaultClient.updateMerchantForwardsWithTargetPort(gostServerIP, basePort, targetIP, targetBasePort, true)
+}
+
+// updateMerchantForwardsWithTargetPort 内部实现，支持 TLS 开关
+func (c *Client) updateMerchantForwardsWithTargetPort(gostServerIP string, basePort int, targetIP string, targetBasePort int, tlsListener bool) error {
 	_ = c.DeleteMerchantForwards(gostServerIP, basePort)
 
-	// 创建新的（使用自定义目标端口）
 	var createdConfigs []MerchantPortConfig
 	for i, cfg := range MerchantPortConfigs {
 		listenPort := basePort + cfg.Offset
-		targetPort := targetBasePort + i // 使用自定义基础端口 + 偏移
-		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, targetPort, cfg.Name, false)
+		targetPort := targetBasePort + i
+		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, targetPort, cfg.Name, tlsListener)
 		if err != nil {
-			// 回滚已创建的端口
 			for _, created := range createdConfigs {
 				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name)
 			}

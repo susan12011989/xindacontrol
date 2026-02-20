@@ -37,6 +37,10 @@ type TargetItem struct {
 	ObjectPrefix   string `json:"object_prefix"`    // 对象前缀
 	Enabled        bool   `json:"enabled"`          // 是否启用
 	SortOrder      int    `json:"sort_order"`       // 排序顺序
+	GroupId        int    `json:"group_id"`         // 分组ID
+	GroupName      string `json:"group_name"`       // 分组名称
+	MerchantId     int    `json:"merchant_id"`      // 商户ID（来自云账号）
+	MerchantName   string `json:"merchant_name"`    // 商户名称
 }
 
 // CreateTargetReq 创建上传目标请求
@@ -49,6 +53,7 @@ type CreateTargetReq struct {
 	ObjectPrefix   string `json:"object_prefix"`                       // 对象前缀
 	Enabled        bool   `json:"enabled"`                             // 是否启用
 	SortOrder      int    `json:"sort_order"`                          // 排序顺序
+	GroupId        int    `json:"group_id"`                            // 分组ID
 }
 
 // UpdateTargetReq 更新上传目标请求
@@ -61,6 +66,7 @@ type UpdateTargetReq struct {
 	ObjectPrefix   *string `json:"object_prefix"`    // 对象前缀
 	Enabled        *bool   `json:"enabled"`          // 是否启用
 	SortOrder      *int    `json:"sort_order"`       // 排序顺序
+	GroupId        *int    `json:"group_id"`         // 分组ID
 }
 
 // ========== 源文件 ==========

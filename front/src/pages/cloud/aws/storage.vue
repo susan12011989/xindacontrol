@@ -1,8 +1,10 @@
 <script lang="ts" setup>
-import type { AwsS3ListObjectsReq, AwsS3ObjectItem } from "@@/apis/aws/type"
+import type { AwsS3ObjectItem } from "@@/apis/aws/type"
 import { downloadObject, getBillingCostUsage, listBuckets, listObjects, setBucketPublic, uploadObject } from "@@/apis/aws"
 import { awsDeleteObject, awsCreateBucket, awsDeleteBucket } from "@@/apis/cloud_storage"
 import { getCloudAccountOptions } from "@@/apis/cloud_account"
+import type { CloudAccountOption } from "@@/apis/cloud_account/type"
+import { getMerchantList } from "@@/apis/merchant"
 import { formatFileSize, generateObjectUrl } from "@@/apis/cloud_storage"
 import CloudStorageUploadDialog from "@@/components/CloudStorageUploadDialog.vue"
 import { getAwsRegions } from "@@/constants/aws-regions"
@@ -11,16 +13,21 @@ import { ArrowDown, CopyDocument, Delete, Document, Download, FolderOpened, Lock
 defineOptions({ name: "CloudAwsStorage" })
 
 // ========== 状态管理 ==========
+interface BucketInfo { name: string; location: string }
 const loading = ref(false)
-const buckets = ref<string[]>([])
+const accountType = ref<string>("system")
+const buckets = ref<BucketInfo[]>([])
 const objects = ref<AwsS3ObjectItem[]>([])
-const cloudAccounts = ref<{ value: number, label: string }[]>([])
+const cloudAccounts = ref<CloudAccountOption[]>([])
 const selectedCloudAccount = ref<number>()
+const selectedMerchant = ref<number>()
+const merchantList = ref<{ value: number, label: string }[]>([])
 const awsRegions = getAwsRegions("cn")
 const uploadDialogVisible = ref(false)
 
-const form = reactive<AwsS3ListObjectsReq>({
+const form = reactive({
   cloud_account_id: 0,
+  merchant_id: 0,
   region_id: "",
   bucket: "",
   prefix: ""
@@ -45,7 +52,7 @@ const billingForm = reactive({
 
 // ========== 初始化 ==========
 onMounted(async () => {
-  await fetchCloudAccounts()
+  await Promise.all([fetchCloudAccounts(), fetchMerchantList()])
 })
 
 async function fetchCloudAccounts() {
@@ -57,23 +64,59 @@ async function fetchCloudAccounts() {
   }
 }
 
+async function fetchMerchantList() {
+  try {
+    const res = await getMerchantList({ page: 1, size: 1000 })
+    merchantList.value = (res.data.list || []).map((m: any) => ({
+      label: `${m.name} (${m.no})`,
+      value: m.id
+    }))
+  } catch {
+    console.error("获取商户列表失败")
+  }
+}
+
+// ========== 账号类型切换 ==========
+function handleAccountTypeChange() {
+  selectedCloudAccount.value = undefined
+  selectedMerchant.value = undefined
+  form.region_id = ""
+  form.bucket = ""
+  buckets.value = []
+  objects.value = []
+  if (accountType.value === "system") {
+    fetchCloudAccounts()
+  }
+}
+
 // ========== 操作步骤提示 ==========
 const currentStep = computed(() => {
-  if (!selectedCloudAccount.value) return 0
+  if (accountType.value === "system" && !selectedCloudAccount.value) return 0
+  if (accountType.value === "merchant" && !selectedMerchant.value) return 0
   if (!form.bucket) return 1
   return 2
 })
 
 // ========== Bucket 操作 ==========
 async function onLoadBuckets() {
-  if (!selectedCloudAccount.value) {
-    ElMessage.warning("请先选择云账号")
+  if (accountType.value === "system" && !selectedCloudAccount.value) {
+    ElMessage.warning("请选择云账号")
     return
   }
-  form.cloud_account_id = selectedCloudAccount.value
+  if (accountType.value === "merchant" && !selectedMerchant.value) {
+    ElMessage.warning("请选择商户")
+    return
+  }
+
+  form.cloud_account_id = selectedCloudAccount.value || 0
+  form.merchant_id = selectedMerchant.value || 0
+
   loading.value = true
   try {
-    const { data } = await listBuckets({ cloud_account_id: form.cloud_account_id, region_id: form.region_id })
+    const params: any = { region_id: form.region_id }
+    if (accountType.value === "merchant") params.merchant_id = selectedMerchant.value
+    else params.cloud_account_id = selectedCloudAccount.value
+    const { data } = await listBuckets(params)
     buckets.value = data.list || []
     ElMessage.success(`加载成功，共 ${buckets.value.length} 个 Bucket`)
   } catch {
@@ -100,7 +143,17 @@ async function onListObjects() {
   }
   loading.value = true
   try {
-    const { data } = await listObjects(form)
+    const params: any = {
+      region_id: form.region_id,
+      bucket: form.bucket,
+      prefix: form.prefix || undefined
+    }
+    if (accountType.value === "merchant") {
+      params.merchant_id = selectedMerchant.value
+    } else {
+      params.cloud_account_id = selectedCloudAccount.value
+    }
+    const { data } = await listObjects(params)
     objects.value = data.list || []
   } finally {
     loading.value = false
@@ -126,8 +179,12 @@ function onShowUpload() {
 }
 
 function handleUpload(formData: FormData, onUploadProgress?: (progressEvent: any) => void) {
-  formData.append("cloud_account_id", String(form.cloud_account_id || ""))
   formData.append("region_id", form.region_id || "")
+  if (accountType.value === "merchant") {
+    formData.append("merchant_id", String(selectedMerchant.value || ""))
+  } else {
+    formData.append("cloud_account_id", String(selectedCloudAccount.value || ""))
+  }
   return uploadObject(formData, onUploadProgress)
 }
 
@@ -139,14 +196,19 @@ function onUploadSuccess() {
 async function onDownload(row: AwsS3ObjectItem) {
   loading.value = true
   try {
-    const blob = await downloadObject({
-      cloud_account_id: form.cloud_account_id,
+    const params: any = {
       region_id: form.region_id,
       bucket: form.bucket,
       object_key: row.key,
       filename: row.key,
       attachment: 1
-    })
+    }
+    if (accountType.value === "merchant") {
+      params.merchant_id = selectedMerchant.value
+    } else {
+      params.cloud_account_id = selectedCloudAccount.value
+    }
+    const blob = await downloadObject(params)
     const url = URL.createObjectURL(blob as any)
     const a = document.createElement("a")
     a.href = url
@@ -168,12 +230,17 @@ async function onDelete(row: AwsS3ObjectItem) {
   })
   loading.value = true
   try {
-    await awsDeleteObject({
-      cloud_account_id: form.cloud_account_id,
+    const params: any = {
       region_id: form.region_id || "",
       bucket: form.bucket,
       object_key: row.key
-    })
+    }
+    if (accountType.value === "merchant") {
+      params.merchant_id = selectedMerchant.value
+    } else {
+      params.cloud_account_id = selectedCloudAccount.value
+    }
+    await awsDeleteObject(params)
     ElMessage.success("删除成功")
     onListObjects()
   } finally {
@@ -226,12 +293,17 @@ async function onSetBucketPublic(command: string) {
     })
 
     loading.value = true
-    await setBucketPublic({
-      cloud_account_id: form.cloud_account_id,
+    const params: any = {
       region_id: form.region_id,
       bucket: form.bucket,
       public: isPublic
-    })
+    }
+    if (accountType.value === "merchant") {
+      params.merchant_id = selectedMerchant.value
+    } else {
+      params.cloud_account_id = selectedCloudAccount.value
+    }
+    await setBucketPublic(params)
 
     ElMessage.success(`已${action}成功`)
   } catch (error: any) {
@@ -245,8 +317,12 @@ async function onSetBucketPublic(command: string) {
 
 // ========== 创建 Bucket ==========
 function onShowCreateBucket() {
-  if (!selectedCloudAccount.value) {
+  if (accountType.value === "system" && !selectedCloudAccount.value) {
     ElMessage.warning("请先选择云账号")
+    return
+  }
+  if (accountType.value === "merchant" && !selectedMerchant.value) {
+    ElMessage.warning("请先选择商户")
     return
   }
   if (!form.region_id) {
@@ -264,11 +340,16 @@ async function onCreateBucket() {
   }
   loading.value = true
   try {
-    await awsCreateBucket({
-      cloud_account_id: selectedCloudAccount.value,
+    const params: any = {
       region_id: form.region_id || "",
       bucket: createBucketForm.bucket.trim()
-    })
+    }
+    if (accountType.value === "merchant") {
+      params.merchant_id = selectedMerchant.value
+    } else {
+      params.cloud_account_id = selectedCloudAccount.value
+    }
+    await awsCreateBucket(params)
     ElMessage.success("创建成功")
     createBucketDialog.value = false
     onLoadBuckets()
@@ -290,11 +371,16 @@ async function onDeleteBucket(bucket: string) {
   )
   loading.value = true
   try {
-    await awsDeleteBucket({
-      cloud_account_id: form.cloud_account_id,
+    const params: any = {
       region_id: form.region_id || "",
       bucket
-    })
+    }
+    if (accountType.value === "merchant") {
+      params.merchant_id = selectedMerchant.value
+    } else {
+      params.cloud_account_id = selectedCloudAccount.value
+    }
+    await awsDeleteBucket(params)
     ElMessage.success("删除成功")
     if (form.bucket === bucket) {
       form.bucket = ""
@@ -351,7 +437,7 @@ async function onQueryBilling() {
 
     <!-- 步骤指示器 -->
     <el-steps :active="currentStep" align-center class="steps-indicator">
-      <el-step title="选择账号" description="选择云账号和区域" />
+      <el-step title="选择账号" description="选择云账号或商户" />
       <el-step title="选择 Bucket" description="加载并选择存储桶" />
       <el-step title="管理对象" description="上传、下载、浏览文件" />
     </el-steps>
@@ -370,7 +456,16 @@ async function onQueryBilling() {
       <div class="config-grid">
         <el-form label-position="top">
           <el-row :gutter="20">
-            <el-col :xs="24" :sm="12" :md="8">
+            <el-col :xs="24" :sm="12" :md="6">
+              <el-form-item label="账号类型">
+                <el-select v-model="accountType" style="width: 100%" @change="handleAccountTypeChange">
+                  <el-option label="系统类型" value="system" />
+                  <el-option label="商户类型" value="merchant" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+
+            <el-col v-if="accountType === 'system'" :xs="24" :sm="12" :md="6">
               <el-form-item label="云账号">
                 <el-select
                   v-model="selectedCloudAccount"
@@ -390,7 +485,27 @@ async function onQueryBilling() {
               </el-form-item>
             </el-col>
 
-            <el-col :xs="24" :sm="12" :md="8">
+            <el-col v-else :xs="24" :sm="12" :md="6">
+              <el-form-item label="商户">
+                <el-select
+                  v-model="selectedMerchant"
+                  placeholder="请选择商户"
+                  filterable
+                  clearable
+                  style="width: 100%"
+                  @change="() => { form.bucket = ''; buckets = []; objects = [] }"
+                >
+                  <el-option
+                    v-for="m in merchantList"
+                    :key="m.value"
+                    :label="m.label"
+                    :value="m.value"
+                  />
+                </el-select>
+              </el-form-item>
+            </el-col>
+
+            <el-col :xs="24" :sm="12" :md="6">
               <el-form-item label="Region（可选）">
                 <el-select
                   v-model="form.region_id"
@@ -409,13 +524,13 @@ async function onQueryBilling() {
               </el-form-item>
             </el-col>
 
-            <el-col :xs="24" :sm="12" :md="8">
+            <el-col :xs="24" :sm="12" :md="6">
               <el-form-item label="操作">
                 <el-button
                   type="primary"
                   :icon="Refresh"
                   :loading="loading"
-                  :disabled="!selectedCloudAccount"
+                  :disabled="accountType === 'system' ? !selectedCloudAccount : !selectedMerchant"
                   @click="onLoadBuckets"
                   style="width: 100%"
                 >
@@ -429,7 +544,7 @@ async function onQueryBilling() {
     </el-card>
 
     <!-- Bucket 列表展示 -->
-    <el-card v-if="buckets.length || selectedCloudAccount" shadow="hover" class="mb-4 bucket-list-card">
+    <el-card v-if="buckets.length || (accountType === 'system' ? selectedCloudAccount : selectedMerchant)" shadow="hover" class="mb-4 bucket-list-card">
       <template #header>
         <div class="card-header">
           <span class="card-title">
@@ -448,16 +563,17 @@ async function onQueryBilling() {
       <div v-if="buckets.length" class="bucket-grid">
         <div
           v-for="bucket in buckets"
-          :key="bucket"
+          :key="bucket.name"
           class="bucket-item"
-          :class="{ active: form.bucket === bucket }"
-          @click="form.bucket = bucket"
+          :class="{ active: form.bucket === bucket.name }"
+          @click="form.bucket = bucket.name"
         >
           <div class="bucket-icon">
             <el-icon :size="24"><FolderOpened /></el-icon>
           </div>
-          <div class="bucket-name">{{ bucket }}</div>
-          <div v-if="form.bucket === bucket" class="bucket-selected">
+          <div class="bucket-name">{{ bucket.name }}</div>
+          <div class="bucket-location">{{ bucket.location }}</div>
+          <div v-if="form.bucket === bucket.name" class="bucket-selected">
             <el-icon color="#67c23a"><Select /></el-icon>
           </div>
           <el-button
@@ -466,7 +582,7 @@ async function onQueryBilling() {
             :icon="Delete"
             size="small"
             circle
-            @click.stop="onDeleteBucket(bucket)"
+            @click.stop="onDeleteBucket(bucket.name)"
           />
         </div>
       </div>
@@ -856,6 +972,12 @@ async function onQueryBilling() {
       text-align: center;
       word-break: break-all;
       line-height: 1.5;
+    }
+
+    .bucket-location {
+      font-size: 12px;
+      color: #909399;
+      text-align: center;
     }
 
     .bucket-selected {

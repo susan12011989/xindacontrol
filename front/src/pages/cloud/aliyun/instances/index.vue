@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import type { Region } from "@/pages/cloud/aliyun/apis/type"
-import type { Instance, InstanceItem } from "@/pages/cloud/aliyun/instances/apis/type"
+import type { Instance, InstanceBindingResp, InstanceItem } from "@/pages/cloud/aliyun/instances/apis/type"
 import type { Merchant, MerchantRegions } from "@/pages/dashboard/apis/type"
 import type { CloudAccountOption } from "@@/apis/cloud_account/type"
 import { regionListApi } from "@/pages/cloud/aliyun/apis"
-import { createSecondaryNic, getInstanceList, modifyInstanceAttribute, modifyInstanceChargeTypePostPaid, operateInstance, registerInstanceWithSSHKey } from "@/pages/cloud/aliyun/instances/apis"
+import { bindInstanceMerchant, createSecondaryNic, getInstanceList, modifyInstanceAttribute, modifyInstanceChargeTypePostPaid, operateInstance, registerInstanceWithSSHKey, unbindInstanceMerchant } from "@/pages/cloud/aliyun/instances/apis"
 import { getSecurityGroupList } from "@/pages/cloud/aliyun/securitygroup/apis"
 import { merchantQueryApi } from "@/pages/dashboard/apis"
 import { getCloudAccountOptions } from "@@/apis/cloud_account"
@@ -51,6 +51,18 @@ const currentEditInstance = ref<Instance | null>(null)
 // 安全组列表
 const securityGroupList = ref<any[]>([])
 const securityGroupLoading = ref(false)
+
+// 商户绑定相关状态
+const bindingMap = ref<Record<string, InstanceBindingResp>>({})
+const bindMerchantDialogVisible = ref(false)
+const bindMerchantLoading = ref(false)
+const bindMerchantForm = reactive({
+  instance_id: "",
+  region_id: "",
+  merchant_id: undefined as number | undefined
+})
+// 绑定对话框用的商户列表（复用 merchantList，它已在选择商户类型时加载）
+const allMerchantList = ref<Merchant[]>([])
 
 // 创建辅助网卡相关状态
 const createNicDialogVisible = ref(false)
@@ -277,6 +289,9 @@ async function fetchInstanceList() {
 
       instanceList.value = enhancedList
     }
+
+    // 存储商户绑定信息
+    bindingMap.value = res.data.bindings || {}
 
     // 清空选中的实例
     selectedInstances.value = []
@@ -887,6 +902,80 @@ async function handleCreateServer(instance: Instance) {
     })
 }
 
+// ========== 商户绑定操作 ==========
+
+// 加载全部商户列表（用于绑定对话框）
+async function fetchAllMerchantList() {
+  if (allMerchantList.value.length > 0) return
+  try {
+    const res = await merchantQueryApi({ page: 1, size: 9000 })
+    allMerchantList.value = res.data.list || []
+  } catch (error) {
+    console.error("获取商户列表失败", error)
+  }
+}
+
+// 打开绑定商户对话框
+async function openBindMerchantDialog(instance: Instance) {
+  bindMerchantForm.instance_id = instance.InstanceId
+  bindMerchantForm.region_id = instance.RegionId
+  // 如果已有绑定，预填商户
+  const existing = bindingMap.value[instance.InstanceId]
+  bindMerchantForm.merchant_id = existing?.merchant_id || undefined
+  await fetchAllMerchantList()
+  bindMerchantDialogVisible.value = true
+}
+
+// 执行绑定商户
+async function handleBindMerchant() {
+  if (!bindMerchantForm.merchant_id) {
+    ElMessage.warning("请选择商户")
+    return
+  }
+  bindMerchantLoading.value = true
+  try {
+    await bindInstanceMerchant({
+      instance_id: bindMerchantForm.instance_id,
+      region_id: bindMerchantForm.region_id,
+      merchant_id: bindMerchantForm.merchant_id
+    })
+    ElMessage.success("绑定成功")
+    bindMerchantDialogVisible.value = false
+    // 更新本地绑定信息
+    const merchant = allMerchantList.value.find(m => m.id === bindMerchantForm.merchant_id)
+    if (merchant) {
+      bindingMap.value[bindMerchantForm.instance_id] = {
+        instance_id: bindMerchantForm.instance_id,
+        merchant_id: merchant.id,
+        merchant_name: merchant.name,
+        merchant_no: merchant.no || ""
+      }
+    }
+  } catch (error: any) {
+    ElMessage.error(error.message || "绑定失败")
+  } finally {
+    bindMerchantLoading.value = false
+  }
+}
+
+// 解绑商户
+async function handleUnbindMerchant(instance: Instance) {
+  try {
+    await ElMessageBox.confirm(
+      `确定解绑实例 "${instance.InstanceName || instance.InstanceId}" 的商户？`,
+      "解绑商户",
+      { type: "warning" }
+    )
+    await unbindInstanceMerchant({ instance_id: instance.InstanceId })
+    ElMessage.success("解绑成功")
+    delete bindingMap.value[instance.InstanceId]
+  } catch (error: any) {
+    if (error !== "cancel") {
+      ElMessage.error(error.message || "解绑失败")
+    }
+  }
+}
+
 // 页面加载时获取商户和区域列表
 onMounted(() => {
   // 加载保存的选择
@@ -1071,6 +1160,14 @@ onMounted(() => {
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column label="商户" min-width="120">
+          <template #default="scope">
+            <el-tag v-if="bindingMap[scope.row.InstanceId]" type="success" size="small">
+              {{ bindingMap[scope.row.InstanceId].merchant_name }}
+            </el-tag>
+            <span v-else class="text-gray-400">-</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="OSName" label="操作系统" min-width="150" />
         <el-table-column prop="InstanceType" label="实例规格" min-width="150" />
         <el-table-column prop="CreationTime" label="创建时间" min-width="180" />
@@ -1110,6 +1207,12 @@ onMounted(() => {
                     </el-dropdown-item>
                     <el-dropdown-item @click="handleCreateServer(scope.row)">
                       <el-icon><Location /></el-icon> 创建服务器
+                    </el-dropdown-item>
+                    <el-dropdown-item divided @click="openBindMerchantDialog(scope.row)">
+                      <el-icon><User /></el-icon> {{ bindingMap[scope.row.InstanceId] ? '更换商户' : '绑定商户' }}
+                    </el-dropdown-item>
+                    <el-dropdown-item v-if="bindingMap[scope.row.InstanceId]" @click="handleUnbindMerchant(scope.row)">
+                      <el-icon><Delete /></el-icon> 解绑商户
                     </el-dropdown-item>
                     <el-dropdown-item divided @click="confirmDelete(scope.row)">
                       <el-icon><Delete /></el-icon> 释放
@@ -1336,6 +1439,48 @@ onMounted(() => {
           @click="submitModifyForm(modifyFormRef)"
           :loading="modifyLoading"
         >
+          确定
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 绑定商户对话框 -->
+    <el-dialog
+      v-model="bindMerchantDialogVisible"
+      title="绑定商户"
+      width="450px"
+      destroy-on-close
+    >
+      <el-form label-width="80px">
+        <el-form-item label="实例ID">
+          <span>{{ bindMerchantForm.instance_id }}</span>
+        </el-form-item>
+        <el-form-item label="商户">
+          <el-select
+            v-model="bindMerchantForm.merchant_id"
+            placeholder="请选择商户"
+            filterable
+            clearable
+            style="width: 100%"
+          >
+            <el-option
+              v-for="m in allMerchantList"
+              :key="m.id"
+              :label="m.name"
+              :value="m.id"
+            >
+              <div class="custom-option">
+                <span>{{ m.name }}</span>
+                <small v-if="m.status === 1" class="status active">正常</small>
+                <small v-else class="status inactive">禁用</small>
+              </div>
+            </el-option>
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="bindMerchantDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="bindMerchantLoading" @click="handleBindMerchant">
           确定
         </el-button>
       </template>

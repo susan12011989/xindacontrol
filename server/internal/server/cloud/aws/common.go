@@ -10,6 +10,7 @@ import (
 	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/costexplorer"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -99,9 +100,7 @@ func NewS3ClientByMerchant(ctx context.Context, merchantId int, region string) (
 
 // ResolveAwsAccount 统一根据 cloud_account_id 或 merchant_id 获取可用的 AWS 账号信息
 func ResolveAwsAccount(ctx context.Context, merchantId int, cloudAccountId int64) (*entity.CloudAccounts, error) {
-	if cloudAccountId > 0 && merchantId > 0 {
-		return nil, errors.New("cloud_account_id 与 merchant_id 不能同时传递")
-	}
+	// 两者都传时，优先使用 cloud_account_id
 	if cloudAccountId > 0 {
 		acc, err := dbhelper.GetCloudAccountByID(cloudAccountId)
 		if err != nil {
@@ -158,6 +157,18 @@ func NewSsmClient(ctx context.Context, acc *entity.CloudAccounts, region string)
 		return nil, err
 	}
 	return ssm.NewFromConfig(cfg), nil
+}
+
+// NewCloudWatchClient 使用统一账号信息创建 CloudWatch 客户端
+func NewCloudWatchClient(ctx context.Context, acc *entity.CloudAccounts, region string) (*cloudwatch.Client, error) {
+	if acc == nil || acc.CloudType != "aws" {
+		return nil, errors.New("invalid aws account")
+	}
+	cfg, err := loadAwsConfig(ctx, acc.AccessKeyId, acc.AccessKeySecret, region)
+	if err != nil {
+		return nil, err
+	}
+	return cloudwatch.NewFromConfig(cfg), nil
 }
 
 // NewCeClient 使用统一账号信息创建 Cost Explorer 客户端
