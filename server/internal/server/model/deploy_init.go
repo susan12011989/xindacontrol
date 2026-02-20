@@ -22,21 +22,6 @@ type DeployTSDDByIPReq struct {
 	ForceReset bool   `json:"force_reset"`                    // 强制重置
 }
 
-// DeployNodeReq 集群节点部署请求（支持水平扩容）
-type DeployNodeReq struct {
-	ServerId   int    `json:"server_id" binding:"required"`   // 目标服务器ID
-	MerchantId int    `json:"merchant_id" binding:"required"` // 商户ID
-	NodeRole   string `json:"node_role" binding:"required"`   // 节点角色: allinone/db/app
-	ForceReset bool   `json:"force_reset"`                    // 强制重置
-
-	// DB 连接（app 节点必填，指向 DB 节点内网 IP）
-	DBHost string `json:"db_host"` // DB 节点内网 IP
-
-	// WuKongIM 集群配置（app/allinone 节点）
-	WKNodeId   int    `json:"wk_node_id"`   // WuKongIM 节点 ID（如 1001）
-	WKSeedNode string `json:"wk_seed_node"` // 种子节点（加入已有集群时填写，如 "1001@172.31.0.1:11110"）
-}
-
 // DeployStep 部署步骤
 type DeployStep struct {
 	Name    string `json:"name"`    // 步骤名称
@@ -68,24 +53,6 @@ type DeployConfig struct {
 	WSPort        int    `json:"ws_port"`        // WebSocket端口，默认5200
 	WebPort       int    `json:"web_port"`       // Web端口，默认82
 	ManagerPort   int    `json:"manager_port"`   // 管理后台端口，默认8084
-
-	// ===== 水平扩容相关 =====
-
-	// NodeRole 节点角色: "allinone"(默认,全部服务), "db"(仅数据库), "app"(应用+WuKongIM)
-	NodeRole string `json:"node_role"`
-
-	// 远程 DB 连接（app 节点使用，指向 DB 节点内网 IP）
-	DBHost    string `json:"db_host"`    // DB 节点内网 IP（空=localhost）
-	RedisHost string `json:"redis_host"` // Redis 地址（空=localhost）
-	MinioHost string `json:"minio_host"` // MinIO 地址（空=localhost）
-
-	// WuKongIM 集群配置
-	WKNodeId   int    `json:"wk_node_id"`   // WuKongIM 集群节点 ID（如 1001, 1002）
-	WKSeedNode string `json:"wk_seed_node"` // 种子节点（如 "1001@172.31.0.1:11110"，空=首个节点）
-
-	// Control 面板回调（tsdd-server 上报状态用）
-	ControlAPIUsername string `json:"control_api_username"`
-	ControlAPIPassword string `json:"control_api_password"`
 }
 
 // GetDeployStatusReq 获取部署状态请求
