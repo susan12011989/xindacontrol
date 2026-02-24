@@ -245,19 +245,30 @@ func ClearMerchantData(merchantNo string) error {
 	}
 
 	// 清理脚本：Redis + WuKongIM + MinIO + 重启服务
+	// 注意：用 docker stop/start（container name）而非 docker compose stop/up（service name）
+	// 因为 service name 和 container name 可能不同（如 wukongim vs tsdd-wukongim）
 	cleanScript := `
 set -e
 cd /opt/tsdd
 
 echo "=== Flushing Redis ==="
-docker exec tsdd-redis redis-cli FLUSHALL 2>/dev/null || echo "Redis flush skipped"
+docker exec tsdd-redis redis-cli FLUSHALL 2>/dev/null || echo "Redis flush skipped (container not found)"
 
 echo "=== Clearing WuKongIM data ==="
 WKIM_VOLUME=$(docker inspect tsdd-wukongim --format='{{range .Mounts}}{{if eq .Destination "/root/wukongim"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || echo "")
 if [ -n "$WKIM_VOLUME" ] && [ -d "$WKIM_VOLUME" ]; then
-    docker compose stop tsdd-wukongim 2>/dev/null || docker-compose stop tsdd-wukongim 2>/dev/null || true
+    docker stop tsdd-wukongim 2>/dev/null || true
+    sleep 2
     rm -rf "$WKIM_VOLUME"/* 2>/dev/null || true
-    docker compose up -d tsdd-wukongim 2>/dev/null || docker-compose up -d tsdd-wukongim 2>/dev/null || true
+    docker start tsdd-wukongim 2>/dev/null || true
+    # 等待 WuKongIM 启动就绪
+    for i in $(seq 1 15); do
+        if curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5002/health 2>/dev/null | grep -q '200'; then
+            echo "WuKongIM started (${i}s)"
+            break
+        fi
+        sleep 1
+    done
     echo "WuKongIM data cleared"
 else
     echo "WuKongIM volume not found, skipped"
@@ -266,16 +277,18 @@ fi
 echo "=== Clearing MinIO data ==="
 MINIO_VOLUME=$(docker inspect tsdd-minio --format='{{range .Mounts}}{{if eq .Destination "/data"}}{{.Source}}{{end}}{{end}}' 2>/dev/null || echo "")
 if [ -n "$MINIO_VOLUME" ] && [ -d "$MINIO_VOLUME" ]; then
-    docker compose stop tsdd-minio 2>/dev/null || docker-compose stop tsdd-minio 2>/dev/null || true
+    docker stop tsdd-minio 2>/dev/null || true
+    sleep 2
     rm -rf "$MINIO_VOLUME"/* 2>/dev/null || true
-    docker compose up -d tsdd-minio 2>/dev/null || docker-compose up -d tsdd-minio 2>/dev/null || true
+    docker start tsdd-minio 2>/dev/null || true
+    sleep 3
     echo "MinIO data cleared"
 else
     echo "MinIO volume not found, skipped"
 fi
 
 echo "=== Restarting TSDD server ==="
-docker compose restart tsdd-server 2>/dev/null || docker-compose restart tsdd-server 2>/dev/null || true
+docker restart tsdd-server 2>/dev/null || true
 
 echo "=== All clear done ==="
 `
