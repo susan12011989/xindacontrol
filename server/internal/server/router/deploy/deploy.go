@@ -79,9 +79,11 @@ func Routes(gi gin.IRouter) {
 	group.GET("gost/chains", listGostChains)
 
 	// GOST 服务器一键部署
-	group.POST("gost/deploy", deployGostServer)          // 一键部署 GOST 转发服务器（流式API）
+	group.POST("gost/deploy", deployGostServer)          // 一键部署 GOST 转发服务器（流式API）- 阿里云创建
+	group.POST("gost/setup", setupGostDeploy)            // 一键部署 GOST（安装+配置转发，流式API）
 	group.GET("gost/deploy/config", getGostDeployConfig) // 获取部署默认配置
 	group.POST("gost/install", installGostToServer)      // 在已有服务器上安装 GOST（流式API）
+	group.POST("gost/diagnose", diagnoseGost)            // 诊断修复 GOST（流式API）
 
 	// GOST 转发配置（一键部署）
 	group.POST("gost/forward/setup", setupGostForward)     // 配置转发目标
@@ -103,11 +105,15 @@ func Routes(gi gin.IRouter) {
 	group.POST("tsdd/deploy-ami", deployTSDDWithAMI)   // 使用 AMI 部署（推荐）
 	group.POST("tsdd/deploy-node", deployNode)         // 集群节点部署（水平扩容）
 	group.GET("tsdd/status", getDeployStatus)          // 获取部署状态
+	group.GET("tsdd/cluster-nodes", getClusterNodes)   // 获取商户集群拓扑
+	group.POST("tsdd/sync-gost", syncClusterGost)      // 同步集群 GOST 转发配置
+	group.POST("tsdd/cluster-wizard", clusterWizard)   // 集群一站式向导（流式API）
 
 	// ========== 批量运维操作 ==========
 	group.POST("batch/service-action", batchServiceAction)  // 批量服务操作（start/stop/restart）
 	group.POST("batch/health-check", batchHealthCheck)      // 批量健康检查
 	group.POST("batch/command", batchCommand)               // 批量执行命令
+	group.POST("batch/sync-config", batchSyncConfig)        // 批量同步 docker-compose 配置
 
 	// ========== 日志管理 ==========
 	group.POST("logs/query", queryLogs)   // 统一日志查询
@@ -790,10 +796,28 @@ func deployNode(ctx *gin.Context) {
 
 	// 校验 node_role
 	switch req.NodeRole {
-	case "allinone", "db", "app":
+	case "allinone", "db", "minio", "app":
 	default:
-		result.GErr(ctx, fmt.Errorf("无效的 node_role: %s，可选值: allinone/db/app", req.NodeRole))
+		result.GErr(ctx, fmt.Errorf("无效的 node_role: %s，可选值: allinone/db/minio/app", req.NodeRole))
 		return
+	}
+
+	// server_id 或 ami_id 至少提供一个
+	if req.ServerId == 0 && req.AmiId == "" {
+		result.GErr(ctx, fmt.Errorf("请选择目标服务器或填写 AMI ID 创建新服务器"))
+		return
+	}
+
+	// 创建新 EC2 时必须提供云账号和区域
+	if req.ServerId == 0 && req.AmiId != "" {
+		if req.CloudAccountId == 0 {
+			result.GErr(ctx, fmt.Errorf("创建新服务器需要指定 cloud_account_id"))
+			return
+		}
+		if req.RegionId == "" {
+			result.GErr(ctx, fmt.Errorf("创建新服务器需要指定 region_id"))
+			return
+		}
 	}
 
 	// app 节点必须指定 db_host
@@ -816,9 +840,94 @@ func deployNode(ctx *gin.Context) {
 	result.GOK(ctx, data)
 }
 
+// syncClusterGost 同步集群 GOST 转发配置
+func syncClusterGost(ctx *gin.Context) {
+	var req model.SyncClusterGostReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	data, err := deployService.SyncClusterGostForward(req.MerchantId)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// getClusterNodes 获取商户集群拓扑
+func getClusterNodes(ctx *gin.Context) {
+	merchantId, _ := strconv.Atoi(ctx.Query("merchant_id"))
+	if merchantId == 0 {
+		result.GParamErr(ctx, fmt.Errorf("merchant_id 不能为空"))
+		return
+	}
+
+	data, err := deployService.GetClusterNodes(merchantId)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// clusterWizard 集群一站式创建向导（流式API）
+func clusterWizard(ctx *gin.Context) {
+	var req model.ClusterWizardReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GStreamEnd(ctx, false, err.Error())
+		return
+	}
+	result.GStream(ctx)
+
+	err := deployService.ClusterWizard(req, "admin", func(step model.ClusterWizardStep) {
+		result.GStreamData(ctx, step)
+	})
+
+	if err != nil {
+		result.GStreamEnd(ctx, false, err.Error())
+		return
+	}
+
+	result.GStreamEnd(ctx, true, "集群部署完成")
+}
+
 // ========== GOST 服务器一键部署 ==========
 
-// deployGostServer 一键部署 GOST 转发服务器（流式API）
+// setupGostDeploy 一键部署 GOST（安装+配置转发，流式API）
+func setupGostDeploy(ctx *gin.Context) {
+	var req model.SetupGostDeployReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GStreamEnd(ctx, true, err.Error())
+		return
+	}
+
+	if len(req.MerchantIds) == 0 {
+		result.GStreamEnd(ctx, true, "请选择至少一个商户")
+		return
+	}
+
+	// 流式响应
+	result.GStream(ctx)
+
+	err := deployService.SetupGostDeploy(&req, func(message string) {
+		result.GStreamData(ctx, gin.H{
+			"message": fmt.Sprintf("%s %s", time.Now().Format(time.DateTime), message),
+		})
+	})
+
+	if err != nil {
+		result.GStreamEnd(ctx, true, err.Error())
+		return
+	}
+
+	result.GStreamEnd(ctx, true, "部署完成")
+}
+
+// deployGostServer 一键部署 GOST 转发服务器（流式API）- 阿里云创建
 func deployGostServer(ctx *gin.Context) {
 	var req model.DeployGostServerReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
@@ -848,6 +957,7 @@ func deployGostServer(ctx *gin.Context) {
 		GroupId:        req.GroupId,
 		Password:       req.Password,
 		Bandwidth:      req.Bandwidth,
+		ForwardType:    req.ForwardType,
 	}
 
 	deployResult, err := deployService.DeployGostServer(config, func(message string) {
@@ -906,6 +1016,31 @@ func installGostToServer(ctx *gin.Context) {
 	result.GStreamEnd(ctx, true, "GOST 安装成功!")
 }
 
+// diagnoseGost 诊断修复 GOST（流式API）
+func diagnoseGost(ctx *gin.Context) {
+	var req model.DiagnoseGostReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GStreamEnd(ctx, true, err.Error())
+		return
+	}
+
+	// 流式响应
+	result.GStream(ctx)
+
+	err := deployService.DiagnoseAndRepairGost(req.ServerId, func(message string) {
+		result.GStreamData(ctx, gin.H{
+			"message": fmt.Sprintf("%s %s", time.Now().Format(time.DateTime), message),
+		})
+	})
+
+	if err != nil {
+		result.GStreamEnd(ctx, true, err.Error())
+		return
+	}
+
+	result.GStreamEnd(ctx, true, "诊断修复完成")
+}
+
 // ========== 批量运维操作 ==========
 
 // batchServiceAction 批量服务操作
@@ -961,6 +1096,28 @@ func batchCommand(ctx *gin.Context) {
 	}
 
 	data, err := deployService.BatchCommand(req, operator)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// batchSyncConfig 批量同步 docker-compose 配置
+func batchSyncConfig(ctx *gin.Context) {
+	var req model.BatchSyncConfigReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	operator := middleware.GetUsername(ctx)
+	if operator == "" {
+		operator = "admin"
+	}
+
+	data, err := deployService.BatchSyncConfig(req, operator)
 	if err != nil {
 		result.GErr(ctx, err)
 		return

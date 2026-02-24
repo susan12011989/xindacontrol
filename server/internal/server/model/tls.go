@@ -5,9 +5,10 @@ package model
 // 证书详情响应
 type TlsCertificateResp struct {
 	Id          int    `json:"id"`
+	MerchantId  int    `json:"merchant_id"`
 	Name        string `json:"name"`
-	CertType    int    `json:"cert_type"`    // 1-CA根证书 2-服务器证书
-	Fingerprint string `json:"fingerprint"`  // SHA-256 指纹
+	CertType    int    `json:"cert_type"`   // 1-CA根证书 2-服务器证书
+	Fingerprint string `json:"fingerprint"` // SHA-256 指纹
 	ExpiresAt   string `json:"expires_at"`
 	Status      int    `json:"status"`
 	CreatedAt   string `json:"created_at"`
@@ -16,7 +17,8 @@ type TlsCertificateResp struct {
 
 // 生成证书请求
 type GenerateTlsCertReq struct {
-	ValidityDays int `json:"validity_days"` // 有效期天数，默认 3650(10年)
+	MerchantId   int `json:"merchant_id" binding:"required"` // 商户ID
+	ValidityDays int `json:"validity_days"`                  // 有效期天数，默认 3650(10年)
 }
 
 // 生成证书响应
@@ -29,12 +31,19 @@ type GenerateTlsCertResp struct {
 
 // 批量升级 TLS 请求
 type BatchUpgradeTlsReq struct {
-	ServerIds []int `json:"server_ids"` // 为空则升级所有系统服务器
+	MerchantId int   `json:"merchant_id" binding:"required"` // 商户ID
+	ServerIds  []int `json:"server_ids"`                     // 为空则升级该商户所有 GOST 服务器
 }
 
 // 批量回滚 TLS 请求
 type BatchRollbackTlsReq struct {
-	ServerIds []int `json:"server_ids"` // 为空则回滚所有系统服务器
+	MerchantId int   `json:"merchant_id" binding:"required"` // 商户ID
+	ServerIds  []int `json:"server_ids"`                     // 为空则回滚该商户所有 GOST 服务器
+}
+
+// 停用证书请求
+type DisableTlsCertReq struct {
+	MerchantId int `json:"merchant_id" binding:"required"` // 商户ID
 }
 
 // 单台服务器 TLS 操作结果
@@ -56,10 +65,10 @@ type BatchTlsResp struct {
 
 // TLS 状态查询响应
 type TlsStatusResp struct {
-	Total      int              `json:"total"`       // 系统服务器总数
-	TlsCount   int              `json:"tls_count"`   // 已启用 TLS 数量
-	TcpCount   int              `json:"tcp_count"`   // 未启用 TLS 数量
-	Servers    []TlsServerStatus `json:"servers"`
+	Total    int               `json:"total"`     // 系统服务器总数
+	TlsCount int              `json:"tls_count"` // 已启用 TLS 数量
+	TcpCount int              `json:"tcp_count"` // 未启用 TLS 数量
+	Servers  []TlsServerStatus `json:"servers"`
 }
 
 // 单台服务器 TLS 状态

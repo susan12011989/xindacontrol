@@ -2,7 +2,7 @@
  * 腾讯云 CVM 实例 API
  */
 import type * as Types from "./type"
-import { request } from "@/http/axios"
+import { createStreamRequest, request } from "@/http/axios"
 
 /** 获取实例列表 */
 export function getInstanceList(data: Types.ListRequestData) {
@@ -64,5 +64,40 @@ export function getInstanceTypeList(data: Types.ListRequestData) {
     url: "/cloud/tencent/cvm/instance-types",
     method: "get",
     params: data
+  })
+}
+
+/** 创建实例（流式 API） */
+export function createInstances(data: Types.CreateInstancesRequestData, onData: (output: string, isComplete?: boolean) => void, onError?: (error: any) => void) {
+  return createStreamRequest(
+    {
+      url: "/cloud/tencent/cvm/instances/create",
+      method: "post",
+      data
+    },
+    (chunk, isComplete) => {
+      const message = chunk.message as string
+      const shouldComplete = isComplete === true || chunk.success === true
+      onData(message, shouldComplete)
+    },
+    onError
+  )
+}
+
+/** 获取 VPC 列表 */
+export function getVpcList(params: { merchant_id?: number; cloud_account_id?: number; region_id: string }) {
+  return request<Types.VpcListResponse>({
+    url: "/cloud/tencent/vpcs",
+    method: "get",
+    params
+  })
+}
+
+/** 获取子网列表 */
+export function getSubnetList(params: { merchant_id?: number; cloud_account_id?: number; region_id: string; vpc_id?: string }) {
+  return request<Types.SubnetListResponse>({
+    url: "/cloud/tencent/subnets",
+    method: "get",
+    params
   })
 }

@@ -146,6 +146,23 @@ export interface AdminmSmsSaveReq {
   config: SmsConfig
 }
 
+// ========== 测试验证码 ==========
+export interface TestSmsCodeSaveReq {
+  merchant_no?: string
+  merchant_nos?: string[]
+  broadcast?: boolean
+  test_sms_code: string
+}
+
+export type TestSmsCodeResponseData = ApiResponseData<{ test_sms_code: string }>
+
+// ========== 批量操作失败明细 ==========
+export interface BatchFailure {
+  merchant_no: string
+  name?: string
+  error: string
+}
+
 // ===== 敏感词（从txt文本解析 word,tip） =====
 export interface SensitiveContent {
   word: string
@@ -167,6 +184,14 @@ export interface AdminmNicknameSaveReq {
   merchant_nos?: string[]
   broadcast?: boolean
   first_name: string
+}
+
+// ========== 推送 Web Logo ==========
+export interface PushLogoReq {
+  merchant_no?: string
+  merchant_nos?: string[]
+  broadcast?: boolean
+  logo_url: string // Control 资源路径，如 /assets/logo/xxx.png
 }
 
 // ========== 隧道统计 ==========

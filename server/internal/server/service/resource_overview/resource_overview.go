@@ -1,26 +1,17 @@
 package resource_overview
 
 import (
-	"bytes"
-	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"server/internal/dbhelper"
-	"server/internal/server/cloud/aliyun"
-	"server/internal/server/cloud/tencent"
 	"server/internal/server/model"
 	merchantService "server/internal/server/service/merchant"
-	cloud_aliyun "server/internal/server/service/cloud_aliyun"
-	cloud_aws "server/internal/server/service/cloud_aws"
 	"server/pkg/dbs"
 	"server/pkg/entity"
+	"strings"
 	"sync"
 	"time"
 
-	awscloud "server/internal/server/cloud/aws"
-
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
@@ -242,6 +233,7 @@ func QueryGlobalOssConfigs(req model.QueryGlobalOssConfigsReq) (model.QueryGloba
 			Region:           c.MerchantOssConfigs.Region,
 			Endpoint:         c.MerchantOssConfigs.Endpoint,
 			CustomDomain:     c.MerchantOssConfigs.CustomDomain,
+			DownloadUrl:      GetOssDownloadUrl(c.CloudType, c.MerchantOssConfigs.Bucket, c.MerchantOssConfigs.Region, c.MerchantOssConfigs.Endpoint, c.MerchantOssConfigs.CustomDomain),
 			IsDefault:        c.MerchantOssConfigs.IsDefault,
 			Status:           c.MerchantOssConfigs.Status,
 			Tags:             tags,
@@ -343,17 +335,42 @@ func QueryGlobalGostServers(req model.QueryGlobalGostServersReq) (model.QueryGlo
 	return resp, nil
 }
 
-// ========== OSS 健康检测 ==========
+// ========== OSS 下载地址生成 ==========
 
-const healthCheckObjectKey = "_health_check.txt"
-const healthCheckContent = "health_check_ok"
-const maxHealthCheckConcurrent = 5
+// GetOssDownloadUrl 根据云类型、Bucket、Region 等信息生成 OSS 下载基础地址
+func GetOssDownloadUrl(cloudType, bucket, region, endpoint, customDomain string) string {
+	if customDomain != "" {
+		if strings.HasPrefix(customDomain, "http") {
+			return customDomain
+		}
+		return "https://" + customDomain
+	}
+	if endpoint != "" {
+		if strings.HasPrefix(endpoint, "http") {
+			return endpoint
+		}
+		return "https://" + bucket + "." + endpoint
+	}
+	switch cloudType {
+	case "aws":
+		return fmt.Sprintf("https://%s.s3.%s.amazonaws.com", bucket, region)
+	case "aliyun":
+		return fmt.Sprintf("https://%s.oss-%s.aliyuncs.com", bucket, region)
+	case "tencent":
+		return fmt.Sprintf("https://%s.cos.%s.myqcloud.com", bucket, region)
+	default:
+		return ""
+	}
+}
 
-// CheckOssHealth 批量检测 OSS 健康状态
+// ========== OSS 健康检测（URL 可达性） ==========
+
+const maxHealthCheckConcurrent = 10
+
+// CheckOssHealth 批量检测 OSS 下载地址可达性（不需要 KEY，只检测 URL 是否可访问）
 func CheckOssHealth(ossConfigIds []int) []model.OssHealthCheckResult {
 	results := make([]model.OssHealthCheckResult, len(ossConfigIds))
 
-	// 并发控制
 	sem := make(chan struct{}, maxHealthCheckConcurrent)
 	var wg sync.WaitGroup
 
@@ -363,7 +380,7 @@ func CheckOssHealth(ossConfigIds []int) []model.OssHealthCheckResult {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[idx] = checkSingleOssHealth(id)
+			results[idx] = checkSingleOssUrl(id)
 		}(i, configId)
 	}
 
@@ -371,26 +388,21 @@ func CheckOssHealth(ossConfigIds []int) []model.OssHealthCheckResult {
 	return results
 }
 
-// checkSingleOssHealth 检测单个 OSS 配置的健康状态
-func checkSingleOssHealth(ossConfigId int) model.OssHealthCheckResult {
-	startTime := time.Now()
-	result := model.OssHealthCheckResult{
-		OssConfigId: ossConfigId,
-		Healthy:     true,
-	}
+// checkSingleOssUrl 检测单个 OSS 配置的下载地址可达性
+func checkSingleOssUrl(ossConfigId int) model.OssHealthCheckResult {
+	start := time.Now()
+	result := model.OssHealthCheckResult{OssConfigId: ossConfigId}
 
-	// 1. 获取 OSS 配置
+	// 获取 OSS 配置
 	var ossConfig entity.MerchantOssConfigs
 	has, err := dbs.DBAdmin.ID(ossConfigId).Get(&ossConfig)
 	if err != nil || !has {
-		result.Healthy = false
-		result.Steps = []model.OssHealthStepResult{{Step: "sdk_connect", Ok: false, Message: fmt.Sprintf("OSS配置不存在: %d", ossConfigId)}}
-		result.Duration = time.Since(startTime).Round(time.Millisecond).String()
+		result.Message = fmt.Sprintf("OSS配置不存在: %d", ossConfigId)
+		result.Latency = time.Since(start).Round(time.Millisecond).String()
 		return result
 	}
 	result.OssConfigName = ossConfig.Name
 	result.Bucket = ossConfig.Bucket
-	result.Region = ossConfig.Region
 
 	// 获取商户名
 	var merchant entity.Merchants
@@ -399,274 +411,56 @@ func checkSingleOssHealth(ossConfigId int) model.OssHealthCheckResult {
 	}
 
 	// 获取云类型
-	acc, err := dbhelper.GetCloudAccountByID(ossConfig.CloudAccountId)
-	if err != nil {
-		result.Healthy = false
-		result.Steps = []model.OssHealthStepResult{{Step: "sdk_connect", Ok: false, Message: fmt.Sprintf("获取云账号失败: %v", err)}}
-		result.Duration = time.Since(startTime).Round(time.Millisecond).String()
-		return result
+	acc, _ := dbhelper.GetCloudAccountByID(ossConfig.CloudAccountId)
+	if acc != nil {
+		result.CloudType = acc.CloudType
 	}
-	result.CloudType = acc.CloudType
 
-	// 2. SDK 连接检测（尝试 ListObjects）
-	sdkStep := checkSdkConnect(acc, &ossConfig)
-	result.Steps = append(result.Steps, sdkStep)
-	if !sdkStep.Ok {
-		result.Healthy = false
-		result.Duration = time.Since(startTime).Round(time.Millisecond).String()
+	// 生成下载地址
+	result.DownloadUrl = GetOssDownloadUrl(result.CloudType, ossConfig.Bucket, ossConfig.Region, ossConfig.Endpoint, ossConfig.CustomDomain)
+	if result.DownloadUrl == "" {
+		result.Message = "无法生成下载地址"
+		result.Latency = time.Since(start).Round(time.Millisecond).String()
 		return result
 	}
 
-	// 3. 上传测试文件
-	uploadStep, publicUrl := checkUpload(acc, &ossConfig)
-	result.Steps = append(result.Steps, uploadStep)
-	if !uploadStep.Ok {
-		result.Healthy = false
-		result.Duration = time.Since(startTime).Round(time.Millisecond).String()
-		return result
-	}
-	result.PublicUrl = publicUrl
+	// 检测下载地址可达性
+	result.Healthy, result.StatusCode, result.Message = checkUrlReachable(result.DownloadUrl)
 
-	// 4. SDK 下载检测
-	downloadSdkStep := checkDownloadSdk(acc, &ossConfig)
-	result.Steps = append(result.Steps, downloadSdkStep)
-	if !downloadSdkStep.Ok {
-		result.Healthy = false
-	}
-
-	// 5. 公网 URL 下载检测
-	downloadUrlStep := checkDownloadUrl(publicUrl)
-	result.Steps = append(result.Steps, downloadUrlStep)
-	if !downloadUrlStep.Ok {
-		result.Healthy = false
-	}
-
-	// 6. 自定义域名检测（如果配置了）
+	// 如果有 CDN 域名且与下载地址不同，额外检测
 	if ossConfig.CustomDomain != "" {
-		cdnUrl := fmt.Sprintf("https://%s/%s", ossConfig.CustomDomain, healthCheckObjectKey)
-		cdnStep := checkDownloadUrl(cdnUrl)
-		cdnStep.Step = "download_cdn"
-		result.Steps = append(result.Steps, cdnStep)
-		ok := cdnStep.Ok
-		result.CustomDomainOk = &ok
+		cdnUrl := "https://" + ossConfig.CustomDomain
+		if !strings.HasPrefix(ossConfig.CustomDomain, "http") {
+			cdnUrl = "https://" + ossConfig.CustomDomain
+		} else {
+			cdnUrl = ossConfig.CustomDomain
+		}
+		if cdnUrl != result.DownloadUrl {
+			result.CdnUrl = cdnUrl
+			healthy, code, _ := checkUrlReachable(cdnUrl)
+			result.CdnHealthy = &healthy
+			result.CdnStatusCode = &code
+		}
 	}
 
-	// 7. 清理测试文件
-	cleanupStep := checkCleanup(acc, &ossConfig)
-	result.Steps = append(result.Steps, cleanupStep)
-
-	result.Duration = time.Since(startTime).Round(time.Millisecond).String()
+	result.Latency = time.Since(start).Round(time.Millisecond).String()
 	return result
 }
 
-// checkSdkConnect SDK 连接检测（ListObjects MaxKeys=1）
-func checkSdkConnect(acc *entity.CloudAccounts, ossConfig *entity.MerchantOssConfigs) model.OssHealthStepResult {
-	step := model.OssHealthStepResult{Step: "sdk_connect"}
-	start := time.Now()
-
-	switch acc.CloudType {
-	case "aws":
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		cli, err := awscloud.NewS3Client(ctx, acc, ossConfig.Region)
-		if err != nil {
-			step.Message = fmt.Sprintf("创建S3客户端失败: %v", err)
-			step.Latency = time.Since(start).Round(time.Millisecond).String()
-			return step
-		}
-		maxKeys := int32(1)
-		_, err = cli.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
-			Bucket:  &ossConfig.Bucket,
-			MaxKeys: &maxKeys,
-		})
-		if err != nil {
-			step.Message = fmt.Sprintf("Bucket不可访问: %v", err)
-			step.Latency = time.Since(start).Round(time.Millisecond).String()
-			return step
-		}
-
-	case "aliyun":
-		bucket, err := aliyun.GetOssBucket(0, ossConfig.CloudAccountId, ossConfig.Region, ossConfig.Bucket)
-		if err != nil {
-			step.Message = fmt.Sprintf("获取Bucket失败: %v", err)
-			step.Latency = time.Since(start).Round(time.Millisecond).String()
-			return step
-		}
-		_, err = bucket.ListObjects()
-		if err != nil {
-			step.Message = fmt.Sprintf("Bucket不可访问: %v", err)
-			step.Latency = time.Since(start).Round(time.Millisecond).String()
-			return step
-		}
-
-	case "tencent":
-		_, err := tencent.ListObjects(model.CosListObjectsReq{
-			MerchantId:     0,
-			CloudAccountId: ossConfig.CloudAccountId,
-			RegionId:       ossConfig.Region,
-			Bucket:         ossConfig.Bucket,
-			MaxKeys:        1,
-		})
-		if err != nil {
-			step.Message = fmt.Sprintf("Bucket不可访问: %v", err)
-			step.Latency = time.Since(start).Round(time.Millisecond).String()
-			return step
-		}
-
-	default:
-		step.Message = fmt.Sprintf("不支持的云类型: %s", acc.CloudType)
-		step.Latency = time.Since(start).Round(time.Millisecond).String()
-		return step
-	}
-
-	step.Ok = true
-	step.Message = "SDK连接正常"
-	step.Latency = time.Since(start).Round(time.Millisecond).String()
-	return step
-}
-
-// checkUpload 上传测试文件
-func checkUpload(acc *entity.CloudAccounts, ossConfig *entity.MerchantOssConfigs) (model.OssHealthStepResult, string) {
-	step := model.OssHealthStepResult{Step: "upload"}
-	start := time.Now()
-	var publicUrl string
-
-	data := []byte(healthCheckContent)
-	reader := bytes.NewReader(data)
-
-	switch acc.CloudType {
-	case "aws":
-		err := cloud_aws.UploadObject(acc, ossConfig.Region, ossConfig.Bucket, healthCheckObjectKey, reader)
-		if err != nil {
-			step.Message = fmt.Sprintf("上传失败: %v", err)
-			step.Latency = time.Since(start).Round(time.Millisecond).String()
-			return step, ""
-		}
-		publicUrl = fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", ossConfig.Bucket, ossConfig.Region, healthCheckObjectKey)
-
-	case "aliyun":
-		err := cloud_aliyun.UploadOssObject(0, ossConfig.CloudAccountId, ossConfig.Region, ossConfig.Bucket, healthCheckObjectKey, reader)
-		if err != nil {
-			step.Message = fmt.Sprintf("上传失败: %v", err)
-			step.Latency = time.Since(start).Round(time.Millisecond).String()
-			return step, ""
-		}
-		publicUrl = fmt.Sprintf("https://%s.oss-%s.aliyuncs.com/%s", ossConfig.Bucket, ossConfig.Region, healthCheckObjectKey)
-
-	case "tencent":
-		err := tencent.UploadObject(0, ossConfig.CloudAccountId, ossConfig.Region, ossConfig.Bucket, healthCheckObjectKey, reader)
-		if err != nil {
-			step.Message = fmt.Sprintf("上传失败: %v", err)
-			step.Latency = time.Since(start).Round(time.Millisecond).String()
-			return step, ""
-		}
-		publicUrl = fmt.Sprintf("https://%s.cos.%s.myqcloud.com/%s", ossConfig.Bucket, ossConfig.Region, healthCheckObjectKey)
-	}
-
-	step.Ok = true
-	step.Message = "上传成功"
-	step.Latency = time.Since(start).Round(time.Millisecond).String()
-	return step, publicUrl
-}
-
-// checkDownloadSdk SDK 下载检测
-func checkDownloadSdk(acc *entity.CloudAccounts, ossConfig *entity.MerchantOssConfigs) model.OssHealthStepResult {
-	step := model.OssHealthStepResult{Step: "download_sdk"}
-	start := time.Now()
-
-	var content []byte
-	var err error
-
-	switch acc.CloudType {
-	case "aws":
-		content, _, _, err = cloud_aws.DownloadObject(acc, ossConfig.Region, ossConfig.Bucket, healthCheckObjectKey)
-	case "aliyun":
-		content, _, _, err = cloud_aliyun.DownloadOssObject(0, ossConfig.CloudAccountId, ossConfig.Region, ossConfig.Bucket, healthCheckObjectKey)
-	case "tencent":
-		content, _, _, err = tencent.DownloadObject(0, ossConfig.CloudAccountId, ossConfig.Region, ossConfig.Bucket, healthCheckObjectKey)
-	}
-
+// checkUrlReachable HTTP 请求检测 URL 是否可达（任何 HTTP 响应都视为可达）
+func checkUrlReachable(url string) (bool, int, string) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Head(url)
 	if err != nil {
-		step.Message = fmt.Sprintf("SDK下载失败: %v", err)
-		step.Latency = time.Since(start).Round(time.Millisecond).String()
-		return step
-	}
-	if string(content) != healthCheckContent {
-		step.Message = "下载内容不匹配"
-		step.Latency = time.Since(start).Round(time.Millisecond).String()
-		return step
-	}
-
-	step.Ok = true
-	step.Message = "SDK下载正常"
-	step.Latency = time.Since(start).Round(time.Millisecond).String()
-	return step
-}
-
-// checkDownloadUrl 公网 URL 下载检测
-func checkDownloadUrl(url string) model.OssHealthStepResult {
-	step := model.OssHealthStepResult{Step: "download_url"}
-	start := time.Now()
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		step.Message = fmt.Sprintf("URL不可访问: %v", err)
-		step.Latency = time.Since(start).Round(time.Millisecond).String()
-		return step
+		// HEAD 不支持时尝试 GET
+		resp, err = client.Get(url)
+		if err != nil {
+			return false, 0, fmt.Sprintf("不可达: %v", err)
+		}
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		step.Message = fmt.Sprintf("HTTP状态码: %d", resp.StatusCode)
-		step.Latency = time.Since(start).Round(time.Millisecond).String()
-		return step
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		step.Message = fmt.Sprintf("读取响应失败: %v", err)
-		step.Latency = time.Since(start).Round(time.Millisecond).String()
-		return step
-	}
-
-	if string(body) != healthCheckContent {
-		step.Message = "URL下载内容不匹配"
-		step.Latency = time.Since(start).Round(time.Millisecond).String()
-		return step
-	}
-
-	step.Ok = true
-	step.Message = "URL访问正常"
-	step.Latency = time.Since(start).Round(time.Millisecond).String()
-	return step
-}
-
-// checkCleanup 清理测试文件
-func checkCleanup(acc *entity.CloudAccounts, ossConfig *entity.MerchantOssConfigs) model.OssHealthStepResult {
-	step := model.OssHealthStepResult{Step: "cleanup"}
-	start := time.Now()
-
-	var err error
-	switch acc.CloudType {
-	case "aws":
-		err = cloud_aws.DeleteObject(acc, ossConfig.Region, ossConfig.Bucket, healthCheckObjectKey)
-	case "aliyun":
-		err = cloud_aliyun.DeleteOssObject(0, ossConfig.CloudAccountId, ossConfig.Region, ossConfig.Bucket, healthCheckObjectKey)
-	case "tencent":
-		err = tencent.DeleteObject(0, ossConfig.CloudAccountId, ossConfig.Region, ossConfig.Bucket, healthCheckObjectKey)
-	}
-
-	if err != nil {
-		step.Message = fmt.Sprintf("清理失败: %v", err)
-		step.Latency = time.Since(start).Round(time.Millisecond).String()
-		return step
-	}
-
-	step.Ok = true
-	step.Message = "清理完成"
-	step.Latency = time.Since(start).Round(time.Millisecond).String()
-	return step
+	// 任何 HTTP 响应都表示端点可达（包括 403/404）
+	return true, resp.StatusCode, fmt.Sprintf("HTTP %d", resp.StatusCode)
 }
 
 // ========== 批量操作 ==========

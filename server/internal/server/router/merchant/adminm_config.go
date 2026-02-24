@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"server/internal/dbhelper"
 	"server/internal/server/middleware"
 	"server/internal/server/service/auth"
 	merchantService "server/internal/server/service/merchant"
+	"server/pkg/consts"
 	"server/pkg/entity"
 	"server/pkg/result"
 	"strconv"
@@ -97,14 +99,16 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 				return
 			}
 			successCount := 0
+			var failures []gin.H
 			for _, m := range merchants {
 				if err := merchantService.SaveAdminmSensitiveContents(m.No, contents); err != nil {
 					logx.Errorf("广播敏感词配置失败: merchant=%s, err=%v", m.No, err)
+					failures = append(failures, gin.H{"merchant_no": m.No, "name": m.Name, "error": err.Error()})
 				} else {
 					successCount++
 				}
 			}
-			result.GOK(c, gin.H{"mode": "broadcast", "count": len(contents), "total": len(merchants), "success": successCount})
+			result.GOK(c, gin.H{"mode": "broadcast", "count": len(contents), "total": len(merchants), "success": successCount, "failures": failures})
 			return
 		}
 
@@ -118,6 +122,7 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 		}
 
 		successCount := 0
+		var failures []gin.H
 		for _, no := range req.MerchantNos {
 			no = strings.TrimSpace(no)
 			if no == "" {
@@ -125,11 +130,12 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 			}
 			if err := merchantService.SaveAdminmSensitiveContents(no, contents); err != nil {
 				logx.Errorf("批量保存敏感词配置失败: merchant=%s, err=%v", no, err)
+				failures = append(failures, gin.H{"merchant_no": no, "error": err.Error()})
 			} else {
 				successCount++
 			}
 		}
-		result.GOK(c, gin.H{"updated": successCount, "count": len(contents), "total": len(req.MerchantNos)})
+		result.GOK(c, gin.H{"updated": successCount, "count": len(contents), "total": len(req.MerchantNos), "failures": failures})
 	})
 
 	// 保存系统用户昵称（users.id=777000 的 first_name）：支持单个、批量或全部
@@ -172,14 +178,16 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 				return
 			}
 			successCount := 0
+			var failures []gin.H
 			for _, m := range merchants {
 				if err := merchantService.SaveAdminmSystemNickname(m.No, req.FirstName); err != nil {
 					logx.Errorf("广播系统昵称失败: merchant=%s, err=%v", m.No, err)
+					failures = append(failures, gin.H{"merchant_no": m.No, "name": m.Name, "error": err.Error()})
 				} else {
 					successCount++
 				}
 			}
-			result.GOK(c, gin.H{"mode": "broadcast", "total": len(merchants), "success": successCount})
+			result.GOK(c, gin.H{"mode": "broadcast", "total": len(merchants), "success": successCount, "failures": failures})
 			return
 		}
 
@@ -194,6 +202,7 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 
 		// 批量
 		successCount := 0
+		var failures []gin.H
 		for _, no := range req.MerchantNos {
 			no = strings.TrimSpace(no)
 			if no == "" {
@@ -201,11 +210,12 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 			}
 			if err := merchantService.SaveAdminmSystemNickname(no, req.FirstName); err != nil {
 				logx.Errorf("批量保存系统昵称失败: merchant=%s, err=%v", no, err)
+				failures = append(failures, gin.H{"merchant_no": no, "error": err.Error()})
 			} else {
 				successCount++
 			}
 		}
-		result.GOK(c, gin.H{"updated": successCount, "total": len(req.MerchantNos)})
+		result.GOK(c, gin.H{"updated": successCount, "total": len(req.MerchantNos), "failures": failures})
 	})
 
 	// 读取商户短信配置
@@ -263,14 +273,16 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 				return
 			}
 			successCount := 0
+			var failures []gin.H
 			for _, m := range merchants {
 				if err := merchantService.SaveAdminmSmsConfig(m.No, req.Config); err != nil {
 					logx.Errorf("广播短信配置失败: merchant=%s, err=%v", m.No, err)
+					failures = append(failures, gin.H{"merchant_no": m.No, "name": m.Name, "error": err.Error()})
 				} else {
 					successCount++
 				}
 			}
-			result.GOK(c, gin.H{"mode": "broadcast", "total": len(merchants), "success": successCount})
+			result.GOK(c, gin.H{"mode": "broadcast", "total": len(merchants), "success": successCount, "failures": failures})
 			return
 		}
 
@@ -285,6 +297,7 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 
 		// 批量
 		successCount := 0
+		var failures []gin.H
 		for _, no := range req.MerchantNos {
 			no = strings.TrimSpace(no)
 			if no == "" {
@@ -292,13 +305,201 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 			}
 			if err := merchantService.SaveAdminmSmsConfig(no, req.Config); err != nil {
 				logx.Errorf("批量保存短信配置失败: merchant=%s, err=%v", no, err)
+				failures = append(failures, gin.H{"merchant_no": no, "error": err.Error()})
 			} else {
 				successCount++
 			}
 		}
-		result.GOK(c, gin.H{"updated": successCount, "total": len(req.MerchantNos)})
+		result.GOK(c, gin.H{"updated": successCount, "total": len(req.MerchantNos), "failures": failures})
 	})
 
+	// 读取商户测试验证码
+	group.GET("test_sms_code", func(c *gin.Context) {
+		merchantNo := c.Query("merchant_no")
+		if merchantNo == "" {
+			result.GParamErr(c, fmt.Errorf("merchant_no不能为空"))
+			return
+		}
+		code, err := merchantService.GetAdminmTestSmsCode(merchantNo)
+		if err != nil {
+			result.GErr(c, err)
+			return
+		}
+		result.GOK(c, gin.H{"test_sms_code": code})
+	})
+
+	// 保存测试验证码：支持单个、批量或全部
+	type testSmsCodeReq struct {
+		MerchantNo  string `json:"merchant_no"`
+		MerchantNos []string `json:"merchant_nos"`
+		Broadcast   bool   `json:"broadcast"`
+		TestSmsCode string `json:"test_sms_code"`
+	}
+	group.POST("test_sms_code", func(c *gin.Context) {
+		var req testSmsCodeReq
+		if err := c.ShouldBindJSON(&req); err != nil {
+			result.GParamErr(c, err)
+			return
+		}
+		// 目标判断：三选一
+		targetCount := 0
+		if req.Broadcast {
+			targetCount++
+		}
+		if req.MerchantNo != "" {
+			targetCount++
+		}
+		if len(req.MerchantNos) > 0 {
+			targetCount++
+		}
+		if targetCount != 1 {
+			result.GResult(c, 601, nil, "必须且只能指定一种目标：broadcast 或 merchant_no 或 merchant_nos")
+			return
+		}
+
+		if req.Broadcast {
+			merchants, err := dbhelper.FindAllMerchants()
+			if err != nil {
+				result.GErr(c, err)
+				return
+			}
+			successCount := 0
+			var failures []gin.H
+			for _, m := range merchants {
+				if err := merchantService.SaveAdminmTestSmsCode(m.No, req.TestSmsCode); err != nil {
+					logx.Errorf("广播测试验证码失败: merchant=%s, err=%v", m.No, err)
+					failures = append(failures, gin.H{"merchant_no": m.No, "name": m.Name, "error": err.Error()})
+				} else {
+					successCount++
+				}
+			}
+			result.GOK(c, gin.H{"mode": "broadcast", "total": len(merchants), "success": successCount, "failures": failures})
+			return
+		}
+
+		if req.MerchantNo != "" {
+			if err := merchantService.SaveAdminmTestSmsCode(req.MerchantNo, req.TestSmsCode); err != nil {
+				result.GResult(c, 500, nil, err.Error())
+				return
+			}
+			result.GOK(c, gin.H{"updated": 1})
+			return
+		}
+
+		// 批量
+		successCount := 0
+		var failures []gin.H
+		for _, no := range req.MerchantNos {
+			no = strings.TrimSpace(no)
+			if no == "" {
+				continue
+			}
+			if err := merchantService.SaveAdminmTestSmsCode(no, req.TestSmsCode); err != nil {
+				logx.Errorf("批量保存测试验证码失败: merchant=%s, err=%v", no, err)
+				failures = append(failures, gin.H{"merchant_no": no, "error": err.Error()})
+			} else {
+				successCount++
+			}
+		}
+		result.GOK(c, gin.H{"updated": successCount, "total": len(req.MerchantNos), "failures": failures})
+	})
+
+	// 推送 Logo 到商户 tsdd-web 容器：支持单个、批量或全部
+	type pushLogoReq struct {
+		MerchantNo  string   `json:"merchant_no"`
+		MerchantNos []string `json:"merchant_nos"`
+		Broadcast   bool     `json:"broadcast"`
+		LogoURL     string   `json:"logo_url"` // Control 资源路径，如 /assets/logo/xxx.png
+	}
+	group.POST("push_logo", func(c *gin.Context) {
+		var req pushLogoReq
+		if err := c.ShouldBindJSON(&req); err != nil {
+			result.GParamErr(c, err)
+			return
+		}
+		if req.LogoURL == "" {
+			result.GResult(c, 601, nil, "logo_url不能为空")
+			return
+		}
+
+		// 解析 logo_url → 本地文件路径
+		// logo_url 格式: /assets/logo/xxx.png → {AssetsDir}/logo/xxx.png
+		logoRelPath := strings.TrimPrefix(req.LogoURL, "/assets/")
+		logoPath := filepath.Join(consts.AssetsDir, logoRelPath)
+
+		// 目标判断：三选一
+		targetCount := 0
+		if req.Broadcast {
+			targetCount++
+		}
+		if req.MerchantNo != "" {
+			targetCount++
+		}
+		if len(req.MerchantNos) > 0 {
+			targetCount++
+		}
+		if targetCount != 1 {
+			result.GResult(c, 601, nil, "必须且只能指定一种目标：broadcast 或 merchant_no 或 merchant_nos")
+			return
+		}
+
+		// 辅助函数：获取商户 app_name
+		getAppName := func(merchantNo string) string {
+			m, err := dbhelper.GetMerchantByNo(merchantNo)
+			if err == nil && m != nil {
+				return m.AppName
+			}
+			return ""
+		}
+
+		if req.Broadcast {
+			merchants, err := dbhelper.FindAllMerchants()
+			if err != nil {
+				result.GErr(c, err)
+				return
+			}
+			successCount := 0
+			var failures []gin.H
+			for _, m := range merchants {
+				if err := merchantService.PushWebLogo(m.No, logoPath, m.AppName); err != nil {
+					logx.Errorf("广播推送Logo失败: merchant=%s, err=%v", m.No, err)
+					failures = append(failures, gin.H{"merchant_no": m.No, "name": m.Name, "error": err.Error()})
+				} else {
+					successCount++
+				}
+			}
+			result.GOK(c, gin.H{"mode": "broadcast", "total": len(merchants), "success": successCount, "failures": failures})
+			return
+		}
+
+		if req.MerchantNo != "" {
+			appName := getAppName(req.MerchantNo)
+			if err := merchantService.PushWebLogo(req.MerchantNo, logoPath, appName); err != nil {
+				result.GResult(c, 500, nil, err.Error())
+				return
+			}
+			result.GOK(c, gin.H{"pushed": 1})
+			return
+		}
+
+		// 批量
+		successCount := 0
+		var failures []gin.H
+		for _, no := range req.MerchantNos {
+			no = strings.TrimSpace(no)
+			if no == "" {
+				continue
+			}
+			appName := getAppName(no)
+			if err := merchantService.PushWebLogo(no, logoPath, appName); err != nil {
+				logx.Errorf("批量推送Logo失败: merchant=%s, err=%v", no, err)
+				failures = append(failures, gin.H{"merchant_no": no, "error": err.Error()})
+			} else {
+				successCount++
+			}
+		}
+		result.GOK(c, gin.H{"pushed": successCount, "total": len(req.MerchantNos), "failures": failures})
+	})
 
 	// 导出商户数据库（mysqldump 流式下载）
 	group.POST("export_database", func(c *gin.Context) {

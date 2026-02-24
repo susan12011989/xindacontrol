@@ -15,6 +15,7 @@ export interface QueryServersReq extends Pagination {
   status?: number
   server_type?: number // 1-商户服务器 2-系统服务器
   merchant_id?: number // 按商户ID筛选
+  group_id?: number    // 按分组ID筛选
 }
 
 // 创建服务器请求
@@ -29,6 +30,8 @@ export interface CreateServerReq {
   private_key?: string
   server_type?: number // 1-商户服务器 2-系统服务器
   forward_type?: number // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
+  merchant_id?: number  // 关联商户ID
+  group_id?: number     // 分组ID
   description?: string
 }
 
@@ -44,6 +47,8 @@ export interface UpdateServerReq {
   private_key?: string
   server_type?: number // 1-商户服务器 2-系统服务器
   forward_type?: number // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
+  merchant_id?: number  // 关联商户ID
+  group_id?: number     // 分组ID
   status?: number
   description?: string
 }
@@ -66,6 +71,8 @@ export interface ServerResp {
   merchant_id: number // 关联的商户ID
   merchant_name: string // 关联的商户名称
   merchant_no: string // 商户号
+  group_id: number // 分组ID
+  group_name: string // 分组名称
   created_at: string
   updated_at: string
 }
@@ -348,6 +355,19 @@ export interface DeployGostServerReq {
   group_id?: number // 服务器分组ID
   password?: string // SSH 密码（可选，不填则自动生成密钥）
   bandwidth?: string // EIP 带宽，默认 5Mbps
+  forward_type?: number // 转发类型: 1-加密(默认) 2-直连
+}
+
+// GOST 一键部署（安装+配置转发）
+export interface SetupGostDeployReq {
+  server_id: number // 系统服务器ID
+  merchant_ids: number[] // 商户ID列表
+  forward_type?: number // 转发类型: 1-加密(默认) 2-直连
+}
+
+// GOST 诊断修复请求
+export interface DiagnoseGostReq {
+  server_id: number // 系统服务器ID
 }
 
 // 在已有服务器上安装 GOST 请求
@@ -577,20 +597,66 @@ export type GetDeployStatusResponseData = ApiResponseData<GetDeployStatusResp>
 // ========== 集群节点部署 ==========
 
 // 节点角色
-export type NodeRole = "allinone" | "db" | "app"
+export type NodeRole = "allinone" | "db" | "minio" | "app"
 
 // 集群节点部署请求
 export interface DeployNodeReq {
-  server_id: number
+  server_id?: number       // 目标服务器ID（为0/空时需填 ami_id 创建新 EC2）
   merchant_id: number
   node_role: NodeRole
   force_reset?: boolean
-  db_host?: string        // app 节点必填，DB 节点内网 IP
+  db_host?: string        // app 节点必填，DB 节点内网 IP（MySQL+Redis）
+  minio_host?: string     // app 节点选填，MinIO 节点内网 IP（不填则与 db_host 相同）
   wk_node_id?: number     // WuKongIM 节点 ID
   wk_seed_node?: string   // 种子节点
+  // EC2 创建参数（填写 ami_id 时自动创建 EC2 + 注册服务器）
+  ami_id?: string          // AMI ID
+  instance_type?: string   // EC2 实例类型
+  volume_size_gib?: number // 磁盘大小 GB
+  cloud_account_id?: number // AWS 云账号 ID
+  region_id?: string       // AWS 区域
+  key_name?: string        // SSH Key 名称
+  subnet_id?: string       // 子网 ID
 }
 
 export type DeployNodeResponseData = ApiResponseData<DeployTSDDResp>
+export type ClusterNodeListResponseData = ApiResponseData<ClusterNodeInfo[]>
+export type GostSyncResultResponseData = ApiResponseData<GostSyncResult[]>
+
+// 集群节点拓扑信息
+export interface ClusterNodeInfo {
+  id: number
+  merchant_id: number
+  server_id: number
+  server_name: string
+  server_host: string
+  node_role: string
+  private_ip: string
+  wk_node_id: number
+  db_host: string
+  minio_host: string
+  status: string
+  deployed_at: string
+}
+
+// 单个端口转发详情
+export interface GostPortForward {
+  name: string        // 协议名称: tcp/ws/http/minio
+  listen_port: number // GOST 监听端口
+  target_port: number // 转发目标端口
+}
+
+// GOST 同步结果
+export interface GostSyncResult {
+  server_id: number
+  server_name: string
+  server_host: string
+  target_ip: string
+  forward_type: string // encrypted/direct
+  ports: GostPortForward[] // 端口转发详情
+  success: boolean
+  error?: string
+}
 
 // ========== GOST 转发配置（一键部署） ==========
 
@@ -666,6 +732,7 @@ export type NginxCacheStatusResponseData = ApiResponseData<NginxCacheStatusResp>
 // 证书详情
 export interface TlsCertificateResp {
   id: number
+  merchant_id: number
   name: string
   cert_type: number // 1-CA根证书 2-服务器证书
   fingerprint: string // SHA-256 指纹
@@ -677,6 +744,7 @@ export interface TlsCertificateResp {
 
 // 生成证书请求
 export interface GenerateTlsCertReq {
+  merchant_id: number // 商户ID
   validity_days?: number // 有效期天数，默认 3650(10年)
 }
 
@@ -688,7 +756,13 @@ export interface GenerateTlsCertResp {
 
 // 批量升级/回滚 TLS 请求
 export interface BatchTlsReq {
-  server_ids?: number[] // 为空则操作所有系统服务器
+  merchant_id: number // 商户ID
+  server_ids?: number[] // 为空则操作该商户所有 GOST 服务器
+}
+
+// 停用证书请求
+export interface DisableTlsCertReq {
+  merchant_id: number // 商户ID
 }
 
 // 单台服务器 TLS 操作结果
@@ -734,8 +808,39 @@ export interface CertFingerprintResp {
 }
 
 // TLS API 响应类型
-export type TlsCertsResponseData = ApiResponseData<TlsCertificateResp[]>
+export type TlsCertsResponseData = ApiResponseData<GenerateTlsCertResp>
 export type GenerateTlsCertResponseData = ApiResponseData<GenerateTlsCertResp>
 export type BatchTlsResponseData = ApiResponseData<BatchTlsResp>
 export type TlsStatusResponseData = ApiResponseData<TlsStatusResp>
 export type CertFingerprintResponseData = ApiResponseData<CertFingerprintResp>
+
+// ========== 集群向导 ==========
+
+export interface ClusterWizardReq {
+  merchant_name: string
+  app_name?: string
+  port: number
+  expired_at?: string
+  cloud_account_id: number
+  region_id: string
+  key_name?: string
+  subnet_id?: string
+  db_ami_id?: string
+  db_instance_type?: string
+  db_volume_size_gib?: number
+  minio_ami_id?: string
+  minio_instance_type?: string
+  minio_volume_size_gib?: number
+  app_ami_id?: string
+  app_instance_type?: string
+  app_volume_size_gib?: number
+}
+
+export interface ClusterWizardStep {
+  step: number
+  total: number
+  title: string
+  status: "pending" | "running" | "success" | "failed" | "skipped"
+  message: string
+  merchant_id?: number
+}

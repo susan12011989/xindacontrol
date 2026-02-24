@@ -19,19 +19,23 @@ const (
 	GostAPIPort = "9394"
 
 	// 商户端口偏移
-	PortOffsetTCP  = 0
-	PortOffsetWS   = 1
-	PortOffsetHTTP = 2
+	PortOffsetTCP   = 0
+	PortOffsetWS    = 1
+	PortOffsetHTTP  = 2
+	PortOffsetMinIO = 3
 
-	// 商户服务器 GOST 监听端口（接收系统服务器转发）
-	MerchantGostPortTCP  = 10010
-	MerchantGostPortWS   = 10011
-	MerchantGostPortHTTP = 10012
+	// 商户 GOST 中继端口（商户服务器上的 GOST 监听端口，接收系统 GOST 转发的加密流量）
+	// 必须与 MerchantAppPort 不同，避免端口冲突
+	MerchantGostPortTCP   = 10010
+	MerchantGostPortWS    = 10011
+	MerchantGostPortHTTP  = 10012
+	MerchantGostPortMinIO = 10013
 
-	// 商户服务器业务程序端口（GOST 转发到本地业务）
-	MerchantAppPortTCP  = 10000
-	MerchantAppPortWS   = 10001
-	MerchantAppPortHTTP = 10002
+	// 商户服务器业务程序实际监听端口（GOST 解密后转发到这些端口）
+	MerchantAppPortTCP   = 5001  // WuKongIM TCP (WK_ADDR)
+	MerchantAppPortWS    = 5200  // WuKongIM WebSocket
+	MerchantAppPortHTTP  = 10002 // tsdd-server API (TS_ADDR)
+	MerchantAppPortMinIO = 9000  // MinIO S3 API
 
 	// 兼容旧代码的别名
 	TargetPortTCP  = MerchantGostPortTCP
@@ -41,9 +45,9 @@ const (
 
 // ========== 简化转发配置 ==========
 
-// ForwardPorts 固定转发端口列表（监听端口=目标端口，对称转发）
-// 默认使用商户 GOST 监听端口: TCP/WS/HTTP
-var ForwardPorts = []int{10010, 10011, 10012}
+// ForwardPorts 商户服务器需要开放的端口（GOST 中继端口）
+// 安全组/防火墙需要放行这些端口，供系统 GOST 转发流量到达
+var ForwardPorts = []int{10010, 10011, 10012, 10013}
 
 // MerchantPortConfig 商户端口配置（用于系统服务器转发）
 type MerchantPortConfig struct {
@@ -52,11 +56,12 @@ type MerchantPortConfig struct {
 	Name       string
 }
 
-// MerchantPortConfigs 商户三端口配置列表（系统服务器 → 商户服务器）
+// MerchantPortConfigs 商户四端口配置列表（系统服务器 → 商户服务器）
 var MerchantPortConfigs = []MerchantPortConfig{
 	{PortOffsetTCP, MerchantGostPortTCP, "tcp"},
 	{PortOffsetWS, MerchantGostPortWS, "ws"},
 	{PortOffsetHTTP, MerchantGostPortHTTP, "http"},
+	{PortOffsetMinIO, MerchantGostPortMinIO, "minio"},
 }
 
 // MerchantLocalForwardConfig 商户服务器本地转发配置（GOST → 业务程序）
@@ -67,6 +72,9 @@ type MerchantLocalForwardConfig struct {
 }
 
 // MerchantLocalForwardConfigs 商户服务器本地转发配置列表
+// 注意：MinIO 不在此列表中，因为 MinIO 目标地址因部署模式不同而异
+// allinone: 127.0.0.1:9000, cluster: MinIO节点内网IP:9000
+// MinIO 本地转发使用 CreateMinioLocalForward 单独创建
 var MerchantLocalForwardConfigs = []MerchantLocalForwardConfig{
 	{MerchantGostPortTCP, MerchantAppPortTCP, "tcp"},
 	{MerchantGostPortWS, MerchantAppPortWS, "ws"},
@@ -522,27 +530,25 @@ func DeleteRelayTLSForward(gostServerIP string, listenPort int) error {
 }
 
 // DeleteRelayTLSForward 删除 TCP Relay+TLS 转发服务
+// 幂等操作：如果服务/链不存在，视为删除成功
 func (c *Client) DeleteRelayTLSForward(gostServerIP string, listenPort int) error {
 	chainName := fmt.Sprintf("chain-relay-tls-%d", listenPort)
 	serviceName := fmt.Sprintf("tcp-relay-%d", listenPort)
 
-	// 删除 Service
+	// 删除 Service（不存在视为成功）
 	_, err := c.DeleteService(gostServerIP, serviceName)
-	if err != nil {
+	if err != nil && !isNotFoundError(err) {
 		return fmt.Errorf("删除 Service 失败: %w", err)
 	}
 
-	// 删除 Chain
+	// 删除 Chain（不存在视为成功）
 	_, err = c.DeleteChain(gostServerIP, chainName)
-	if err != nil {
+	if err != nil && !isNotFoundError(err) {
 		return fmt.Errorf("删除 Chain 失败: %w", err)
 	}
 
 	// 保存配置到文件（持久化）
-	_, err = c.SaveConfig(gostServerIP, "yaml", "")
-	if err != nil {
-		return fmt.Errorf("服务删除成功，但保存配置失败: %w", err)
-	}
+	_, _ = c.SaveConfig(gostServerIP, "yaml", "")
 
 	return nil
 }
@@ -929,6 +935,85 @@ func (c *Client) deleteMerchantLocalForward(merchantServerIP string, listenPort 
 	}
 
 	return nil
+}
+
+// ========== MinIO 本地转发（单独管理，因为目标地址因部署模式不同） ==========
+
+// CreateMinioLocalForward 在商户服务器上创建 MinIO 本地转发
+// 监听 relay+tls 端口 10013，转发到 MinIO 服务地址
+// minioAddr: MinIO 服务地址，如 "172.31.31.180:9000"（集群）或 "127.0.0.1:9000"（allinone）
+func CreateMinioLocalForward(merchantServerIP string, minioAddr string) error {
+	return defaultClient.CreateMinioLocalForward(merchantServerIP, minioAddr)
+}
+
+// CreateMinioLocalForward 在商户服务器上创建 MinIO 本地转发
+func (c *Client) CreateMinioLocalForward(merchantServerIP string, minioAddr string) error {
+	serviceName := fmt.Sprintf("local-minio-%d", MerchantGostPortMinIO)
+	listenAddr := fmt.Sprintf(":%d", MerchantGostPortMinIO)
+
+	service := &ServiceConfig{
+		Name: serviceName,
+		Addr: listenAddr,
+		Handler: &HandlerConfig{
+			Type: "relay",
+		},
+		Listener: &ListenerConfig{
+			Type: "tls",
+		},
+		Forwarder: &ForwarderConfig{
+			Nodes: []ForwardNodeConfig{
+				{
+					Name: fmt.Sprintf("target-%d", MerchantAppPortMinIO),
+					Addr: minioAddr,
+				},
+			},
+		},
+	}
+
+	_, err := c.CreateService(merchantServerIP, service)
+	if err != nil && !isAlreadyExistsError(err) {
+		return fmt.Errorf("创建 MinIO 本地转发失败: %w", err)
+	}
+
+	_, err = c.SaveConfig(merchantServerIP, "yaml", "")
+	if err != nil {
+		return fmt.Errorf("MinIO 本地转发创建成功，但保存配置失败: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteMinioLocalForward 删除商户服务器上的 MinIO 本地转发
+func DeleteMinioLocalForward(merchantServerIP string) error {
+	return defaultClient.DeleteMinioLocalForward(merchantServerIP)
+}
+
+// DeleteMinioLocalForward 删除 MinIO 本地转发
+func (c *Client) DeleteMinioLocalForward(merchantServerIP string) error {
+	serviceName := fmt.Sprintf("local-minio-%d", MerchantGostPortMinIO)
+
+	_, err := c.DeleteService(merchantServerIP, serviceName)
+	if err != nil && !isNotFoundError(err) {
+		return fmt.Errorf("删除 MinIO 本地转发失败: %w", err)
+	}
+
+	_, err = c.SaveConfig(merchantServerIP, "yaml", "")
+	if err != nil {
+		return fmt.Errorf("MinIO 本地转发删除成功，但保存配置失败: %w", err)
+	}
+
+	return nil
+}
+
+// UpdateMinioLocalForward 更新 MinIO 本地转发（删除+创建）
+func UpdateMinioLocalForward(merchantServerIP string, minioAddr string) error {
+	return defaultClient.UpdateMinioLocalForward(merchantServerIP, minioAddr)
+}
+
+// UpdateMinioLocalForward 更新 MinIO 本地转发
+func (c *Client) UpdateMinioLocalForward(merchantServerIP string, minioAddr string) error {
+	_ = c.DeleteMinioLocalForward(merchantServerIP)
+	return c.CreateMinioLocalForward(merchantServerIP, minioAddr)
 }
 
 // UpdateMerchantLocalForwardsWithCustomPorts 更新商户服务器上的本地转发服务，支持自定义端口
@@ -1363,6 +1448,316 @@ func (c *Client) deleteSimpleForward(gostServerIP string, listenPort int) error 
 	return nil
 }
 
+// ========== 多目标负载均衡转发（集群 App 节点水平扩容） ==========
+
+// CreateRelayTLSForwardMultiTarget 创建 relay+tls 多目标负载均衡转发
+// GOST 会在多个 target 之间 round-robin，自动故障转移
+func CreateRelayTLSForwardMultiTarget(gostServerIP string, listenPort int, targetIPs []string, targetPort int) (string, error) {
+	return defaultClient.CreateRelayTLSForwardMultiTarget(gostServerIP, listenPort, targetIPs, targetPort)
+}
+
+// CreateRelayTLSForwardMultiTarget 创建 relay+tls 多目标负载均衡转发
+func (c *Client) CreateRelayTLSForwardMultiTarget(gostServerIP string, listenPort int, targetIPs []string, targetPort int) (string, error) {
+	if len(targetIPs) == 0 {
+		return "", fmt.Errorf("targetIPs 不能为空")
+	}
+	// 只有 1 个目标时，走原有逻辑
+	if len(targetIPs) == 1 {
+		return c.CreateRelayTLSForward(gostServerIP, listenPort, targetIPs[0], targetPort)
+	}
+
+	chainName := fmt.Sprintf("chain-relay-tls-%d", listenPort)
+	serviceName := fmt.Sprintf("tcp-relay-%d", listenPort)
+	listenAddr := fmt.Sprintf(":%d", listenPort)
+
+	// 构建多个 Node（同一个 Hop 下，GOST 自动 round-robin）
+	nodes := make([]NodeConfig, 0, len(targetIPs))
+	for i, ip := range targetIPs {
+		nodes = append(nodes, NodeConfig{
+			Name: fmt.Sprintf("node-%d-%d", listenPort, i),
+			Addr: fmt.Sprintf("%s:%d", ip, targetPort),
+			Connector: &ConnectorConfig{
+				Type: "relay",
+			},
+			Dialer: &DialerConfig{
+				Type: "tls",
+			},
+		})
+	}
+
+	failTimeout := Duration(30 * time.Second)
+	chain := &ChainConfig{
+		Name: chainName,
+		Hops: []HopConfig{
+			{
+				Name:  fmt.Sprintf("hop-%d", listenPort),
+				Nodes: nodes,
+				Selector: &SelectorConfig{
+					Strategy:    "round",
+					MaxFails:    3,
+					FailTimeout: &failTimeout,
+				},
+			},
+		},
+	}
+
+	_, err := c.CreateChain(gostServerIP, chain)
+	if err != nil {
+		return "", fmt.Errorf("创建 Chain 失败: %w", err)
+	}
+
+	// 构建 Forwarder 多节点
+	fwdNodes := make([]ForwardNodeConfig, 0, len(targetIPs))
+	for i, ip := range targetIPs {
+		fwdNodes = append(fwdNodes, ForwardNodeConfig{
+			Name: fmt.Sprintf("target-%d-%d", targetPort, i),
+			Addr: fmt.Sprintf("%s:%d", ip, targetPort),
+		})
+	}
+
+	service := &ServiceConfig{
+		Name: serviceName,
+		Addr: listenAddr,
+		Handler: &HandlerConfig{
+			Type:  "tcp",
+			Chain: chainName,
+		},
+		Listener: &ListenerConfig{
+			Type: "tcp",
+		},
+		Forwarder: &ForwarderConfig{
+			Nodes: fwdNodes,
+			Selector: &SelectorConfig{
+				Strategy:    "round",
+				MaxFails:    3,
+				FailTimeout: &failTimeout,
+			},
+		},
+	}
+
+	_, err = c.CreateService(gostServerIP, service)
+	if err != nil {
+		_, _ = c.DeleteChain(gostServerIP, chainName)
+		return "", fmt.Errorf("创建 Service 失败: %w", err)
+	}
+
+	_, _ = c.SaveConfig(gostServerIP, "yaml", "")
+	return serviceName, nil
+}
+
+// CreateRelayTLSForwardMultiTargetWithTlsListener 创建 relay+tls 多目标负载均衡转发（监听端启用 TLS）
+func CreateRelayTLSForwardMultiTargetWithTlsListener(gostServerIP string, listenPort int, targetIPs []string, targetPort int) (string, error) {
+	return defaultClient.CreateRelayTLSForwardMultiTargetWithTlsListener(gostServerIP, listenPort, targetIPs, targetPort)
+}
+
+// CreateRelayTLSForwardMultiTargetWithTlsListener 创建 relay+tls 多目标负载均衡转发（监听端启用 TLS）
+func (c *Client) CreateRelayTLSForwardMultiTargetWithTlsListener(gostServerIP string, listenPort int, targetIPs []string, targetPort int) (string, error) {
+	if len(targetIPs) == 0 {
+		return "", fmt.Errorf("targetIPs 不能为空")
+	}
+
+	chainName := fmt.Sprintf("chain-relay-tls-%d", listenPort)
+	serviceName := fmt.Sprintf("tcp-relay-%d", listenPort)
+	listenAddr := fmt.Sprintf(":%d", listenPort)
+
+	// 构建多个 Node（同一个 Hop 下，GOST 自动 round-robin）
+	nodes := make([]NodeConfig, 0, len(targetIPs))
+	for i, ip := range targetIPs {
+		nodes = append(nodes, NodeConfig{
+			Name: fmt.Sprintf("node-%d-%d", listenPort, i),
+			Addr: fmt.Sprintf("%s:%d", ip, targetPort),
+			Connector: &ConnectorConfig{
+				Type: "relay",
+			},
+			Dialer: &DialerConfig{
+				Type: "tls",
+			},
+		})
+	}
+
+	failTimeout := Duration(30 * time.Second)
+	chain := &ChainConfig{
+		Name: chainName,
+		Hops: []HopConfig{
+			{
+				Name:  fmt.Sprintf("hop-%d", listenPort),
+				Nodes: nodes,
+				Selector: &SelectorConfig{
+					Strategy:    "round",
+					MaxFails:    3,
+					FailTimeout: &failTimeout,
+				},
+			},
+		},
+	}
+
+	_, err := c.CreateChain(gostServerIP, chain)
+	if err != nil {
+		return "", fmt.Errorf("创建 Chain 失败: %w", err)
+	}
+
+	// 构建 Forwarder 多节点
+	fwdNodes := make([]ForwardNodeConfig, 0, len(targetIPs))
+	for i, ip := range targetIPs {
+		fwdNodes = append(fwdNodes, ForwardNodeConfig{
+			Name: fmt.Sprintf("target-%d-%d", targetPort, i),
+			Addr: fmt.Sprintf("%s:%d", ip, targetPort),
+		})
+	}
+
+	service := &ServiceConfig{
+		Name: serviceName,
+		Addr: listenAddr,
+		Handler: &HandlerConfig{
+			Type:  "tcp",
+			Chain: chainName,
+		},
+		Listener: &ListenerConfig{
+			Type: "tls",
+			TLS: &TLSConfig{
+				CertFile: TlsCertPath,
+				KeyFile:  TlsKeyPath,
+			},
+		},
+		Forwarder: &ForwarderConfig{
+			Nodes: fwdNodes,
+			Selector: &SelectorConfig{
+				Strategy:    "round",
+				MaxFails:    3,
+				FailTimeout: &failTimeout,
+			},
+		},
+	}
+
+	_, err = c.CreateService(gostServerIP, service)
+	if err != nil {
+		_, _ = c.DeleteChain(gostServerIP, chainName)
+		return "", fmt.Errorf("创建 Service 失败: %w", err)
+	}
+
+	_, _ = c.SaveConfig(gostServerIP, "yaml", "")
+	return serviceName, nil
+}
+
+// SetupForwardTargets 多目标 relay+tls 转发（集群负载均衡）
+func SetupForwardTargets(gostServerIP string, targetIPs []string) error {
+	return defaultClient.SetupForwardTargets(gostServerIP, targetIPs)
+}
+
+// SetupForwardTargets 多目标 relay+tls 转发
+func (c *Client) SetupForwardTargets(gostServerIP string, targetIPs []string) error {
+	var createdPorts []int
+	for _, port := range ForwardPorts {
+		_, err := c.CreateRelayTLSForwardMultiTarget(gostServerIP, port, targetIPs, port)
+		if err != nil {
+			for _, p := range createdPorts {
+				_ = c.DeleteRelayTLSForward(gostServerIP, p)
+			}
+			return fmt.Errorf("创建端口 %d 多目标转发失败: %w", port, err)
+		}
+		createdPorts = append(createdPorts, port)
+	}
+	return nil
+}
+
+// UpdateForwardTargets 更新多目标转发（先清除再创建）
+func UpdateForwardTargets(gostServerIP string, targetIPs []string) error {
+	return defaultClient.UpdateForwardTargets(gostServerIP, targetIPs)
+}
+
+// UpdateForwardTargets 更新多目标转发
+func (c *Client) UpdateForwardTargets(gostServerIP string, targetIPs []string) error {
+	_ = c.ClearForwardTarget(gostServerIP)
+	return c.SetupForwardTargets(gostServerIP, targetIPs)
+}
+
+// SetupDirectForwardTargets 多目标 TCP 直连转发（不加密，集群负载均衡）
+func SetupDirectForwardTargets(gostServerIP string, targetIPs []string) error {
+	return defaultClient.SetupDirectForwardTargets(gostServerIP, targetIPs)
+}
+
+// SetupDirectForwardTargets 多目标 TCP 直连转发
+func (c *Client) SetupDirectForwardTargets(gostServerIP string, targetIPs []string) error {
+	if len(targetIPs) == 0 {
+		return fmt.Errorf("targetIPs 不能为空")
+	}
+	// 只有 1 个目标时，走原有逻辑
+	if len(targetIPs) == 1 {
+		return c.SetupDirectForwardTarget(gostServerIP, targetIPs[0])
+	}
+
+	var createdPorts []int
+	for _, port := range ForwardPorts {
+		_, err := c.createSimpleForwardMultiTarget(gostServerIP, port, targetIPs, port)
+		if err != nil {
+			for _, p := range createdPorts {
+				_ = c.deleteSimpleForward(gostServerIP, p)
+			}
+			return fmt.Errorf("创建端口 %d 多目标转发失败: %w", port, err)
+		}
+		createdPorts = append(createdPorts, port)
+	}
+	return nil
+}
+
+// UpdateDirectForwardTargets 更新多目标 TCP 直连转发
+func UpdateDirectForwardTargets(gostServerIP string, targetIPs []string) error {
+	return defaultClient.UpdateDirectForwardTargets(gostServerIP, targetIPs)
+}
+
+// UpdateDirectForwardTargets 更新多目标 TCP 直连转发
+func (c *Client) UpdateDirectForwardTargets(gostServerIP string, targetIPs []string) error {
+	_ = c.ClearDirectForwardTarget(gostServerIP)
+	return c.SetupDirectForwardTargets(gostServerIP, targetIPs)
+}
+
+// CreateDirectForwardMultiTarget 创建多目标 TCP 直连转发（公开方法，支持自定义监听端口和目标端口）
+func CreateDirectForwardMultiTarget(gostServerIP string, listenPort int, targetIPs []string, targetPort int) (string, error) {
+	return defaultClient.createSimpleForwardMultiTarget(gostServerIP, listenPort, targetIPs, targetPort)
+}
+
+// createSimpleForwardMultiTarget 创建多目标 TCP 直连转发（内部方法）
+func (c *Client) createSimpleForwardMultiTarget(gostServerIP string, listenPort int, targetIPs []string, targetPort int) (string, error) {
+	serviceName := fmt.Sprintf("fwd-%d", listenPort)
+	listenAddr := fmt.Sprintf(":%d", listenPort)
+
+	fwdNodes := make([]ForwardNodeConfig, 0, len(targetIPs))
+	for i, ip := range targetIPs {
+		fwdNodes = append(fwdNodes, ForwardNodeConfig{
+			Name: fmt.Sprintf("target-%d-%d", targetPort, i),
+			Addr: fmt.Sprintf("%s:%d", ip, targetPort),
+		})
+	}
+
+	failTimeout := Duration(30 * time.Second)
+	service := &ServiceConfig{
+		Name: serviceName,
+		Addr: listenAddr,
+		Handler: &HandlerConfig{
+			Type: "tcp",
+		},
+		Listener: &ListenerConfig{
+			Type: "tcp",
+		},
+		Forwarder: &ForwarderConfig{
+			Nodes: fwdNodes,
+			Selector: &SelectorConfig{
+				Strategy:    "round",
+				MaxFails:    3,
+				FailTimeout: &failTimeout,
+			},
+		},
+	}
+
+	_, err := c.CreateService(gostServerIP, service)
+	if err != nil && !isAlreadyExistsError(err) {
+		return "", fmt.Errorf("创建 Service 失败: %w", err)
+	}
+
+	_, _ = c.SaveConfig(gostServerIP, "yaml", "")
+	return serviceName, nil
+}
+
 // GetForwardStatus 获取转发状态
 func GetForwardStatus(gostServerIP string) (map[int]string, error) {
 	return defaultClient.GetForwardStatus(gostServerIP)
@@ -1370,6 +1765,7 @@ func GetForwardStatus(gostServerIP string) (map[int]string, error) {
 
 // GetForwardStatus 获取转发状态
 // 返回：端口 → 目标地址 的映射
+// 兼容所有转发服务命名格式：fwd-{port}, tcp-relay-{port}, {proto}-relay-{port}, {proto}-direct-{port}
 func (c *Client) GetForwardStatus(gostServerIP string) (map[int]string, error) {
 	result := make(map[int]string)
 
@@ -1379,14 +1775,47 @@ func (c *Client) GetForwardStatus(gostServerIP string) (map[int]string, error) {
 	}
 
 	for _, svc := range config.Services {
-		// 匹配 fwd-XXXX 格式的服务名
+		if svc.Forwarder == nil || len(svc.Forwarder.Nodes) == 0 {
+			continue
+		}
+
+		var port int
+		matched := false
+
+		// 匹配 fwd-{port} (TCP 直连)
 		if strings.HasPrefix(svc.Name, "fwd-") {
-			var port int
-			if _, err := fmt.Sscanf(svc.Name, "fwd-%d", &port); err == nil {
-				if svc.Forwarder != nil && len(svc.Forwarder.Nodes) > 0 {
-					result[port] = svc.Forwarder.Nodes[0].Addr
-				}
+			_, err := fmt.Sscanf(svc.Name, "fwd-%d", &port)
+			matched = err == nil
+		}
+		// 匹配 tcp-relay-{port} (relay+tls 加密)
+		if !matched && strings.HasPrefix(svc.Name, "tcp-relay-") {
+			_, err := fmt.Sscanf(svc.Name, "tcp-relay-%d", &port)
+			matched = err == nil
+		}
+		// 匹配 {proto}-relay-{port} (ws-relay, http-relay)
+		if !matched && strings.Contains(svc.Name, "-relay-") {
+			parts := strings.Split(svc.Name, "-relay-")
+			if len(parts) == 2 {
+				_, err := fmt.Sscanf(parts[1], "%d", &port)
+				matched = err == nil
 			}
+		}
+		// 匹配 {proto}-direct-{port} (直连转发)
+		if !matched && strings.Contains(svc.Name, "-direct-") {
+			parts := strings.Split(svc.Name, "-direct-")
+			if len(parts) == 2 {
+				_, err := fmt.Sscanf(parts[1], "%d", &port)
+				matched = err == nil
+			}
+		}
+
+		if matched && port > 0 {
+			// 多目标时用逗号拼接所有地址
+			addrs := make([]string, 0, len(svc.Forwarder.Nodes))
+			for _, n := range svc.Forwarder.Nodes {
+				addrs = append(addrs, n.Addr)
+			}
+			result[port] = strings.Join(addrs, ",")
 		}
 	}
 

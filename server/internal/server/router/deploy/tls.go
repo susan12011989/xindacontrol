@@ -1,18 +1,26 @@
 package deploy
 
 import (
+	"fmt"
 	"server/internal/server/model"
 	deployService "server/internal/server/service/deploy"
 	"server/pkg/result"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
 
 // ========== TLS 证书管理 ==========
 
-// getTlsCerts 获取当前有效证书
+// getTlsCerts 获取指定商户的有效证书
 func getTlsCerts(ctx *gin.Context) {
-	data, err := deployService.GetTlsCerts()
+	merchantId, err := strconv.Atoi(ctx.Query("merchant_id"))
+	if err != nil || merchantId <= 0 {
+		result.GErr(ctx, fmt.Errorf("merchant_id 参数无效"))
+		return
+	}
+
+	data, err := deployService.GetTlsCerts(merchantId)
 	if err != nil {
 		result.GErr(ctx, err)
 		return
@@ -20,15 +28,15 @@ func getTlsCerts(ctx *gin.Context) {
 	result.GOK(ctx, data)
 }
 
-// generateTlsCerts 生成 CA + 服务器证书
+// generateTlsCerts 为指定商户生成 CA + 服务器证书
 func generateTlsCerts(ctx *gin.Context) {
 	var req model.GenerateTlsCertReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		// 允许空 body，使用默认值
-		req = model.GenerateTlsCertReq{}
+		result.GErr(ctx, err)
+		return
 	}
 
-	data, err := deployService.GenerateTlsCerts(req.ValidityDays)
+	data, err := deployService.GenerateTlsCerts(req.MerchantId, req.ValidityDays)
 	if err != nil {
 		result.GErr(ctx, err)
 		return
@@ -36,9 +44,15 @@ func generateTlsCerts(ctx *gin.Context) {
 	result.GOK(ctx, data)
 }
 
-// disableTlsCerts 停用当前证书
+// disableTlsCerts 停用指定商户的证书
 func disableTlsCerts(ctx *gin.Context) {
-	err := deployService.DisableTlsCerts()
+	var req model.DisableTlsCertReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	err := deployService.DisableTlsCerts(req.MerchantId)
 	if err != nil {
 		result.GErr(ctx, err)
 		return
@@ -46,9 +60,15 @@ func disableTlsCerts(ctx *gin.Context) {
 	result.GOK(ctx, gin.H{"message": "证书已停用"})
 }
 
-// getTlsCertFingerprint 获取证书指纹（供 App 端 Pinning）
+// getTlsCertFingerprint 获取指定商户的证书指纹（供 App 端 Pinning）
 func getTlsCertFingerprint(ctx *gin.Context) {
-	data, err := deployService.GetCertFingerprint()
+	merchantId, err := strconv.Atoi(ctx.Query("merchant_id"))
+	if err != nil || merchantId <= 0 {
+		result.GErr(ctx, fmt.Errorf("merchant_id 参数无效"))
+		return
+	}
+
+	data, err := deployService.GetCertFingerprint(merchantId)
 	if err != nil {
 		result.GErr(ctx, err)
 		return
@@ -58,9 +78,15 @@ func getTlsCertFingerprint(ctx *gin.Context) {
 
 // ========== TLS 批量操作 ==========
 
-// getTlsStatus 查看所有系统服务器 TLS 状态
+// getTlsStatus 查看指定商户的 GOST 服务器 TLS 状态
 func getTlsStatus(ctx *gin.Context) {
-	data, err := deployService.GetTlsStatus()
+	merchantId, err := strconv.Atoi(ctx.Query("merchant_id"))
+	if err != nil || merchantId <= 0 {
+		result.GErr(ctx, fmt.Errorf("merchant_id 参数无效"))
+		return
+	}
+
+	data, err := deployService.GetTlsStatus(merchantId)
 	if err != nil {
 		result.GErr(ctx, err)
 		return
@@ -68,9 +94,15 @@ func getTlsStatus(ctx *gin.Context) {
 	result.GOK(ctx, data)
 }
 
-// verifyTlsStatus 验证所有系统服务器 TLS 连接
+// verifyTlsStatus 验证指定商户的 GOST 服务器 TLS 连接
 func verifyTlsStatus(ctx *gin.Context) {
-	data, err := deployService.VerifyTlsStatus()
+	var req model.BatchUpgradeTlsReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	data, err := deployService.VerifyTlsStatus(req.MerchantId)
 	if err != nil {
 		result.GErr(ctx, err)
 		return
@@ -82,7 +114,8 @@ func verifyTlsStatus(ctx *gin.Context) {
 func batchUpgradeTls(ctx *gin.Context) {
 	var req model.BatchUpgradeTlsReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		req = model.BatchUpgradeTlsReq{}
+		result.GErr(ctx, err)
+		return
 	}
 
 	data, err := deployService.BatchUpgradeTls(req)
@@ -97,7 +130,8 @@ func batchUpgradeTls(ctx *gin.Context) {
 func batchRollbackTls(ctx *gin.Context) {
 	var req model.BatchRollbackTlsReq
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		req = model.BatchRollbackTlsReq{}
+		result.GErr(ctx, err)
+		return
 	}
 
 	data, err := deployService.BatchRollbackTls(req)

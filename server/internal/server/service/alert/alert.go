@@ -444,6 +444,9 @@ func getAlertTypeName(t string) string {
 		entity.AlertTypeMemoryHigh:      "内存使用率过高",
 		entity.AlertTypeDiskHigh:        "磁盘使用率过高",
 		entity.AlertTypeServiceDown:     "服务异常",
+		entity.AlertTypeGostDown:           "GOST服务不可达",
+		entity.AlertTypeGostForwardMissing: "GOST转发规则不完整",
+		entity.AlertTypeGostHighErrors:     "GOST错误率过高",
 	}
 	if name, ok := names[t]; ok {
 		return name
@@ -460,6 +463,9 @@ func GetAlertTypeOptions() []map[string]string {
 		{"value": entity.AlertTypeMemoryHigh, "label": "内存使用率过高"},
 		{"value": entity.AlertTypeDiskHigh, "label": "磁盘使用率过高"},
 		{"value": entity.AlertTypeServiceDown, "label": "服务异常"},
+		{"value": entity.AlertTypeGostDown, "label": "GOST服务不可达"},
+		{"value": entity.AlertTypeGostForwardMissing, "label": "GOST转发规则不完整"},
+		{"value": entity.AlertTypeGostHighErrors, "label": "GOST错误率过高"},
 	}
 }
 

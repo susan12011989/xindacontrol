@@ -93,11 +93,18 @@ export interface CreateInstanceData {
   merchant_id?: number // 商户ID（商户类型时必填）
   cloud_account_id?: number // 系统云账号ID（系统类型时必填）
   region_id: string // 区域
+  zone: string // 可用区
   image_id: string // 镜像ID
   instance_type: string // 实例规格
   instance_charge_type: string // 付费类型 PREPAID/POSTPAID_BY_HOUR
   system_disk_type: string // 系统盘类型
   system_disk_size: number // 系统盘大小
+  vpc_id?: string // VPC ID
+  subnet_id?: string // 子网 ID
+  security_group_ids?: string[] // 安全组 ID 列表
+  instance_name?: string // 实例名称
+  password?: string // 登录密码
+  internet_max_bandwidth_out?: number // 公网出带宽（Mbps）
   // 预付费时额外参数
   period?: number // 购买时长（月）
   renew_flag?: string // 自动续费标识 NOTIFY_AND_AUTO_RENEW/NOTIFY_AND_MANUAL_RENEW/DISABLE_NOTIFY_AND_MANUAL_RENEW
@@ -105,8 +112,41 @@ export interface CreateInstanceData {
 
 /** 批量创建实例请求 */
 export interface CreateInstancesRequestData {
-  List: CreateInstanceData[]
+  list: CreateInstanceData[]
 }
+
+/** VPC 信息 */
+export interface VpcItem {
+  VpcId: string
+  VpcName: string
+  CidrBlock: string
+  IsDefault: boolean
+  CreatedTime: string
+}
+
+/** VPC 列表响应 */
+export type VpcListResponse = ApiResponseData<{
+  list: VpcItem[]
+  total: number
+}>
+
+/** 子网信息 */
+export interface SubnetItem {
+  SubnetId: string
+  SubnetName: string
+  CidrBlock: string
+  VpcId: string
+  Zone: string
+  AvailableIpAddressCount: number
+  IsDefault: boolean
+  CreatedTime: string
+}
+
+/** 子网列表响应 */
+export type SubnetListResponse = ApiResponseData<{
+  list: SubnetItem[]
+  total: number
+}>
 
 /** 实例操作请求 */
 export interface OperateInstanceRequestData {

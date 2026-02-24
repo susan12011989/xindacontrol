@@ -22,34 +22,34 @@ const (
 
 // ========== 批量升级 TLS ==========
 
-// BatchUpgradeTls 批量将系统服务器升级为 TLS 模式
+// BatchUpgradeTls 批量将商户的 GOST 服务器升级为 TLS 模式
 func BatchUpgradeTls(req model.BatchUpgradeTlsReq) (*model.BatchTlsResp, error) {
-	// 1. 获取证书
+	// 1. 获取该商户的证书
 	var serverCert entity.TlsCertificates
-	has, err := dbs.DBAdmin.Where("name = 'gost-server' AND status = 1").Get(&serverCert)
+	has, err := dbs.DBAdmin.Where("name = 'gost-server' AND merchant_id = ? AND status = 1", req.MerchantId).Get(&serverCert)
 	if err != nil {
 		return nil, fmt.Errorf("查询证书失败: %v", err)
 	}
 	if !has {
-		return nil, fmt.Errorf("未找到有效的服务器证书，请先生成证书")
+		return nil, fmt.Errorf("该商户未找到有效的服务器证书，请先生成证书")
 	}
 
 	var caCert entity.TlsCertificates
-	has, err = dbs.DBAdmin.Where("name = 'gost-ca' AND status = 1").Get(&caCert)
+	has, err = dbs.DBAdmin.Where("name = 'gost-ca' AND merchant_id = ? AND status = 1", req.MerchantId).Get(&caCert)
 	if err != nil {
 		return nil, fmt.Errorf("查询 CA 证书失败: %v", err)
 	}
 	if !has {
-		return nil, fmt.Errorf("未找到有效的 CA 证书")
+		return nil, fmt.Errorf("该商户未找到有效的 CA 证书")
 	}
 
-	// 2. 获取目标服务器
-	servers, err := getTargetSystemServers(req.ServerIds)
+	// 2. 获取该商户的 GOST 服务器
+	servers, err := getMerchantGostServers(req.MerchantId, req.ServerIds)
 	if err != nil {
 		return nil, err
 	}
 	if len(servers) == 0 {
-		return nil, fmt.Errorf("未找到可升级的系统服务器")
+		return nil, fmt.Errorf("未找到该商户可升级的 GOST 服务器")
 	}
 
 	// 3. 并发执行升级
@@ -81,7 +81,7 @@ func BatchUpgradeTls(req model.BatchUpgradeTlsReq) (*model.BatchTlsResp, error) 
 		}
 	}
 
-	logx.Infof("TLS 批量升级完成: 总计=%d, 成功=%d, 失败=%d", resp.Total, resp.Success, resp.Failed)
+	logx.Infof("TLS 批量升级完成(商户%d): 总计=%d, 成功=%d, 失败=%d", req.MerchantId, resp.Total, resp.Success, resp.Failed)
 	return resp, nil
 }
 
@@ -238,14 +238,14 @@ func upgradeGostListenerToTls(serverIP string) error {
 
 // ========== 批量回滚 TLS ==========
 
-// BatchRollbackTls 批量将系统服务器回滚为 TCP 模式
+// BatchRollbackTls 批量将商户的 GOST 服务器回滚为 TCP 模式
 func BatchRollbackTls(req model.BatchRollbackTlsReq) (*model.BatchTlsResp, error) {
-	servers, err := getTargetSystemServers(req.ServerIds)
+	servers, err := getMerchantGostServers(req.MerchantId, req.ServerIds)
 	if err != nil {
 		return nil, err
 	}
 	if len(servers) == 0 {
-		return nil, fmt.Errorf("未找到可回滚的系统服务器")
+		return nil, fmt.Errorf("未找到该商户可回滚的 GOST 服务器")
 	}
 
 	results := make([]model.TlsServerResult, len(servers))
@@ -275,7 +275,7 @@ func BatchRollbackTls(req model.BatchRollbackTlsReq) (*model.BatchTlsResp, error
 		}
 	}
 
-	logx.Infof("TLS 批量回滚完成: 总计=%d, 成功=%d, 失败=%d", resp.Total, resp.Success, resp.Failed)
+	logx.Infof("TLS 批量回滚完成(商户%d): 总计=%d, 成功=%d, 失败=%d", req.MerchantId, resp.Total, resp.Success, resp.Failed)
 	return resp, nil
 }
 
@@ -353,12 +353,11 @@ func rollbackGostListenerToTcp(serverIP string) error {
 
 // ========== TLS 状态查询 ==========
 
-// GetTlsStatus 获取所有系统服务器的 TLS 状态
-func GetTlsStatus() (*model.TlsStatusResp, error) {
-	var servers []entity.Servers
-	err := dbs.DBAdmin.Where("server_type = 2 AND status = 1").Find(&servers)
+// GetTlsStatus 获取指定商户的 GOST 服务器 TLS 状态
+func GetTlsStatus(merchantId int) (*model.TlsStatusResp, error) {
+	servers, err := getMerchantGostServers(merchantId, nil)
 	if err != nil {
-		return nil, fmt.Errorf("查询系统服务器失败: %v", err)
+		return nil, err
 	}
 
 	resp := &model.TlsStatusResp{
@@ -389,12 +388,11 @@ func GetTlsStatus() (*model.TlsStatusResp, error) {
 	return resp, nil
 }
 
-// VerifyTlsStatus 验证系统服务器的 TLS 连接是否正常
-func VerifyTlsStatus() (*model.TlsStatusResp, error) {
-	var servers []entity.Servers
-	err := dbs.DBAdmin.Where("server_type = 2 AND status = 1").Find(&servers)
+// VerifyTlsStatus 验证指定商户的 GOST 服务器 TLS 连接是否正常
+func VerifyTlsStatus(merchantId int) (*model.TlsStatusResp, error) {
+	servers, err := getMerchantGostServers(merchantId, nil)
 	if err != nil {
-		return nil, fmt.Errorf("查询系统服务器失败: %v", err)
+		return nil, err
 	}
 
 	resp := &model.TlsStatusResp{
@@ -403,6 +401,7 @@ func VerifyTlsStatus() (*model.TlsStatusResp, error) {
 	}
 
 	var wg sync.WaitGroup
+	var mu sync.Mutex
 	sem := make(chan struct{}, maxTlsConcurrent)
 
 	for i, s := range servers {
@@ -422,8 +421,15 @@ func VerifyTlsStatus() (*model.TlsStatusResp, error) {
 				status.TlsDeployedAt = server.TlsDeployedAt.Format("2006-01-02 15:04:05")
 			}
 
+			mu.Lock()
 			if server.TlsEnabled == 1 {
 				resp.TlsCount++
+			} else {
+				resp.TcpCount++
+			}
+			mu.Unlock()
+
+			if server.TlsEnabled == 1 {
 				// 验证 TLS 连接 — 尝试连到 GOST 的第一个端口做 TLS 握手
 				err := verifyTlsConnection(server.Host)
 				if err != nil {
@@ -433,7 +439,6 @@ func VerifyTlsStatus() (*model.TlsStatusResp, error) {
 					status.TlsVerified = true
 				}
 			} else {
-				resp.TcpCount++
 				status.TlsVerified = false
 				status.VerifyError = "TLS 未启用"
 			}
@@ -480,7 +485,58 @@ func verifyTlsConnection(host string) error {
 
 // ========== 辅助函数 ==========
 
-// getTargetSystemServers 获取目标系统服务器列表
+// getMerchantGostServers 查询商户的 GOST 系统服务器
+// 同时查 merchant_gost_servers 关联表和 servers.merchant_id，合并去重
+func getMerchantGostServers(merchantId int, serverIds []int) ([]entity.Servers, error) {
+	serverIdSet := make(map[int]bool)
+
+	// 1. 查询关联表获取服务器 ID
+	var relations []entity.MerchantGostServers
+	session := dbs.DBAdmin.Where("merchant_id = ? AND status = 1", merchantId)
+	if len(serverIds) > 0 {
+		session = session.In("server_id", serverIds)
+	}
+	err := session.Find(&relations)
+	if err != nil {
+		return nil, fmt.Errorf("查询商户 GOST 服务器关联失败: %v", err)
+	}
+	for _, r := range relations {
+		serverIdSet[r.ServerId] = true
+	}
+
+	// 2. 查询 servers 表中直接绑定该商户的系统服务器
+	var directServers []entity.Servers
+	directSession := dbs.DBAdmin.Where("server_type = 2 AND status = 1 AND merchant_id = ?", merchantId)
+	if len(serverIds) > 0 {
+		directSession = directSession.In("id", serverIds)
+	}
+	err = directSession.Find(&directServers)
+	if err != nil {
+		return nil, fmt.Errorf("查询系统服务器失败: %v", err)
+	}
+	for _, s := range directServers {
+		serverIdSet[s.Id] = true
+	}
+
+	if len(serverIdSet) == 0 {
+		return nil, nil
+	}
+
+	// 3. 合并查询所有服务器详情
+	sids := make([]int, 0, len(serverIdSet))
+	for id := range serverIdSet {
+		sids = append(sids, id)
+	}
+
+	var servers []entity.Servers
+	err = dbs.DBAdmin.Where("server_type = 2 AND status = 1").In("id", sids).Find(&servers)
+	if err != nil {
+		return nil, fmt.Errorf("查询系统服务器失败: %v", err)
+	}
+	return servers, nil
+}
+
+// getTargetSystemServers 获取目标系统服务器列表（保留兼容）
 func getTargetSystemServers(serverIds []int) ([]entity.Servers, error) {
 	var servers []entity.Servers
 	session := dbs.DBAdmin.Where("server_type = 2 AND status = 1")

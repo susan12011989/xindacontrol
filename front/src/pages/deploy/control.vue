@@ -1,8 +1,8 @@
 <script lang="ts" setup>
 import type { DockerContainerStatus, ServiceName, ServiceStatusResp } from "@@/apis/deploy/type"
-import type { AwsCloudWatchMetricsResp, MetricSeries } from "@@/apis/aws/type"
+import type { CloudMonitorMetricsResp, MetricSeries } from "@@/apis/cloud_monitor"
 import { getDockerContainers, getProgramConfig, getServerDetail, getServerList, getServerStats, getServiceLogs, getServiceStatus, serviceAction, updateProgramConfig, uploadServerFile } from "@@/apis/deploy"
-import { getCloudWatchMetrics } from "@@/apis/aws"
+import { getCloudMonitorMetrics } from "@@/apis/cloud_monitor"
 import * as echarts from "echarts"
 
 defineOptions({
@@ -339,12 +339,12 @@ function getServiceDisplayName(name: string) {
   return names[name] || name
 }
 
-// ========== CloudWatch 监控 ==========
+// ========== 云监控 (AWS/阿里云/腾讯云) ==========
 const cwLoading = ref(false)
-const cwData = ref<AwsCloudWatchMetricsResp | null>(null)
+const cwData = ref<CloudMonitorMetricsResp | null>(null)
 const cwPeriod = ref<"1h" | "6h" | "24h" | "7d">("1h")
 const cwAutoRefresh = ref(false)
-const cwAvailable = ref(true) // 服务器是否配置了 AWS 实例 ID
+const cwAvailable = ref(true) // 服务器是否配置了云实例信息
 let cwRefreshTimer: ReturnType<typeof setInterval> | null = null
 
 // Chart refs
@@ -362,7 +362,7 @@ async function loadCloudWatchMetrics() {
   if (!serverId.value) return
   cwLoading.value = true
   try {
-    const res = await getCloudWatchMetrics({
+    const res = await getCloudMonitorMetrics({
       server_id: serverId.value,
       period: cwPeriod.value,
     })
@@ -372,7 +372,7 @@ async function loadCloudWatchMetrics() {
     renderCharts()
   } catch (err: any) {
     cwData.value = null
-    // 未配置 AWS 实例时不报错
+    // 未配置云实例时不报错，静默隐藏
     if (err?.response?.data?.message?.includes("未配置")) {
       cwAvailable.value = false
     }
@@ -381,12 +381,53 @@ async function loadCloudWatchMetrics() {
   }
 }
 
+// 各云平台指标名映射
+const metricNameMap: Record<string, Record<string, string[]>> = {
+  aws: {
+    cpu: ["CPUUtilization"],
+    read_iops: ["VolumeReadOps"],
+    write_iops: ["VolumeWriteOps"],
+    queue: ["VolumeQueueLength"],
+    read_latency: ["VolumeTotalReadTime"],
+    write_latency: ["VolumeTotalWriteTime"],
+  },
+  aliyun: {
+    cpu: ["CPUUtilization"],
+    read_iops: ["DiskReadIOPS"],
+    write_iops: ["DiskWriteIOPS"],
+    queue: ["diskio_queue_length"],
+    read_latency: ["disk_readLatency"],
+    write_latency: ["disk_writeLatency"],
+  },
+  tencent: {
+    cpu: ["CpuUsage"],
+    read_iops: ["DiskReadIops"],
+    write_iops: ["DiskWriteIops"],
+    queue: [],
+    read_latency: [],
+    write_latency: [],
+  },
+}
+
+const monitorTitle = computed(() => {
+  if (!cwData.value) return "云监控"
+  const names: Record<string, string> = {
+    aws: "CloudWatch 监控",
+    aliyun: "阿里云监控",
+    tencent: "腾讯云监控",
+  }
+  return names[cwData.value.cloud_type] || "云监控"
+})
+
 function renderCharts() {
   if (!cwData.value) return
   const metrics = cwData.value.metrics
+  const ct = cwData.value.cloud_type || "aws"
+  const nameMap = metricNameMap[ct] || metricNameMap.aws
 
-  function findByName(name: string): MetricSeries[] {
-    return metrics.filter(m => m.metric_name === name)
+  function findByCategory(category: string): MetricSeries[] {
+    const names = nameMap[category] || []
+    return metrics.filter(m => names.includes(m.metric_name))
   }
 
   function formatTime(ts: number): string {
@@ -416,7 +457,6 @@ function renderCharts() {
           return v !== undefined ? Math.round(v * 100) / 100 : null
         }),
       }
-      // 第一条线加 markLine
       if (markLineValue !== undefined && seriesList.indexOf(s) === 0) {
         seriesOpt.markLine = {
           silent: true,
@@ -442,37 +482,45 @@ function renderCharts() {
   }
 
   // CPU chart
-  const cpuSeries = findByName("CPUUtilization")
+  const cpuSeries = findByCategory("cpu")
   if (cpuSeries.length && cpuChartRef.value) {
     if (!cpuChart) cpuChart = echarts.init(cpuChartRef.value)
     cpuChart.setOption(buildOption("CPU Utilization", cpuSeries, "%"), true)
   }
 
-  // IOPS chart (Read + Write per volume)
-  const readOps = findByName("VolumeReadOps")
-  const writeOps = findByName("VolumeWriteOps")
+  // IOPS chart (Read + Write)
+  const readOps = findByCategory("read_iops")
+  const writeOps = findByCategory("write_iops")
   if ((readOps.length || writeOps.length) && iopsChartRef.value) {
     if (!iopsChart) iopsChart = echarts.init(iopsChartRef.value)
-    iopsChart.setOption(buildOption("EBS IOPS", [...readOps, ...writeOps], "ops/s", 3000), true)
+    iopsChart.setOption(buildOption("Disk IOPS", [...readOps, ...writeOps], "ops/s", 3000), true)
   }
 
   // Queue Length chart
-  const queueSeries = findByName("VolumeQueueLength")
+  const queueSeries = findByCategory("queue")
   if (queueSeries.length && queueChartRef.value) {
     if (!queueChart) queueChart = echarts.init(queueChartRef.value)
-    queueChart.setOption(buildOption("EBS Queue Length", queueSeries, "", 1), true)
+    queueChart.setOption(buildOption("Disk Queue Length", queueSeries, "", 1), true)
+  } else if (queueChartRef.value) {
+    // 该云不支持此指标时清空
+    if (queueChart) { queueChart.dispose(); queueChart = null }
   }
 
-  // Latency chart (convert seconds to ms)
-  const readLat = findByName("VolumeTotalReadTime")
-  const writeLat = findByName("VolumeTotalWriteTime")
+  // Latency chart (AWS 返回秒需要 *1000, 阿里云/腾讯云已是 ms)
+  const readLat = findByCategory("read_latency")
+  const writeLat = findByCategory("write_latency")
   if ((readLat.length || writeLat.length) && latencyChartRef.value) {
     if (!latencyChart) latencyChart = echarts.init(latencyChartRef.value)
+    const needConvert = ct === "aws" // AWS 返回秒，需转为毫秒
     const msData = [...readLat, ...writeLat].map(s => ({
       ...s,
-      data_points: s.data_points.map(dp => ({ ...dp, value: dp.value * 1000 })),
+      data_points: needConvert
+        ? s.data_points.map(dp => ({ ...dp, value: dp.value * 1000 }))
+        : s.data_points,
     }))
-    latencyChart.setOption(buildOption("EBS IO Latency", msData, "ms"), true)
+    latencyChart.setOption(buildOption("Disk IO Latency", msData, "ms"), true)
+  } else if (latencyChartRef.value) {
+    if (latencyChart) { latencyChart.dispose(); latencyChart = null }
   }
 }
 
@@ -597,11 +645,11 @@ watch(() => route.query.server_id, (val) => {
       </div>
     </el-card>
 
-    <!-- CloudWatch 监控 -->
+    <!-- 云监控 (AWS/阿里云/腾讯云) -->
     <el-card v-if="cwAvailable" v-loading="cwLoading" class="mb-4">
       <template #header>
         <div class="flex justify-between items-center">
-          <span class="text-base font-bold">CloudWatch 监控</span>
+          <span class="text-base font-bold">{{ monitorTitle }}</span>
           <div class="flex items-center gap-2">
             <el-radio-group v-model="cwPeriod" size="small" @change="onCwPeriodChange">
               <el-radio-button value="1h">1小时</el-radio-button>
@@ -627,11 +675,12 @@ watch(() => route.query.server_id, (val) => {
           <div ref="latencyChartRef" style="height: 280px" />
         </div>
         <div class="text-xs text-gray-400 mt-2 text-right">
-          Instance: {{ cwData.instance_id }} | Region: {{ cwData.region_id }} | Volumes: {{ cwData.volume_ids?.join(", ") }}
+          {{ cwData.cloud_type?.toUpperCase() }} | Instance: {{ cwData.instance_id }} | Region: {{ cwData.region_id }}
+          <template v-if="cwData.volume_ids?.length"> | Volumes: {{ cwData.volume_ids.join(", ") }}</template>
         </div>
       </div>
       <div v-else-if="!cwLoading" class="text-center text-gray-400 py-8">
-        该服务器未配置 AWS 实例信息，无法获取 CloudWatch 数据
+        该服务器未配置云实例信息，无法获取监控数据
       </div>
     </el-card>
 

@@ -342,11 +342,14 @@ func (tq *TaskQueue) processTask(task *GostTask) {
 		logx.Errorf("GOST task failed, will retry (%d/%d): type=%s, server=%s, port=%d, error=%s",
 			task.RetryCount, MaxRetryCount, task.Type, task.ServerIP, task.BasePort, err.Error())
 
-		// 延迟后重新入队
-		time.Sleep(time.Duration(RetryIntervalSec) * time.Second)
-		if err := tq.enqueueWithoutVersionUpdate(task); err != nil {
-			logx.Errorf("任务重新入队失败: %+v", err)
-		}
+		// 异步延迟重新入队，不阻塞消费者处理其他任务
+		retryTask := *task // 复制一份避免闭包问题
+		go func() {
+			time.Sleep(time.Duration(RetryIntervalSec) * time.Second)
+			if err := tq.enqueueWithoutVersionUpdate(&retryTask); err != nil {
+				logx.Errorf("任务重新入队失败: %+v", err)
+			}
+		}()
 	} else {
 		logx.Infof("GOST task completed: type=%s, server=%s, port=%d", task.Type, task.ServerIP, task.BasePort)
 	}

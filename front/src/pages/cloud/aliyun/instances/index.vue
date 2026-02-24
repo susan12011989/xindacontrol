@@ -781,9 +781,16 @@ async function handleCreateServer(instance: Instance) {
     return
   }
 
+  // 优先使用 EIP，其次主公网IP
+  const eip = instance.EipAddress?.IpAddress || ""
+  const primaryIp = eip || uniquePublicIps[0]
+
   // 输入服务器名称
+  const ipHint = uniquePublicIps.length > 1
+    ? `该实例有 ${uniquePublicIps.length} 个公网IP，将使用 ${primaryIp}${eip ? "（弹性IP）" : ""} 作为主IP创建服务器。`
+    : `将使用 ${primaryIp} 创建服务器。`
   ElMessageBox.prompt(
-    `将为实例的 ${uniquePublicIps.length} 个公网IP创建服务器，请输入服务器名称：`,
+    `${ipHint}\n请输入服务器名称：`,
     "创建服务器",
     {
       confirmButtonText: "确定",
@@ -800,57 +807,37 @@ async function handleCreateServer(instance: Instance) {
         return
       }
 
-      let successCount = 0
-      let failCount = 0
-      const errors: string[] = []
-
-      // 为每个公网IP创建服务器（自动创建SSH密钥）
+      // 只创建一条服务器记录，优先使用 EIP
       const privateKeys: { serverName: string; host: string; privateKey: string }[] = []
 
-      for (let index = 0; index < uniquePublicIps.length; index++) {
-        const ip = uniquePublicIps[index]
-        // 如果有多个IP，添加数字后缀；如果只有一个IP，不添加后缀
-        const finalServerName = uniquePublicIps.length > 1 ? `${serverName}-${index + 1}` : serverName
-
-        try {
-          // 使用新API：自动创建SSH密钥并绑定到实例
-          const result = await registerInstanceWithSSHKey({
-            cloud_account_id: selectedCloudAccount.value!,
-            region_id: instance.RegionId,
-            instance_id: instance.InstanceId,
-            server_name: finalServerName,
-            server_type: 2, // 2-系统服务器
-            public_ip: ip
+      try {
+        const result = await registerInstanceWithSSHKey({
+          cloud_account_id: selectedCloudAccount.value!,
+          region_id: instance.RegionId,
+          instance_id: instance.InstanceId,
+          server_name: serverName,
+          server_type: 2, // 2-系统服务器
+          public_ip: primaryIp
+        })
+        ElMessage.success(`成功创建服务器（已自动配置SSH密钥）`)
+        // 收集私钥信息
+        if (result.data?.private_key) {
+          privateKeys.push({
+            serverName: result.data.server_name || serverName,
+            host: result.data.host || primaryIp,
+            privateKey: result.data.private_key
           })
-          successCount++
-          // 收集私钥信息
-          if (result.data?.private_key) {
-            privateKeys.push({
-              serverName: result.data.server_name || finalServerName,
-              host: result.data.host || ip,
-              privateKey: result.data.private_key
-            })
-          }
-        } catch (error: any) {
-          console.error(`创建服务器失败 (IP: ${ip})`, error)
-          errors.push(`${ip}: ${error.message || "未知错误"}`)
-          failCount++
         }
-      }
-
-      // 显示结果
-      if (failCount === 0) {
-        ElMessage.success(`成功创建 ${successCount} 个服务器（已自动配置SSH密钥）`)
-      } else if (successCount === 0) {
-        ElMessage.error(`创建服务器失败: ${errors.join("; ")}`)
-      } else {
-        ElMessage.warning(`创建完成：成功 ${successCount} 个，失败 ${failCount} 个`)
+      } catch (error: any) {
+        console.error(`创建服务器失败 (IP: ${primaryIp})`, error)
+        ElMessage.error(`创建服务器失败: ${error.message || "未知错误"}`)
+        return
       }
 
       // 如果有私钥，提示用户下载
       if (privateKeys.length > 0) {
         ElMessageBox.confirm(
-          `已为 ${privateKeys.length} 个服务器创建SSH密钥，请立即下载保存私钥！私钥仅显示一次，关闭后无法再次获取。`,
+          `已创建SSH密钥，请立即下载保存私钥！私钥仅显示一次，关闭后无法再次获取。`,
           "下载SSH私钥",
           {
             confirmButtonText: "下载私钥",

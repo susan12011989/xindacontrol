@@ -41,10 +41,12 @@ func PersistGostConfig(serverId int) error {
 		return fmt.Errorf("获取 SSH 连接失败: %w", err)
 	}
 
-	// 备份旧配置
+	// 备份旧配置（保留最近 5 份）
 	ts := time.Now().Format("20060102_150405")
 	backupPath := fmt.Sprintf("%s.%s.bak", gostConfigPath, ts)
 	_, _ = client.ExecuteCommand(fmt.Sprintf("sudo cp -f '%s' '%s' 2>/dev/null", gostConfigPath, backupPath))
+	// 清理旧备份，只保留最近 5 份
+	_, _ = client.ExecuteCommand(fmt.Sprintf("ls -t %s.*.bak 2>/dev/null | tail -n +6 | xargs -r sudo rm -f", gostConfigPath))
 
 	// 确保目录存在
 	_, _ = client.ExecuteCommand("sudo mkdir -p /etc/gost")

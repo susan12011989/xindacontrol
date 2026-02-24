@@ -1,6 +1,7 @@
 <script lang="ts" setup>
 import type { ServerResp } from "@@/apis/deploy/type"
 import { createServer, getServerDetail, testConnection, updateServer } from "@@/apis/deploy"
+import { getMerchantList } from "@@/apis/merchant"
 
 defineOptions({ name: "DeployServersForm" })
 
@@ -11,6 +12,18 @@ const isEdit = computed(() => !!route.params.id)
 const pageTitle = computed(() => isEdit.value ? "编辑服务器" : "新增服务器")
 
 const loading = ref(false)
+
+// 商户列表
+const merchantList = ref<{ id: number; name: string }[]>([])
+
+async function loadMerchants() {
+  try {
+    const res = await getMerchantList({ page: 1, size: 1000 })
+    merchantList.value = (res.data.list || []).map((m: any) => ({ id: m.id, name: m.name }))
+  } catch {
+    merchantList.value = []
+  }
+}
 
 // 表单数据
 const formData = reactive({
@@ -24,6 +37,7 @@ const formData = reactive({
   auth_type: 1, // 1-密码 2-密钥
   password: "",
   private_key: "",
+  merchant_id: undefined as number | undefined,
   description: ""
 })
 
@@ -44,6 +58,7 @@ async function loadServerDetail() {
     formData.port = data.port
     formData.username = data.username
     formData.auth_type = data.auth_type
+    formData.merchant_id = data.merchant_id || undefined
     formData.description = data.description
   }
   catch {
@@ -112,7 +127,8 @@ async function onSubmit() {
       port: Number(formData.port),
       auth_type: Number(formData.auth_type),
       server_type: Number(formData.server_type),
-      forward_type: Number(formData.forward_type)
+      forward_type: Number(formData.forward_type),
+      merchant_id: formData.merchant_id || 0
     }
 
     // 根据认证方式清空不需要的字段
@@ -148,6 +164,7 @@ function onCancel() {
 }
 
 onMounted(() => {
+  loadMerchants()
   loadServerDetail()
 })
 </script>
@@ -196,8 +213,30 @@ onMounted(() => {
             </el-radio>
           </el-radio-group>
           <div class="form-item-tip">
-            加密：通过商户GOST(10010/11/12)解密后转发到业务程序<br>
-            直连：直接转发到商户业务程序(10000/01/02)，不加密
+            加密：通过商户GOST(10010/11/12/13)解密后转发到业务程序<br>
+            直连：直接转发到商户业务程序(10000/01/02/03)，不加密
+          </div>
+        </el-form-item>
+
+        <!-- 关联商户 -->
+        <el-form-item label="关联商户">
+          <el-select
+            v-model="formData.merchant_id"
+            placeholder="不关联商户"
+            clearable
+            filterable
+            style="width: 100%"
+            @clear="formData.merchant_id = undefined"
+          >
+            <el-option
+              v-for="m in merchantList"
+              :key="m.id"
+              :label="m.name"
+              :value="m.id"
+            />
+          </el-select>
+          <div class="form-item-tip">
+            关联商户后，工具箱的IP选择可按商户筛选
           </div>
         </el-form-item>
 

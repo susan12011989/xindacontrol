@@ -95,7 +95,11 @@ type Servers struct {
 	Tags          string     `xorm:"default '' comment('标签') VARCHAR(255)"`
 	AwsInstanceId  string `xorm:"aws_instance_id default '' comment('AWS EC2实例ID') VARCHAR(32)" json:"aws_instance_id"`
 	AwsRegionId    string `xorm:"aws_region_id default '' comment('AWS区域') VARCHAR(32)" json:"aws_region_id"`
-	CloudAccountId int64  `xorm:"cloud_account_id default 0 comment('云账号ID') BIGINT" json:"cloud_account_id"`
+	CloudAccountId  int64  `xorm:"cloud_account_id default 0 comment('云账号ID') BIGINT" json:"cloud_account_id"`
+	CloudType       string `xorm:"cloud_type default '' comment('云类型: aws,aliyun,tencent') VARCHAR(20)" json:"cloud_type"`
+	CloudInstanceId string `xorm:"cloud_instance_id default '' comment('云实例ID') VARCHAR(64)" json:"cloud_instance_id"`
+	CloudRegionId   string `xorm:"cloud_region_id default '' comment('云区域ID') VARCHAR(64)" json:"cloud_region_id"`
+	GroupId         int    `xorm:"not null default 0 comment('分组ID') index INT"`
 	CreatedAt     time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 	UpdatedAt     time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 }
@@ -109,7 +113,8 @@ const (
 // TLS 证书
 type TlsCertificates struct {
 	Id          int       `xorm:"not null pk autoincr INT"`
-	Name        string    `xorm:"not null unique comment('证书名称') VARCHAR(64)"`
+	MerchantId  int       `xorm:"not null default 0 comment('商户ID') index INT"`
+	Name        string    `xorm:"not null comment('证书名称') VARCHAR(64)"`
 	CertType    int       `xorm:"not null default 1 comment('证书类型:1-CA根证书 2-服务器证书') TINYINT"`
 	CertPem     string    `xorm:"not null comment('证书内容PEM') TEXT"`
 	KeyPem      string    `xorm:"not null comment('私钥内容PEM') TEXT"`
@@ -487,6 +492,11 @@ const (
 	AlertTypeMemoryHigh      = "memory_high"      // 内存使用率过高
 	AlertTypeDiskHigh        = "disk_high"        // 磁盘使用率过高
 	AlertTypeServiceDown     = "service_down"     // 服务异常
+
+	// GOST 监控告警类型
+	AlertTypeGostDown           = "gost_down"            // GOST API 不可达
+	AlertTypeGostForwardMissing = "gost_forward_missing" // GOST 转发规则不完整
+	AlertTypeGostHighErrors     = "gost_high_errors"     // GOST 错误率过高
 )
 
 // 告警级别常量
@@ -510,6 +520,30 @@ const (
 	NotifyStatusSent    = "sent"
 	NotifyStatusFailed  = "failed"
 )
+
+// ========== GOST 监控 ==========
+
+// GostMonitorLogs GOST 监控检查日志
+type GostMonitorLogs struct {
+	Id            int64     `xorm:"not null pk autoincr BIGINT"`
+	ServerId      int       `xorm:"not null comment('服务器ID') index INT"`
+	ServerName    string    `xorm:"not null comment('服务器名称') VARCHAR(64)"`
+	ServerHost    string    `xorm:"not null comment('服务器IP') VARCHAR(128)"`
+	Status        string    `xorm:"not null default 'unknown' comment('状态: up/down/degraded') VARCHAR(16)"`
+	ApiReachable  int       `xorm:"not null default 0 comment('API是否可达:0-否 1-是') TINYINT"`
+	ExpectedPorts int       `xorm:"not null default 0 comment('期望端口数') INT"`
+	ActualPorts   int       `xorm:"not null default 0 comment('实际端口数') INT"`
+	MissingPorts  string    `xorm:"default '' comment('缺失端口列表JSON') TEXT"`
+	TotalConns    int64     `xorm:"not null default 0 comment('总连接数') BIGINT"`
+	CurrentConns  int64     `xorm:"not null default 0 comment('当前连接数') BIGINT"`
+	InputBytes    int64     `xorm:"not null default 0 comment('总接收字节') BIGINT"`
+	OutputBytes   int64     `xorm:"not null default 0 comment('总发送字节') BIGINT"`
+	TotalErrors   int64     `xorm:"not null default 0 comment('总错误数') BIGINT"`
+	ErrorRate     float64   `xorm:"not null default 0 comment('错误率') DECIMAL(10,4)"`
+	ErrorMessage  string    `xorm:"default '' comment('错误信息') VARCHAR(512)"`
+	CheckDuration int       `xorm:"not null default 0 comment('检查耗时ms') INT"`
+	CreatedAt     time.Time `xorm:"default CURRENT_TIMESTAMP index DATETIME"`
+}
 
 // ========== API 测试系统 ==========
 
@@ -667,11 +701,44 @@ type ResourceGroups struct {
 // 资源分组类型常量
 const (
 	ResourceGroupTypeIpEmbedTarget = "ip_embed_target"
+	ResourceGroupTypeServer        = "server"
 )
 
 // 审计日志目标类型 - 存储配置
 const (
 	AuditTargetStorageConfig = "storage_config"
+)
+
+// ========== 集群节点拓扑 ==========
+
+// ClusterNodes 集群节点拓扑（记录每个商户的集群节点角色和内网IP）
+type ClusterNodes struct {
+	Id         int        `xorm:"not null pk autoincr INT"`
+	MerchantId int        `xorm:"not null comment('商户ID') index INT"`
+	ServerId   int        `xorm:"not null comment('服务器ID') INT"`
+	NodeRole   string     `xorm:"not null comment('节点角色: db/minio/app') VARCHAR(16)"`
+	PrivateIP  string     `xorm:"default '' comment('内网IP') VARCHAR(64)"`
+	WKNodeId   int        `xorm:"default 0 comment('WuKongIM节点ID,仅app') INT"`
+	DBHost     string     `xorm:"default '' comment('连接的DB内网IP') VARCHAR(64)"`
+	MinioHost  string     `xorm:"default '' comment('连接的MinIO内网IP') VARCHAR(64)"`
+	Status     string     `xorm:"not null default 'pending' comment('状态: pending/deployed/failed') VARCHAR(16)"`
+	DeployedAt *time.Time `xorm:"comment('部署时间') DATETIME"`
+	CreatedAt  time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+	UpdatedAt  time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+}
+
+// 集群节点角色常量
+const (
+	ClusterRoleDB    = "db"
+	ClusterRoleMinio = "minio"
+	ClusterRoleApp   = "app"
+)
+
+// 集群节点状态常量
+const (
+	ClusterStatusPending  = "pending"
+	ClusterStatusDeployed = "deployed"
+	ClusterStatusFailed   = "failed"
 )
 
 // ========== 云实例商户绑定 ==========

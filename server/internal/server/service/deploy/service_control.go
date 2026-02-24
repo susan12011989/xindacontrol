@@ -27,10 +27,11 @@ var serviceSystemdNames = map[string]string{
 var serviceDockerNames = model.ServiceDockerNames
 
 // 服务配置文件路径映射（Docker 部署：宿主机上的路径）
-var serviceConfigPaths = map[string]string{
-	"server":   "/opt/tsdd/configs/tsdd.yaml",
-	"wukongim": "/var/lib/docker/volumes/tsdd_wukongim_data/_data/wk.yaml",
-	"gost":     "/etc/gost/config.yaml",
+// 按优先级排列，GetConfigFile 会依次尝试
+var serviceConfigPaths = map[string][]string{
+	"server":   {"/opt/tsdd/configs/tsdd.yaml"},
+	"wukongim": {"/data/db/wukongim/wk.yaml"},
+	"gost":     {"/etc/gost/config.yaml"},
 }
 
 // ServiceAction 执行服务操作（start/stop/restart）
@@ -327,7 +328,7 @@ func UploadServiceFile(serverId int, serviceName string, filename string, reader
 func GetConfigFile(serverId int, serviceName string) (model.ConfigFileResp, error) {
 	var resp model.ConfigFileResp
 
-	configPath, ok := serviceConfigPaths[serviceName]
+	configPaths, ok := serviceConfigPaths[serviceName]
 	if !ok {
 		return resp, fmt.Errorf("服务 %s 没有配置文件", serviceName)
 	}
@@ -337,13 +338,21 @@ func GetConfigFile(serverId int, serviceName string) (model.ConfigFileResp, erro
 		return resp, err
 	}
 
-	// 先检查文件是否存在
-	checkCmd := fmt.Sprintf("sudo test -f '%s' && echo 'exists'", configPath)
-	checkOutput, _ := client.ExecuteCommand(checkCmd)
-	if strings.TrimSpace(checkOutput) != "exists" {
-		// 文件不存在，返回空内容（允许用户创建）
+	// 依次尝试候选路径，找到第一个存在的
+	var configPath string
+	for _, p := range configPaths {
+		checkCmd := fmt.Sprintf("sudo test -f '%s' && echo 'exists'", p)
+		checkOutput, _ := client.ExecuteCommand(checkCmd)
+		if strings.TrimSpace(checkOutput) == "exists" {
+			configPath = p
+			break
+		}
+	}
+
+	if configPath == "" {
+		// 所有路径都不存在，返回第一个路径（允许用户创建）
 		resp.ServiceName = serviceName
-		resp.ConfigPath = configPath
+		resp.ConfigPath = configPaths[0]
 		resp.Content = ""
 		return resp, nil
 	}
@@ -365,7 +374,7 @@ func GetConfigFile(serverId int, serviceName string) (model.ConfigFileResp, erro
 func UpdateConfigFile(serverId int, serviceName string, content string) (model.ConfigFileResp, error) {
 	var resp model.ConfigFileResp
 
-	configPath, ok := serviceConfigPaths[serviceName]
+	configPaths, ok := serviceConfigPaths[serviceName]
 	if !ok {
 		return resp, fmt.Errorf("服务 %s 没有配置文件", serviceName)
 	}
@@ -373,6 +382,17 @@ func UpdateConfigFile(serverId int, serviceName string, content string) (model.C
 	client, err := GetSSHClient(serverId)
 	if err != nil {
 		return resp, err
+	}
+
+	// 查找已存在的配置文件路径，不存在则用第一个候选路径
+	configPath := configPaths[0]
+	for _, p := range configPaths {
+		checkCmd := fmt.Sprintf("sudo test -f '%s' && echo 'exists'", p)
+		checkOutput, _ := client.ExecuteCommand(checkCmd)
+		if strings.TrimSpace(checkOutput) == "exists" {
+			configPath = p
+			break
+		}
 	}
 
 	// 备份原配置
@@ -787,4 +807,149 @@ func ToggleServerStatus(serverId int) error {
 		"updated_at": time.Now(),
 	})
 	return err
+}
+
+// BatchSyncConfig 批量同步 docker-compose 配置到已部署的服务器
+// 从 cluster_nodes 表读取集群参数，用 Go 模板重新生成 compose + .env，推送到服务器并 docker compose up -d
+func BatchSyncConfig(req model.BatchSyncConfigReq, operator string) (model.BatchSyncConfigResp, error) {
+	var resp model.BatchSyncConfigResp
+	resp.Results = make([]model.SyncConfigResult, 0, len(req.ServerIds))
+	resp.TotalCount = len(req.ServerIds)
+
+	for _, serverId := range req.ServerIds {
+		result := model.SyncConfigResult{ServerId: serverId}
+
+		// 查服务器信息
+		var server entity.Servers
+		has, err := dbs.DBAdmin.Where("id = ?", serverId).Get(&server)
+		if err != nil || !has {
+			result.Message = "服务器不存在"
+			resp.Results = append(resp.Results, result)
+			resp.FailCount++
+			continue
+		}
+		result.ServerName = server.Name
+		result.ServerHost = server.Host
+
+		// 查集群节点信息
+		var node entity.ClusterNodes
+		has, err = dbs.DBAdmin.Where("server_id = ?", serverId).Get(&node)
+		if err != nil || !has {
+			result.Message = "未找到集群节点信息，请先通过 Control 面板部署此服务器"
+			resp.Results = append(resp.Results, result)
+			resp.FailCount++
+			continue
+		}
+		result.NodeRole = node.NodeRole
+
+		// 获取 SSH 客户端
+		sshWrapper, err := GetSSHClient(serverId)
+		if err != nil {
+			result.Message = fmt.Sprintf("SSH 连接失败: %v", err)
+			resp.Results = append(resp.Results, result)
+			resp.FailCount++
+			continue
+		}
+
+		// 构建 DeployConfig
+		config := model.DefaultDeployConfig
+		config.ExternalIP = server.Host
+		config.NodeRole = node.NodeRole
+		config.DBHost = node.DBHost
+		config.RedisHost = node.DBHost
+		config.MinioHost = node.MinioHost
+		config.MinioPublicHost = lookupMinioPublicIP(node.MerchantId)
+		config.WKNodeId = node.WKNodeId
+		config.ControlAPIUsername = "merchant_api"
+		config.ControlAPIPassword = "MerchantAPI@2026"
+
+		// 检测内网 IP（优先实时检测，回退到数据库记录）
+		if privateIP := DetectPrivateIP(sshWrapper.SSHClient); privateIP != "" {
+			config.PrivateIP = privateIP
+		} else if node.PrivateIP != "" {
+			config.PrivateIP = node.PrivateIP
+		} else {
+			config.PrivateIP = server.Host
+		}
+
+		// 查找种子节点（同商户的其他 app 节点中 wk_node_id 最小的）
+		if node.NodeRole == "app" && node.WKNodeId > 0 {
+			var seedNode entity.ClusterNodes
+			hasSeed, _ := dbs.DBAdmin.Where("merchant_id = ? AND node_role = 'app' AND wk_node_id < ? AND server_id != ?",
+				node.MerchantId, node.WKNodeId, serverId).OrderBy("wk_node_id ASC").Limit(1).Get(&seedNode)
+			if hasSeed && seedNode.PrivateIP != "" {
+				config.WKSeedNode = fmt.Sprintf("%d@%s:11110", seedNode.WKNodeId, seedNode.PrivateIP)
+			}
+		}
+
+		// 生成配置
+		composeContent := GenerateComposeByRole(config)
+		envContent := GenerateEnvByRole(config)
+
+		// SSH 推送：备份 → 写入 → docker compose up -d
+		syncScript := fmt.Sprintf(`cd /opt/tsdd
+# 备份原配置
+ts=$(date +%%Y%%m%%d_%%H%%M%%S)
+[ -f docker-compose.yml ] && cp docker-compose.yml docker-compose.yml.${ts}.bak
+[ -f .env ] && cp .env .env.${ts}.bak
+
+# 写入新配置
+cat > docker-compose.yml << 'COMPOSE_EOF'
+%s
+COMPOSE_EOF
+
+cat > .env << 'ENV_EOF'
+%s
+ENV_EOF
+
+# 应用变更（Docker 自动只重建有变化的容器）
+docker compose up -d 2>&1 || docker-compose up -d 2>&1
+sleep 3
+echo "=== 容器状态 ==="
+docker ps --format "{{.Names}}\t{{.Status}}" | grep tsdd || echo "无 tsdd 容器"
+`, composeContent, envContent)
+
+		output, err := sshWrapper.ExecuteCommandWithTimeout(syncScript, 2*time.Minute)
+		if err != nil {
+			result.Message = fmt.Sprintf("推送配置失败: %v", err)
+			resp.Results = append(resp.Results, result)
+			resp.FailCount++
+		} else {
+			result.Success = true
+			// 提取容器状态摘要（只统计 "=== 容器状态 ===" 之后的 docker ps 输出）
+			lines := strings.Split(strings.TrimSpace(output), "\n")
+			containerCount := 0
+			inStatus := false
+			for _, l := range lines {
+				if strings.Contains(l, "=== 容器状态 ===") {
+					inStatus = true
+					continue
+				}
+				if inStatus && strings.Contains(l, "tsdd-") {
+					containerCount++
+				}
+			}
+			result.Message = fmt.Sprintf("配置已同步，%d 个容器运行中", containerCount)
+			resp.Results = append(resp.Results, result)
+			resp.SuccessCount++
+		}
+
+		// 记录操作历史
+		history := entity.DeployHistory{
+			ServerId:    serverId,
+			Action:      "sync_config",
+			ServiceName: "docker-compose",
+			Operator:    operator,
+			Status:      1,
+			Output:      result.Message,
+			CreatedAt:   time.Now(),
+		}
+		if !result.Success {
+			history.Status = 2
+			history.ErrorMsg = result.Message
+		}
+		dbs.DBAdmin.Insert(&history)
+	}
+
+	return resp, nil
 }

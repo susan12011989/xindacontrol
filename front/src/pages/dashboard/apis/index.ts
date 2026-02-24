@@ -89,6 +89,24 @@ export function saveAdminmSmsConfigApi(data: Types.AdminmSmsSaveReq) {
   })
 }
 
+/** 获取商户测试验证码 */
+export function getAdminmTestSmsCodeApi(merchant_no: string) {
+  return request<Types.TestSmsCodeResponseData>({
+    url: "merchant/adminm_config/test_sms_code",
+    method: "get",
+    params: { merchant_no }
+  })
+}
+
+/** 保存测试验证码（单个/批量/全部） */
+export function saveAdminmTestSmsCodeApi(data: Types.TestSmsCodeSaveReq) {
+  return request<Types.AdminmSaveResponseData>({
+    url: "merchant/adminm_config/test_sms_code",
+    method: "post",
+    data
+  })
+}
+
 /** 保存敏感词（从txt文本解析，单个/批量/全部） */
 export function saveAdminmSensitiveContentsApi(data: Types.AdminmSensitiveSaveReq) {
   return request<Types.AdminmSaveResponseData>({
@@ -112,6 +130,16 @@ export function getTunnelStatsApi() {
   return request<Types.TunnelStatsResponseData>({
     url: "merchant/tunnel-stats",
     method: "get"
+  })
+}
+
+/** 推送 Logo 到商户 tsdd-web（单个/批量/全部） */
+export function pushWebLogoApi(data: Types.PushLogoReq) {
+  return request<Types.AdminmSaveResponseData>({
+    url: "merchant/adminm_config/push_logo",
+    method: "post",
+    data,
+    timeout: 120000 // 2分钟超时（包含图片生成+SSH上传）
   })
 }
 

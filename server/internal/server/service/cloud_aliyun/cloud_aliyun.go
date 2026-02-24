@@ -161,6 +161,27 @@ var defPermissions = []*ecs20140526.AuthorizeSecurityGroupRequestPermissions{
 		PortRange:    tea.String("32798/32804"),
 		SourceCidrIp: tea.String("0.0.0.0/0"),
 	},
+	{
+		Policy:       tea.String("Accept"),
+		IpProtocol:   tea.String("TCP"),
+		PortRange:    tea.String("10000/10002"),
+		SourceCidrIp: tea.String("0.0.0.0/0"),
+		Description:  tea.String("GOST App端口(TCP/WS/HTTP)"),
+	},
+	{
+		Policy:       tea.String("Accept"),
+		IpProtocol:   tea.String("TCP"),
+		PortRange:    tea.String("10010/10012"),
+		SourceCidrIp: tea.String("0.0.0.0/0"),
+		Description:  tea.String("GOST中继端口(relay+tls)"),
+	},
+	{
+		Policy:       tea.String("Accept"),
+		IpProtocol:   tea.String("TCP"),
+		PortRange:    tea.String("9394/9394"),
+		SourceCidrIp: tea.String("0.0.0.0/0"),
+		Description:  tea.String("GOST API端口"),
+	},
 }
 
 // CreateSecurityGroup 创建安全组

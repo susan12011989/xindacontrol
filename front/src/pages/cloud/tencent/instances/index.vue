@@ -4,9 +4,12 @@ import { merchantQueryApi } from "@/pages/dashboard/apis"
 import { getInstanceList, operateInstance, modifyInstanceAttribute, resetInstancePassword } from "./apis"
 import { getCloudAccountOptions } from "@@/apis/cloud_account"
 import { getTencentRegions } from "@@/constants/tencent-regions"
-import { ArrowDown, Delete, Edit, RefreshRight, VideoPause, VideoPlay } from "@element-plus/icons-vue"
+import { ArrowDown, Delete, Edit, Plus, RefreshRight, VideoPause, VideoPlay } from "@element-plus/icons-vue"
+import { useRouter } from "vue-router"
 
 defineOptions({ name: "TencentInstances" })
+
+const router = useRouter()
 
 const loading = ref(false)
 const rows = ref<Types.Instance[]>([])
@@ -332,6 +335,9 @@ function formatDiskSize(disk: Types.SystemDisk | undefined): string {
         <div class="card-header">
           <span>实例列表</span>
           <div class="operations">
+            <el-button size="small" type="success" @click="router.push('/cloud/tencent/instances/create')">
+              <el-icon><Plus /></el-icon> 创建实例
+            </el-button>
             <el-button size="small" type="primary" @click="onQuery">刷新</el-button>
             <el-button size="small" type="primary" :disabled="selection.length === 0" @click="onBatchOperate('start')">批量启动</el-button>
             <el-button size="small" type="warning" :disabled="selection.length === 0" @click="onBatchOperate('stop')">批量停止</el-button>

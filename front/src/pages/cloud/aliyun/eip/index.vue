@@ -29,6 +29,7 @@ const router = useRouter()
 const STORAGE_ACCOUNT_TYPE_KEY = "cloud_account_type"
 const STORAGE_CLOUD_ACCOUNT_KEY = "cloud_selected_cloud_account"
 const STORAGE_MERCHANT_KEY = "cloud_selected_merchant"
+const STORAGE_MERCHANT_CLOUD_ACCOUNT_KEY = "cloud_selected_merchant_cloud_account"
 const STORAGE_REGION_KEY = "cloud_selected_region"
 
 // 数据状态
@@ -37,6 +38,8 @@ const accountType = ref<string>("merchant") // merchant: 商户类型, system: �
 const cloudAccountList = ref<CloudAccountOption[]>([])
 const selectedCloudAccount = ref<number>()
 const merchantList = ref<Merchant[]>([])
+const merchantCloudAccountList = ref<CloudAccountOption[]>([]) // 商户模式下的云账号列表
+const selectedMerchantCloudAccount = ref<number>() // 商户模式下选中的云账号
 const regionList = ref<Region[]>([])
 const eipList = ref<Eip[]>([])
 const selectedMerchant = ref<number>()
@@ -50,11 +53,13 @@ function loadSelectionFromStorage() {
     const savedAccountType = localStorage.getItem(STORAGE_ACCOUNT_TYPE_KEY)
     const savedCloudAccountId = localStorage.getItem(STORAGE_CLOUD_ACCOUNT_KEY)
     const savedMerchantId = localStorage.getItem(STORAGE_MERCHANT_KEY)
+    const savedMerchantCloudAccountId = localStorage.getItem(STORAGE_MERCHANT_CLOUD_ACCOUNT_KEY)
     const savedRegionIds = localStorage.getItem(STORAGE_REGION_KEY)
 
     if (savedAccountType) accountType.value = savedAccountType
     if (savedCloudAccountId) selectedCloudAccount.value = Number(savedCloudAccountId)
     if (savedMerchantId) selectedMerchant.value = Number(savedMerchantId)
+    if (savedMerchantCloudAccountId) selectedMerchantCloudAccount.value = Number(savedMerchantCloudAccountId)
     if (savedRegionIds) selectedRegions.value = JSON.parse(savedRegionIds)
   } catch (error) {
     console.error("读取localStorage数据失败:", error)
@@ -81,6 +86,14 @@ watch(selectedMerchant, (newValue) => {
     localStorage.removeItem(STORAGE_MERCHANT_KEY)
   }
 }, { deep: true })
+
+watch(selectedMerchantCloudAccount, (newValue) => {
+  if (newValue) {
+    localStorage.setItem(STORAGE_MERCHANT_CLOUD_ACCOUNT_KEY, newValue.toString())
+  } else {
+    localStorage.removeItem(STORAGE_MERCHANT_CLOUD_ACCOUNT_KEY)
+  }
+})
 
 watch(selectedRegions, (newValue) => {
   if (newValue && newValue.length > 0) {
@@ -122,6 +135,8 @@ function handleAccountTypeChange() {
 
   if (accountType.value === "system") {
     selectedMerchant.value = undefined
+    selectedMerchantCloudAccount.value = undefined
+    merchantCloudAccountList.value = []
     fetchCloudAccountList()
   } else {
     selectedCloudAccount.value = undefined
@@ -163,7 +178,12 @@ async function fetchEipList() {
   try {
     const params: any = { region_id: selectedRegions.value }
     if (accountType.value === "merchant") {
-      params.merchant_id = selectedMerchant.value
+      // 商户模式：优先使用选中的云账号，否则用 merchant_id 查所有
+      if (selectedMerchantCloudAccount.value) {
+        params.cloud_account_id = selectedMerchantCloudAccount.value
+      } else {
+        params.merchant_id = selectedMerchant.value
+      }
     } else {
       params.cloud_account_id = selectedCloudAccount.value
     }
@@ -195,15 +215,36 @@ async function fetchEipList() {
   }
 }
 
+// 获取商户下的云账号列表
+async function fetchMerchantCloudAccountList(merchantId: number) {
+  try {
+    const res = await getCloudAccountOptions({ cloud_type: "aliyun", merchant_id: merchantId })
+    merchantCloudAccountList.value = res.data || []
+  } catch (error) {
+    console.error("获取商户云账号列表失败", error)
+    merchantCloudAccountList.value = []
+  }
+}
+
+// 处理商户下云账号切换
+function handleMerchantCloudAccountChange() {
+  selectedRegions.value = []
+  eipList.value = []
+  selectedEips.value = []
+}
+
 // 商户变化处理
 function handleMerchantChange(value: number | undefined) {
   console.log("商户变更为:", value)
   selectedRegions.value = []
   eipList.value = []
   selectedEips.value = []
+  selectedMerchantCloudAccount.value = undefined
+  merchantCloudAccountList.value = []
 
-  // 如果选中了商户，尝试获取区域列表
+  // 如果选中了商户，获取云账号列表和区域列表
   if (value) {
+    fetchMerchantCloudAccountList(value)
     // 延迟执行，确保UI更新
     setTimeout(() => {
       fetchRegionList().then(() => {
@@ -348,6 +389,17 @@ function confirmUnassociate(eip: Eip) {
     })
 }
 
+// 获取当前账号参数（商户模式优先用选中的云账号）
+function getAccountParams(): Record<string, number | undefined> {
+  if (accountType.value === "merchant") {
+    if (selectedMerchantCloudAccount.value) {
+      return { cloud_account_id: selectedMerchantCloudAccount.value }
+    }
+    return { merchant_id: selectedMerchant.value }
+  }
+  return { cloud_account_id: selectedCloudAccount.value }
+}
+
 // 操作弹性IP（修改、绑定、解绑、删除）
 async function handleOperate(eip: Eip, operation: string) {
   const hasAccount = accountType.value === "merchant" ? selectedMerchant.value : selectedCloudAccount.value
@@ -361,13 +413,8 @@ async function handleOperate(eip: Eip, operation: string) {
       instance_type: eip.InstanceType || "",
       instance_id: eip.InstanceId || "",
       name: eip.Name || "",
-      description: eip.Description || ""
-    }
-
-    if (accountType.value === "merchant") {
-      params.merchant_id = selectedMerchant.value
-    } else {
-      params.cloud_account_id = selectedCloudAccount.value
+      description: eip.Description || "",
+      ...getAccountParams()
     }
 
     await operateEip(params)
@@ -410,7 +457,11 @@ function openCreateDialog() {
 
   const query: any = {}
   if (accountType.value === "merchant") {
-    query.merchant_id = selectedMerchant.value?.toString()
+    if (selectedMerchantCloudAccount.value) {
+      query.cloud_account_id = selectedMerchantCloudAccount.value.toString()
+    } else {
+      query.merchant_id = selectedMerchant.value?.toString()
+    }
   } else {
     query.cloud_account_id = selectedCloudAccount.value?.toString()
   }
@@ -445,13 +496,8 @@ async function viewEcsInstanceDetail(eip: Eip) {
 
   try {
     const params: any = {
-      region_id: selectedRegions.value
-    }
-
-    if (accountType.value === "merchant") {
-      params.merchant_id = selectedMerchant.value
-    } else {
-      params.cloud_account_id = selectedCloudAccount.value
+      region_id: selectedRegions.value,
+      ...getAccountParams()
     }
 
     const res = await getInstanceList(params)
@@ -542,13 +588,8 @@ async function submitModifyForm(formEl: any) {
           instance_type: eip.InstanceType || "",
           instance_id: eip.InstanceId || "",
           name: modifyEipForm.name,
-          description: modifyEipForm.description
-        }
-
-        if (accountType.value === "merchant") {
-          params.merchant_id = selectedMerchant.value
-        } else {
-          params.cloud_account_id = selectedCloudAccount.value
+          description: modifyEipForm.description,
+          ...getAccountParams()
         }
 
         await operateEip(params)
@@ -613,13 +654,8 @@ async function fetchInstancesForBind(regionId: string) {
 
   try {
     const params: any = {
-      region_id: [regionId]
-    }
-
-    if (accountType.value === "merchant") {
-      params.merchant_id = selectedMerchant.value
-    } else {
-      params.cloud_account_id = selectedCloudAccount.value
+      region_id: [regionId],
+      ...getAccountParams()
     }
 
     const res = await getInstanceList(params)
@@ -647,13 +683,8 @@ async function fetchNetworksForBind(regionId: string) {
 
   try {
     const params: any = {
-      region_id: [regionId]
-    }
-
-    if (accountType.value === "merchant") {
-      params.merchant_id = selectedMerchant.value
-    } else {
-      params.cloud_account_id = selectedCloudAccount.value
+      region_id: [regionId],
+      ...getAccountParams()
     }
 
     const res = await getNetworkInterfaceList(params)
@@ -711,13 +742,8 @@ async function submitBindForm() {
       instance_type: bindInstanceType.value,
       instance_id: bindInstanceId.value,
       name: currentBindEip.value.Name || "",
-      description: currentBindEip.value.Description || ""
-    }
-
-    if (accountType.value === "merchant") {
-      params.merchant_id = selectedMerchant.value
-    } else {
-      params.cloud_account_id = selectedCloudAccount.value
+      description: currentBindEip.value.Description || "",
+      ...getAccountParams()
     }
 
     await operateEip(params)
@@ -755,13 +781,8 @@ async function fetchBandwidthListForJoin() {
 
   try {
     const params: any = {
-      region_id: [currentJoinEip.value?.RegionId || ""]
-    }
-
-    if (accountType.value === "merchant") {
-      params.merchant_id = selectedMerchant.value
-    } else {
-      params.cloud_account_id = selectedCloudAccount.value
+      region_id: [currentJoinEip.value?.RegionId || ""],
+      ...getAccountParams()
     }
 
     const res = await getBandwidthList(params)
@@ -821,13 +842,8 @@ async function submitJoinBandwidthForm() {
       region_id: selectedRegions.value[0],
       bandwidth_package_id: selectedBandwidthId.value,
       operation: "addEip",
-      ip_instance_ids: [currentJoinEip.value.AllocationId]
-    }
-
-    if (accountType.value === "merchant") {
-      params.merchant_id = selectedMerchant.value
-    } else {
-      params.cloud_account_id = selectedCloudAccount.value
+      ip_instance_ids: [currentJoinEip.value.AllocationId],
+      ...getAccountParams()
     }
 
     await operateBandwidth(params)
@@ -881,13 +897,8 @@ async function handleLeaveBandwidth(eip: Eip) {
       region_id: selectedRegions.value[0],
       bandwidth_package_id: eip.BandwidthPackageId,
       operation: "removeEip",
-      ip_instance_id: eip.AllocationId
-    }
-
-    if (accountType.value === "merchant") {
-      params.merchant_id = selectedMerchant.value
-    } else {
-      params.cloud_account_id = selectedCloudAccount.value
+      ip_instance_id: eip.AllocationId,
+      ...getAccountParams()
     }
 
     await operateBandwidth(params)
@@ -979,13 +990,8 @@ function handleBatchBind() {
   }))
 
   const params: any = {
-    eip_list
-  }
-
-  if (accountType.value === "merchant") {
-    params.merchant_id = selectedMerchant.value
-  } else {
-    params.cloud_account_id = selectedCloudAccount.value
+    eip_list,
+    ...getAccountParams()
   }
 
   batchAssociateEip(
@@ -1065,13 +1071,8 @@ function handleReplaceEip(eip: Eip) {
     bandwidth_package_id: eip.BandwidthPackageId || "",
     bandwidth: eip.Bandwidth || "",
     internet_charge_type: eip.InternetChargeType || "",
-    name: eip.Name || ""
-  }
-
-  if (accountType.value === "merchant") {
-    params.merchant_id = selectedMerchant.value
-  } else {
-    params.cloud_account_id = selectedCloudAccount.value
+    name: eip.Name || "",
+    ...getAccountParams()
   }
 
   replaceEip(
@@ -1159,13 +1160,8 @@ function handleBatchReplace() {
   }))
 
   const params: any = {
-    eip_list
-  }
-
-  if (accountType.value === "merchant") {
-    params.merchant_id = selectedMerchant.value
-  } else {
-    params.cloud_account_id = selectedCloudAccount.value
+    eip_list,
+    ...getAccountParams()
   }
 
   batchReplaceEip(
@@ -1204,6 +1200,7 @@ onMounted(() => {
   } else {
     fetchMerchantList().then(() => {
       if (selectedMerchant.value) {
+        fetchMerchantCloudAccountList(selectedMerchant.value)
         fetchRegionList()
       }
     })
@@ -1274,6 +1271,27 @@ onMounted(() => {
                 <small v-else class="status inactive">禁用</small>
               </div>
             </el-option>
+          </el-select>
+        </div>
+        <div v-if="accountType === 'merchant' && selectedMerchant" class="filter-item">
+          <span class="label">云账号：</span>
+          <el-select
+            v-model="selectedMerchantCloudAccount"
+            placeholder="全部云账号"
+            clearable
+            filterable
+            style="width: 200px"
+            @change="handleMerchantCloudAccountChange"
+          >
+            <template #prefix>
+              <el-icon><Key /></el-icon>
+            </template>
+            <el-option
+              v-for="item in merchantCloudAccountList"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
           </el-select>
         </div>
         <div class="filter-item">

@@ -10,6 +10,8 @@ func GenerateComposeByRole(config model.DeployConfig) string {
 	switch config.NodeRole {
 	case "db":
 		return generateDBCompose(config)
+	case "minio":
+		return generateMinioCompose(config)
 	case "app":
 		return generateAppCompose(config)
 	default: // "allinone" 或空
@@ -22,6 +24,8 @@ func GenerateEnvByRole(config model.DeployConfig) string {
 	switch config.NodeRole {
 	case "db":
 		return generateDBEnv(config)
+	case "minio":
+		return generateMinioEnv(config)
 	case "app":
 		return generateAppEnv(config)
 	default:
@@ -30,7 +34,7 @@ func GenerateEnvByRole(config model.DeployConfig) string {
 }
 
 // ==================== DB 节点 ====================
-// 只运行 MySQL + Redis + MinIO，监听内网供 App 节点访问
+// 只运行 MySQL + Redis，监听内网供 App 节点访问
 
 func generateDBCompose(config model.DeployConfig) string {
 	return `version: '3.8'
@@ -73,7 +77,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+`
+}
 
+func generateDBEnv(config model.DeployConfig) string {
+	return fmt.Sprintf(`MYSQL_ROOT_PASSWORD=%s
+`, config.MySQLPassword)
+}
+
+// ==================== MinIO 节点 ====================
+// 只运行 MinIO 对象存储，监听内网供 App 节点访问
+
+func generateMinioCompose(config model.DeployConfig) string {
+	return `version: '3.8'
+
+services:
   minio:
     image: minio/minio:latest
     container_name: tsdd-minio
@@ -95,21 +113,21 @@ services:
 `
 }
 
-func generateDBEnv(config model.DeployConfig) string {
-	return fmt.Sprintf(`MYSQL_ROOT_PASSWORD=%s
-MINIO_ROOT_USER=%s
+func generateMinioEnv(config model.DeployConfig) string {
+	return fmt.Sprintf(`MINIO_ROOT_USER=%s
 MINIO_ROOT_PASSWORD=%s
-`, config.MySQLPassword, config.MinioUser, config.MinioPassword)
+`, config.MinioUser, config.MinioPassword)
 }
 
 // ==================== App 节点 ====================
 // 运行 WuKongIM(集群模式) + tsdd-server + web + manager
-// 连接远程 DB 节点的 MySQL/Redis/MinIO
+// 连接远程 DB 节点的 MySQL/Redis 和 MinIO 节点
 
 func generateAppCompose(config model.DeployConfig) string {
 	dbHost := config.DBHost
 	redisHost := config.RedisHost
 	minioHost := config.MinioHost
+	minioPublicHost := config.MinioPublicHost
 	if dbHost == "" {
 		dbHost = "127.0.0.1"
 	}
@@ -118,6 +136,12 @@ func generateAppCompose(config model.DeployConfig) string {
 	}
 	if minioHost == "" {
 		minioHost = dbHost
+	}
+	// MinIO 下载地址（presigned URL 签名用）
+	// 设置了 MinioPublicHost 时用完整 URL（如 https://gost_relay:10003）
+	// 未设置时默认 http://ExternalIP:9000（直连模式）
+	if minioPublicHost == "" {
+		minioPublicHost = fmt.Sprintf("http://%s:9000", config.ExternalIP)
 	}
 
 	// WuKongIM 集群环境变量
@@ -189,6 +213,7 @@ services:
       TS_MINIO_ACCESSKEYID: ${MINIO_ROOT_USER}
       TS_MINIO_SECRETACCESSKEY: ${MINIO_ROOT_PASSWORD}
       TS_MINIO_UPLOADURL: "http://%s:9000"
+      TS_MINIO_DOWNLOADURL: "%s"
 %s
     volumes:
       - /opt/tsdd/assets:/home/tsdd/tsdd/assets:ro
@@ -218,7 +243,9 @@ services:
     container_name: tsdd-manager
     restart: always
     environment:
-      API_URL: "http://127.0.0.1:%d/v1/"
+      API_URL: "http://${PRIVATE_IP}:%d/v1/"
+    volumes:
+      - /opt/tsdd/manager:/usr/share/nginx/html:ro
     ports:
       - "%d:80"
     depends_on:
@@ -230,9 +257,10 @@ services:
 		config.APIPort, // TS_EXTERNAL_BASEURL
 		dbHost,         // MySQL host
 		redisHost,      // Redis host
-		minioHost,      // MinIO URL
-		minioHost,      // MinIO upload URL
-		controlEnv,     // Control API
+		minioHost,       // MinIO URL
+		minioHost,       // MinIO upload URL
+		minioPublicHost, // MinIO download URL (presigned, 完整URL含scheme和端口)
+		controlEnv,      // Control API
 		config.APIPort, // web API_URL
 		config.APIPort, // manager API_URL
 		config.ManagerPort,
@@ -240,12 +268,16 @@ services:
 }
 
 func generateAppEnv(config model.DeployConfig) string {
+	privateIP := config.PrivateIP
+	if privateIP == "" {
+		privateIP = config.ExternalIP
+	}
 	return fmt.Sprintf(`EXTERNAL_IP=%s
 PRIVATE_IP=%s
 MYSQL_ROOT_PASSWORD=%s
 MINIO_ROOT_USER=%s
 MINIO_ROOT_PASSWORD=%s
-`, config.ExternalIP, config.DBHost, config.MySQLPassword, config.MinioUser, config.MinioPassword)
+`, config.ExternalIP, privateIP, config.MySQLPassword, config.MinioUser, config.MinioPassword)
 }
 
 // ==================== All-in-one 节点 ====================
@@ -269,6 +301,14 @@ func generateAllinoneCompose(config model.DeployConfig) string {
 	if config.ControlAPIUsername != "" {
 		controlEnv = fmt.Sprintf(`      TS_CONTROL_APIUSERNAME: "%s"
       TS_CONTROL_APIPASSWORD: "%s"`, config.ControlAPIUsername, config.ControlAPIPassword)
+	}
+
+	// MinIO 下载地址（presigned URL 签名用）
+	// 设置了 MinioPublicHost 时用完整 URL（如 https://gost_relay:10003）
+	// 未设置时默认 http://EXTERNAL_IP:9000（直连模式）
+	minioDownloadURL := "http://${EXTERNAL_IP}:9000"
+	if config.MinioPublicHost != "" {
+		minioDownloadURL = config.MinioPublicHost
 	}
 
 	return fmt.Sprintf(`version: '3.8'
@@ -374,6 +414,7 @@ services:
       TS_MINIO_ACCESSKEYID: ${MINIO_ROOT_USER}
       TS_MINIO_SECRETACCESSKEY: ${MINIO_ROOT_PASSWORD}
       TS_MINIO_UPLOADURL: "http://minio:9000"
+      TS_MINIO_DOWNLOADURL: "%s"
 %s
     ports:
       - "%d:%d"
@@ -397,6 +438,8 @@ services:
     restart: always
     environment:
       API_URL: "http://tsdd-server:%d/v1/"
+    volumes:
+      - /opt/tsdd/manager:/usr/share/nginx/html:ro
     ports:
       - "%d:80"
     depends_on:
@@ -423,6 +466,7 @@ services:
 		wkClusterEnv,      // WuKongIM cluster env
 		config.APIPort,    // TS_ADDR
 		config.APIPort,    // TS_EXTERNAL_BASEURL
+		minioDownloadURL,  // MinIO download URL (presigned, 完整URL含scheme和端口)
 		controlEnv,        // Control API
 		config.APIPort,    // host port mapping
 		config.APIPort,    // container port mapping
@@ -434,9 +478,9 @@ services:
 }
 
 func generateAllinoneEnv(config model.DeployConfig) string {
-	privateIP := config.ExternalIP
-	if config.DBHost != "" {
-		privateIP = config.DBHost
+	privateIP := config.PrivateIP
+	if privateIP == "" {
+		privateIP = config.ExternalIP
 	}
 	return fmt.Sprintf(`EXTERNAL_IP=%s
 PRIVATE_IP=%s

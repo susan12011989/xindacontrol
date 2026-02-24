@@ -980,11 +980,26 @@ func CreateEc2Instance(acc *entity.CloudAccounts, req model.AwsCreateEc2Instance
 	}
 
 	// 计算根设备名：优先使用镜像 RootDeviceName，回退为 /dev/xvda
+	// 同时检查 AMI 快照最小磁盘大小，自动调整 VolumeSizeGiB
 	var deviceName *string = strPtr("/dev/xvda")
 	if req.ImageId != "" {
 		if imgOut, imgErr := cli.DescribeImages(ctx, &ec2.DescribeImagesInput{ImageIds: []string{req.ImageId}}); imgErr == nil {
-			if len(imgOut.Images) > 0 && imgOut.Images[0].RootDeviceName != nil && *imgOut.Images[0].RootDeviceName != "" {
-				deviceName = imgOut.Images[0].RootDeviceName
+			if len(imgOut.Images) > 0 {
+				img := imgOut.Images[0]
+				if img.RootDeviceName != nil && *img.RootDeviceName != "" {
+					deviceName = img.RootDeviceName
+				}
+				// 检查 AMI 快照最小磁盘，防止 InvalidBlockDeviceMapping 错误
+				for _, bdm := range img.BlockDeviceMappings {
+					if bdm.Ebs != nil && bdm.Ebs.VolumeSize != nil {
+						minSize := *bdm.Ebs.VolumeSize
+						if req.VolumeSizeGiB > 0 && req.VolumeSizeGiB < minSize {
+							logx.Infof("[CreateEc2Instance] 磁盘 %dGB < AMI快照最小 %dGB，自动调整为 %dGB", req.VolumeSizeGiB, minSize, minSize)
+							req.VolumeSizeGiB = minSize
+						}
+						break
+					}
+				}
 			}
 		}
 	}
@@ -1024,6 +1039,10 @@ func CreateEc2Instance(acc *entity.CloudAccounts, req model.AwsCreateEc2Instance
 	}
 	if req.VolumeSizeGiB > 0 {
 		runIn.BlockDeviceMappings = []ec2types.BlockDeviceMapping{*blockDevice}
+	}
+	if len(req.SecurityGroupIds) > 0 {
+		runIn.SecurityGroupIds = req.SecurityGroupIds
+		logx.Infof("[CreateEc2Instance] 指定安全组: %v", req.SecurityGroupIds)
 	}
 	// 始终由后端生成用于 Debian 的 cloud-init，开启 root 密码登录
 	rootPassword := consts.DefaultPassword //generateStrongPassword(16)
@@ -1684,6 +1703,35 @@ func GetInstancePublicIP(acc *entity.CloudAccounts, region, instanceId string) (
 		}
 	}
 	return ip, nil
+}
+
+// GetInstanceSecurityGroups 获取实例的安全组 ID 列表
+func GetInstanceSecurityGroups(acc *entity.CloudAccounts, region, instanceId string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cli, err := awscloud.NewEc2Client(ctx, acc, region)
+	if err != nil {
+		return nil, err
+	}
+
+	out, err := cli.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{instanceId}})
+	if err != nil {
+		return nil, err
+	}
+
+	if len(out.Reservations) == 0 || len(out.Reservations[0].Instances) == 0 {
+		return nil, errors.New("实例不存在")
+	}
+
+	ins := out.Reservations[0].Instances[0]
+	groupIds := make([]string, 0, len(ins.SecurityGroups))
+	for _, sg := range ins.SecurityGroups {
+		if sg.GroupId != nil {
+			groupIds = append(groupIds, *sg.GroupId)
+		}
+	}
+	return groupIds, nil
 }
 
 // WaitForInstanceRunning 等待实例变为 running 状态

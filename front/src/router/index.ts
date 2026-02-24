@@ -103,6 +103,22 @@ export const constantRoutes: RouteRecordRaw[] = [
     ]
   },
   {
+    path: "/merchant/create-cluster",
+    component: Layouts,
+    meta: { hidden: true },
+    children: [
+      {
+        path: "",
+        component: () => import("@/pages/dashboard/cluster-wizard.vue"),
+        name: "MerchantCreateCluster",
+        meta: {
+          title: "集群商户向导",
+          keepAlive: false
+        }
+      }
+    ]
+  },
+  {
     path: "/utils",
     component: Layouts,
     redirect: "/utils/tools",
@@ -319,6 +335,7 @@ export const constantRoutes: RouteRecordRaw[] = [
         meta: {
           title: "TLS证书",
           elIcon: "Lock",
+          hidden: true,
           keepAlive: false
         }
       },
@@ -541,6 +558,38 @@ export const constantRoutes: RouteRecordRaw[] = [
               title: "实例列表",
               elIcon: "Cpu",
               keepAlive: true
+            }
+          },
+          {
+            path: "instances/create",
+            component: () => import("@/pages/cloud/tencent/instances/create.vue"),
+            name: "TencentInstancesCreate",
+            meta: {
+              title: "创建实例",
+              hidden: true,
+              keepAlive: false
+            }
+          },
+          {
+            path: "securitygroup",
+            component: () => import("@/pages/cloud/tencent/securitygroup/index.vue"),
+            name: "TencentSecurityGroup",
+            meta: {
+              title: "安全组",
+              elIcon: "Lock",
+              keepAlive: true,
+              roles: ["admin"]
+            }
+          },
+          {
+            path: "securitygroup/create",
+            component: () => import("@/pages/cloud/tencent/securitygroup/create.vue"),
+            name: "TencentSecurityGroupCreate",
+            meta: {
+              title: "创建安全组",
+              hidden: true,
+              keepAlive: false,
+              roles: ["admin"]
             }
           },
           {

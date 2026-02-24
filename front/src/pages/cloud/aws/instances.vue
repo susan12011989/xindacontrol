@@ -192,16 +192,44 @@ async function onOperate(row: any, operation: AwsOperateEc2Req["operation"]) {
 
 async function onBatchOperate(operation: AwsOperateEc2Req["operation"]) {
   if (selection.value.length === 0) return
+  // 按操作类型过滤可操作的实例
+  const validStates: Record<string, string[]> = {
+    start: ["stopped"],
+    stop: ["running"],
+    reboot: ["running"],
+    terminate: ["running", "stopped"]
+  }
+  const allowed = validStates[operation] || []
+  const eligible = selection.value.filter(row => {
+    const state = (row.State?.Name || "").toLowerCase()
+    return allowed.includes(state)
+  })
+  const skipped = selection.value.length - eligible.length
+  if (eligible.length === 0) {
+    ElMessage.warning(`所选实例均不在可${operation === "start" ? "启动" : operation === "stop" ? "停止" : operation === "reboot" ? "重启" : "销毁"}状态，已跳过`)
+    return
+  }
   loading.value = true
+  let success = 0
+  let failed = 0
   try {
-    for (const row of selection.value) {
+    for (const row of eligible) {
       const region = (row.Placement?.AvailabilityZone || "").slice(0, -1)
       const data: AwsOperateEc2Req = { region_id: region, instance_id: row.InstanceId, operation }
       if (accountType.value === "system") data.cloud_account_id = selectedCloudAccount.value!
       else data.merchant_id = selectedMerchant.value!
-      await operateEc2Instance(data)
+      try {
+        await operateEc2Instance(data)
+        success++
+      } catch {
+        failed++
+      }
     }
-    ElMessage.success("批量操作完成")
+    const parts: string[] = []
+    if (success > 0) parts.push(`${success} 台成功`)
+    if (failed > 0) parts.push(`${failed} 台失败`)
+    if (skipped > 0) parts.push(`${skipped} 台跳过(状态不符)`)
+    ElMessage({ type: failed > 0 ? "warning" : "success", message: `批量操作完成：${parts.join("，")}` })
   } finally {
     loading.value = false
   }

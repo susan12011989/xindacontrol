@@ -1,12 +1,13 @@
 <script lang="ts" setup>
 import type { FormInstance } from "element-plus"
-import type { MerchantQueryRequestData, SmsConfig, TunnelCheckItem, TunnelStats } from "./apis/type"
+import type { MerchantQueryRequestData, SmsConfig, TunnelCheckItem, TunnelStats, BatchFailure } from "./apis/type"
 import type { MerchantStorageResp } from "@@/apis/merchant_storage/type"
 import { getClientList } from "@/common/apis/clients"
 import { usePagination } from "@/common/composables/usePagination"
 import { queryAdminmActive } from "@@/apis/adminm_users"
 import { getMerchantStorageList, createMerchantStorage, updateMerchantStorage, deleteMerchantStorage, pushMerchantStorage } from "@@/apis/merchant_storage"
 import {
+  ArrowDown,
   CirclePlus,
   Connection,
   Monitor,
@@ -14,7 +15,7 @@ import {
   Search,
   Shop
 } from "@element-plus/icons-vue"
-import { changeMerchantGostPortApi, changeMerchantIPApi, clearMerchantDataApi, exportMerchantDatabaseApi, getAdminmSmsConfigApi, getTunnelStatsApi, merchantQueryApi, saveAdminmNicknameApi, saveAdminmSensitiveContentsApi, saveAdminmSmsConfigApi, tunnelCheckApi, updateMerchantApi } from "./apis/index"
+import { changeMerchantGostPortApi, changeMerchantIPApi, clearMerchantDataApi, exportMerchantDatabaseApi, getAdminmSmsConfigApi, getAdminmTestSmsCodeApi, getTunnelStatsApi, merchantQueryApi, pushWebLogoApi, saveAdminmNicknameApi, saveAdminmSensitiveContentsApi, saveAdminmSmsConfigApi, saveAdminmTestSmsCodeApi, tunnelCheckApi, updateMerchantApi } from "./apis/index"
 import { getTwoFAStatusApi } from "@/common/apis/twofa"
 import ImageUploader from "@/common/components/ImageUploader.vue"
 import AdminmUsersDialog from "./components/AdminmUsersDialog.vue"
@@ -370,6 +371,9 @@ const batchTarget = reactive<{ mode: "broadcast" | "merchant_nos", selectedNos: 
 const batchMerchantLoading = ref(false)
 const batchMerchantOptions = ref<{ label: string, value: string }[]>([])
 
+// 测试验证码
+const testSmsCode = ref("")
+
 // Client 选择用于预填配置
 const clientLoading = ref(false)
 const clientOptions = ref<{ label: string, value: number, raw: any }[]>([])
@@ -444,7 +448,10 @@ function resetSmsForm() {
 async function fetchSmsConfig(merchantNo: string) {
   configLoading.value = true
   try {
-    const smsRes = await getAdminmSmsConfigApi(merchantNo)
+    const [smsRes, codeRes] = await Promise.all([
+      getAdminmSmsConfigApi(merchantNo),
+      getAdminmTestSmsCodeApi(merchantNo).catch(() => null)
+    ])
     const data = smsRes.data
     if (data) {
       smsConfigForm.provider = data.provider || "aliyun"
@@ -463,6 +470,7 @@ async function fetchSmsConfig(merchantNo: string) {
     } else {
       resetSmsForm()
     }
+    testSmsCode.value = codeRes?.data?.test_sms_code || ""
   } catch {
     ElMessage.error("获取短信配置失败")
   } finally {
@@ -474,6 +482,7 @@ function openSmsConfig(row: any) {
   if (!row?.no) return
   configMerchantNo.value = row.no
   resetSmsForm()
+  testSmsCode.value = ""
   selectedSmsClientId.value = undefined
   configDialogVisible.value = true
   isBatchConfig.value = false
@@ -488,6 +497,7 @@ function openBatchSmsConfig() {
   batchTarget.mode = "broadcast"
   batchTarget.selectedNos = []
   resetSmsForm()
+  testSmsCode.value = ""
   selectedSmsClientId.value = undefined
   configDialogVisible.value = true
   fetchClients("")
@@ -558,30 +568,63 @@ watch(
 
 //
 
+// 显示批量操作结果
+function showBatchResult(label: string, res: any) {
+  const data = res.data
+  const total = data?.total ?? 0
+  const success = data?.success ?? data?.updated ?? 0
+  const failures: BatchFailure[] = data?.failures || []
+  if (failures.length === 0) {
+    ElMessage.success(`${label}：全部成功（${success}/${total}）`)
+  } else {
+    const failList = failures.map((f: BatchFailure) => `${f.name || f.merchant_no}: ${f.error}`).join("\n")
+    ElMessageBox.alert(
+      `成功 ${success}/${total}，失败 ${failures.length} 个：\n\n${failList}`,
+      `${label}结果`,
+      { confirmButtonText: "确定", type: success > 0 ? "warning" : "error", dangerouslyUseHTMLString: false }
+    )
+  }
+}
+
 // 保存短信配置：单个或批量/全部
 async function handleSaveSms() {
   try {
     if (isBatchConfig.value) {
-      const smsPayload: any = { config: { ...smsConfigForm } }
+      // 构建批量目标参数
+      const batchParams: any = {}
       if (batchTarget.mode === "broadcast") {
-        smsPayload.broadcast = true
+        batchParams.broadcast = true
       } else {
         const nos = batchTarget.selectedNos
         if (!nos || nos.length === 0) {
           ElMessage.error("请填写至少一个企业号")
           return
         }
-        smsPayload.merchant_nos = nos
+        batchParams.merchant_nos = nos
       }
-      await saveAdminmSmsConfigApi(smsPayload)
-      ElMessage.success("短信配置已推送更新")
+      // 并行推送短信配置和测试验证码
+      const [smsRes, codeRes] = await Promise.all([
+        saveAdminmSmsConfigApi({ ...batchParams, config: { ...smsConfigForm } }),
+        saveAdminmTestSmsCodeApi({ ...batchParams, test_sms_code: testSmsCode.value })
+      ])
+      showBatchResult("短信配置", smsRes)
+      // 测试验证码如果也有失败，额外提示
+      const codeFailures: BatchFailure[] = codeRes.data?.failures || []
+      if (codeFailures.length > 0) {
+        const codeTotal = codeRes.data?.total ?? 0
+        const codeSuccess = codeRes.data?.success ?? codeRes.data?.updated ?? 0
+        ElMessage.warning(`测试验证码：成功 ${codeSuccess}/${codeTotal}，失败 ${codeFailures.length} 个`)
+      }
       return
     }
     if (!configMerchantNo.value) {
       ElMessage.error("未指定商户")
       return
     }
-    await saveAdminmSmsConfigApi({ merchant_no: configMerchantNo.value, config: { ...smsConfigForm } })
+    await Promise.all([
+      saveAdminmSmsConfigApi({ merchant_no: configMerchantNo.value, config: { ...smsConfigForm } }),
+      saveAdminmTestSmsCodeApi({ merchant_no: configMerchantNo.value, test_sms_code: testSmsCode.value })
+    ])
     ElMessage.success("短信配置已保存")
   } catch {
     // 错误提示由拦截器处理
@@ -606,8 +649,12 @@ async function handleSaveNickname() {
       }
       payload.merchant_nos = nos
     }
-    await saveAdminmNicknameApi(payload)
-    ElMessage.success("系统昵称已下发更新")
+    const res = await saveAdminmNicknameApi(payload)
+    if (payload.broadcast || payload.merchant_nos) {
+      showBatchResult("系统昵称", res)
+    } else {
+      ElMessage.success("系统昵称已保存")
+    }
   } catch {
   }
 }
@@ -633,8 +680,8 @@ async function handleSaveSensitive() {
       }
       payload.merchant_nos = nos
     }
-    await saveAdminmSensitiveContentsApi(payload)
-    ElMessage.success("敏感词已下发更新")
+    const res = await saveAdminmSensitiveContentsApi(payload)
+    showBatchResult("敏感词", res)
   } catch {}
 }
 
@@ -749,6 +796,83 @@ async function handleLogoUpdate(row: any, url: string) {
     ElMessage.error("Logo 更新失败")
   } finally {
     uploadingLogoId.value = null
+  }
+}
+
+// ========== 推送 Logo 到 Web ==========
+const pushLogoLoading = ref(false)
+
+async function handlePushLogo(row: any) {
+  if (!row?.no) return
+  if (!row.logo_url) {
+    ElMessage.warning("该商户尚未上传Logo，请先上传")
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认推送Logo到商户「${row.name}」的网页版？\n将替换 tsdd-web 中的所有图标文件并自动生效。`,
+      "推送Logo到Web",
+      { confirmButtonText: "推送", cancelButtonText: "取消", type: "info" }
+    )
+  } catch {
+    return
+  }
+  pushLogoLoading.value = true
+  try {
+    await pushWebLogoApi({ merchant_no: row.no, logo_url: row.logo_url })
+    ElMessage.success("Logo 已推送到网页版")
+  } catch {
+    // 错误提示由拦截器处理
+  } finally {
+    pushLogoLoading.value = false
+  }
+}
+
+// 批量推送 Logo
+const batchPushLogoDialogVisible = ref(false)
+const batchPushLogoUrl = ref("")
+const batchPushLogoTarget = reactive<{ mode: "broadcast" | "merchant_nos", selectedNos: string[] }>({ mode: "broadcast", selectedNos: [] })
+const batchPushLogoLoading = ref(false)
+
+function openBatchPushLogoDialog() {
+  batchPushLogoUrl.value = ""
+  batchPushLogoTarget.mode = "broadcast"
+  batchPushLogoTarget.selectedNos = []
+  batchPushLogoDialogVisible.value = true
+}
+
+async function handleBatchPushLogo() {
+  if (!batchPushLogoUrl.value) {
+    ElMessage.warning("请先上传Logo图片")
+    return
+  }
+  batchPushLogoLoading.value = true
+  try {
+    const params: any = { logo_url: batchPushLogoUrl.value }
+    if (batchPushLogoTarget.mode === "broadcast") {
+      params.broadcast = true
+    } else {
+      const nos = batchPushLogoTarget.selectedNos.filter(Boolean)
+      if (nos.length === 0) {
+        ElMessage.warning("请选择目标商户")
+        return
+      }
+      params.merchant_nos = nos
+    }
+    const res = await pushWebLogoApi(params)
+    const failures: BatchFailure[] = res.data?.failures || []
+    const total = res.data?.total ?? 0
+    const success = res.data?.success ?? res.data?.pushed ?? 0
+    if (failures.length > 0) {
+      ElMessage.warning(`推送完成: ${success}/${total} 成功，${failures.length} 失败`)
+    } else {
+      ElMessage.success(`Logo 已推送到 ${success} 个商户`)
+    }
+    batchPushLogoDialogVisible.value = false
+  } catch {
+    // 错误提示由拦截器处理
+  } finally {
+    batchPushLogoLoading.value = false
   }
 }
 
@@ -983,9 +1107,17 @@ async function handlePush() {
     <el-card v-loading="loading" shadow="never">
       <div class="toolbar-wrapper">
         <div>
-          <el-button type="primary" :icon="CirclePlus" @click="$router.push({ name: 'MerchantCreate' })">
-            新增商户
-          </el-button>
+          <el-dropdown trigger="click" @command="(cmd: string) => $router.push(cmd)">
+            <el-button type="primary" :icon="CirclePlus">
+              新增商户 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="/merchant/create">单机部署</el-dropdown-item>
+                <el-dropdown-item command="/merchant/create-cluster">集群部署</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-button type="primary" plain style="margin-left: 8px;" @click="openBatchSmsConfig">
             批量修改短信配置
           </el-button>
@@ -994,6 +1126,9 @@ async function handlePush() {
           </el-button>
           <el-button type="primary" plain style="margin-left: 8px;" @click="openBatchSensitiveDialog">
             批量修改敏感词
+          </el-button>
+          <el-button type="primary" plain style="margin-left: 8px;" @click="openBatchPushLogoDialog">
+            批量推送Logo
           </el-button>
         </div>
         <div>
@@ -1103,6 +1238,7 @@ async function handlePush() {
                       <el-dropdown-item @click="showDetailDialog(row)">详情</el-dropdown-item>
                       <el-dropdown-item @click="openSmsConfig(row)">短信配置</el-dropdown-item>
                       <el-dropdown-item @click="openStorageDialog(row)">存储配置</el-dropdown-item>
+                      <el-dropdown-item :disabled="pushLogoLoading" @click="handlePushLogo(row)">推送Logo到Web</el-dropdown-item>
                       <el-dropdown-item @click="openNicknameForRow(row)">系统昵称</el-dropdown-item>
                       <el-dropdown-item divided @click="openTunnelDialog(row)">隧道连接检测</el-dropdown-item>
                       <el-dropdown-item @click="handleChangeGostPort(row)" :disabled="changeGostPortLoading">更换隧道端口</el-dropdown-item>
@@ -1293,6 +1429,22 @@ async function handlePush() {
             <el-input v-model="smsConfigForm.smsbao_template" type="textarea" :rows="2" placeholder="模板内容，用 {code} 作为验证码占位符" clearable />
           </el-form-item>
         </template>
+        <el-divider content-position="left">测试验证码</el-divider>
+        <el-form-item label="测试验证码">
+          <el-input v-model="testSmsCode" placeholder="留空则走真实短信发送" clearable style="width: 200px;" />
+          <el-text type="info" size="small" style="margin-left: 8px;">
+            设置后注册/登录将使用固定验证码，不发真实短信；清空则恢复真实短信
+          </el-text>
+        </el-form-item>
+        <el-alert
+          v-if="testSmsCode"
+          type="warning"
+          show-icon
+          :closable="false"
+          class="mb-2"
+          title="当前处于测试模式，短信不会真实发送"
+          description="用户注册/登录时将使用上方固定验证码，阿里云等短信通道不会收到请求。如需真实发送短信，请清空测试验证码。"
+        />
         <el-form-item>
           <el-button type="primary" @click="handleSaveSms">保存</el-button>
         </el-form-item>
@@ -1496,6 +1648,53 @@ async function handlePush() {
       <template #footer>
         <el-button @click="pushDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="pushLoading" @click="handlePush">确认推送</el-button>
+      </template>
+    </el-dialog>
+    <!-- 批量推送 Logo 弹窗 -->
+    <el-dialog v-model="batchPushLogoDialogVisible" title="批量推送Logo到Web" width="520px">
+      <el-form label-width="100px">
+        <el-form-item label="Logo图片">
+          <ImageUploader
+            v-model="batchPushLogoUrl"
+            :width="120"
+            :height="120"
+            asset-type="logo"
+            tip="推荐方形图片，1024x1024 以上"
+          />
+        </el-form-item>
+        <el-form-item label="推送目标">
+          <el-radio-group v-model="batchPushLogoTarget.mode">
+            <el-radio value="broadcast">全部商户</el-radio>
+            <el-radio value="merchant_nos">选择商户</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="batchPushLogoTarget.mode === 'merchant_nos'" label="选择商户">
+          <el-select
+            v-model="batchPushLogoTarget.selectedNos"
+            multiple
+            filterable
+            placeholder="选择目标商户"
+            style="width: 100%;"
+          >
+            <el-option
+              v-for="m in tableData"
+              :key="m.no"
+              :label="`${m.name} (${m.no})`"
+              :value="m.no"
+            />
+          </el-select>
+        </el-form-item>
+        <el-alert
+          type="warning"
+          show-icon
+          :closable="false"
+          class="mb-2"
+          title="推送后将替换商户网页版的所有图标文件（logo、favicon、PWA图标等），立即生效。"
+        />
+      </el-form>
+      <template #footer>
+        <el-button @click="batchPushLogoDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="batchPushLogoLoading" @click="handleBatchPushLogo">推送</el-button>
       </template>
     </el-dialog>
   </div>

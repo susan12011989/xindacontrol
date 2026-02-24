@@ -191,7 +191,9 @@ func SetBucketPublicAccess(req model.OssSetBucketPublicReq) error {
 		region = region[4:]
 	}
 	endpoint := "oss-" + region + ".aliyuncs.com"
-	client, err := oss.New(endpoint, cloudCred.AccessKey, cloudCred.AccessSecret)
+	// 使用 V4 签名：V1 的 signKeyList 不包含 publicAccessBlock，导致签名不匹配
+	client, err := oss.New(endpoint, cloudCred.AccessKey, cloudCred.AccessSecret,
+		oss.AuthVersion(oss.AuthV4), oss.Region(region))
 	if err != nil {
 		return err
 	}

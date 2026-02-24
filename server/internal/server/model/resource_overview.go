@@ -54,6 +54,7 @@ type GlobalOssConfigResp struct {
 	Region           string            `json:"region"`
 	Endpoint         string            `json:"endpoint"`
 	CustomDomain     string            `json:"custom_domain"`
+	DownloadUrl      string            `json:"download_url"`
 	IsDefault        int               `json:"is_default"`
 	Status           int               `json:"status"`
 	Tags             []ResourceTagResp `json:"tags"`
@@ -116,23 +117,18 @@ type CheckOssHealthReq struct {
 	OssConfigIds []int `json:"oss_config_ids" binding:"required"`
 }
 
-type OssHealthStepResult struct {
-	Step    string `json:"step"`    // sdk_connect / upload / download_sdk / download_url / download_cdn / cleanup
-	Ok      bool   `json:"ok"`
-	Message string `json:"message"`
-	Latency string `json:"latency"` // 耗时
-}
-
 type OssHealthCheckResult struct {
-	OssConfigId    int                   `json:"oss_config_id"`
-	OssConfigName  string                `json:"oss_config_name"`
-	MerchantName   string                `json:"merchant_name"`
-	CloudType      string                `json:"cloud_type"`
-	Bucket         string                `json:"bucket"`
-	Region         string                `json:"region"`
-	Healthy        bool                  `json:"healthy"` // 总体是否健康
-	Steps          []OssHealthStepResult `json:"steps"`
-	PublicUrl      string                `json:"public_url,omitempty"`
-	CustomDomainOk *bool                 `json:"custom_domain_ok,omitempty"`
-	Duration       string                `json:"duration"`
+	OssConfigId   int    `json:"oss_config_id"`
+	OssConfigName string `json:"oss_config_name"`
+	MerchantName  string `json:"merchant_name"`
+	CloudType     string `json:"cloud_type"`
+	Bucket        string `json:"bucket"`
+	DownloadUrl   string `json:"download_url"`
+	CdnUrl        string `json:"cdn_url,omitempty"`
+	Healthy       bool   `json:"healthy"`
+	CdnHealthy    *bool  `json:"cdn_healthy,omitempty"`
+	StatusCode    int    `json:"status_code"`
+	CdnStatusCode *int   `json:"cdn_status_code,omitempty"`
+	Message       string `json:"message"`
+	Latency       string `json:"latency"`
 }

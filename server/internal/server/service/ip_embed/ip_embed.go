@@ -35,14 +35,32 @@ func GetSystemIPs() (*model.GetSystemIPsResp, error) {
 		return nil, err
 	}
 
+	// 批量查询关联商户名称
+	merchantIds := make([]int, 0)
+	for _, s := range servers {
+		if s.MerchantId > 0 {
+			merchantIds = append(merchantIds, s.MerchantId)
+		}
+	}
+	merchantMap := make(map[int]string)
+	if len(merchantIds) > 0 {
+		var merchants []entity.Merchants
+		_ = dbs.DBAdmin.In("id", merchantIds).Cols("id", "name").Find(&merchants)
+		for _, m := range merchants {
+			merchantMap[m.Id] = m.Name
+		}
+	}
+
 	items := make([]model.SystemIPItem, 0, len(servers))
 	for _, s := range servers {
 		items = append(items, model.SystemIPItem{
-			ServerId:    s.Id,
-			ServerName:  s.Name,
-			IP:          s.Host,
-			AuxiliaryIP: s.AuxiliaryIP,
-			Status:      s.Status,
+			ServerId:     s.Id,
+			ServerName:   s.Name,
+			IP:           s.Host,
+			AuxiliaryIP:  s.AuxiliaryIP,
+			Status:       s.Status,
+			MerchantId:   s.MerchantId,
+			MerchantName: merchantMap[s.MerchantId],
 		})
 	}
 

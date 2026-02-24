@@ -9,6 +9,7 @@ import (
 	"server/internal/server/model"
 	"server/pkg/dbs"
 	"server/pkg/entity"
+	"server/pkg/gostapi"
 	"strings"
 	"time"
 
@@ -360,8 +361,8 @@ func RunAPITest(req model.RunAPITestReq) (model.RunAPITestResp, error) {
 		return resp, errors.New("商户不存在")
 	}
 
-	// 构建完整URL
-	baseURL := fmt.Sprintf("http://%s:%d", merchant.ServerIP, merchant.Port)
+	// 构建完整URL（统一使用 API 端口 10002）
+	baseURL := fmt.Sprintf("http://%s:%d", merchant.ServerIP, gostapi.MerchantAppPortHTTP)
 	fullURL := baseURL + req.Path
 
 	// 添加查询参数

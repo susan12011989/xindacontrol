@@ -23,20 +23,20 @@ import (
 
 // ========== 证书生成 ==========
 
-// GenerateTlsCerts 生成 CA 根证书 + 服务器证书，存入数据库
-func GenerateTlsCerts(validityDays int) (*model.GenerateTlsCertResp, error) {
+// GenerateTlsCerts 为指定商户生成 CA 根证书 + 服务器证书，存入数据库
+func GenerateTlsCerts(merchantId, validityDays int) (*model.GenerateTlsCertResp, error) {
 	if validityDays <= 0 {
 		validityDays = 3650 // 默认10年
 	}
 
-	// 检查是否已有证书
+	// 检查该商户是否已有证书
 	var existing entity.TlsCertificates
-	has, err := dbs.DBAdmin.Where("name = ? AND status = 1", "gost-ca").Get(&existing)
+	has, err := dbs.DBAdmin.Where("name = ? AND merchant_id = ? AND status = 1", "gost-ca", merchantId).Get(&existing)
 	if err != nil {
 		return nil, fmt.Errorf("查询证书失败: %v", err)
 	}
 	if has {
-		return nil, errors.New("已存在有效的 CA 证书，如需重新生成请先停用旧证书")
+		return nil, errors.New("该商户已存在有效的 CA 证书，如需重新生成请先停用旧证书")
 	}
 
 	notBefore := time.Now()
@@ -106,6 +106,7 @@ func GenerateTlsCerts(validityDays int) (*model.GenerateTlsCertResp, error) {
 	// 3. 存入数据库
 	now := time.Now()
 	caCert := &entity.TlsCertificates{
+		MerchantId:  merchantId,
 		Name:        "gost-ca",
 		CertType:    1,
 		CertPem:     string(caCertPEM),
@@ -117,6 +118,7 @@ func GenerateTlsCerts(validityDays int) (*model.GenerateTlsCertResp, error) {
 		UpdatedAt:   now,
 	}
 	serverCert := &entity.TlsCertificates{
+		MerchantId:  merchantId,
 		Name:        "gost-server",
 		CertType:    2,
 		CertPem:     string(serverCertPEM),
@@ -137,7 +139,8 @@ func GenerateTlsCerts(validityDays int) (*model.GenerateTlsCertResp, error) {
 		return nil, fmt.Errorf("保存服务器证书失败: %v", err)
 	}
 
-	logx.Infof("TLS 证书生成成功: CA(id=%d) Server(id=%d), 有效期至 %s", caCert.Id, serverCert.Id, notAfter.Format("2006-01-02"))
+	logx.Infof("TLS 证书生成成功: 商户ID=%d, CA(id=%d) Server(id=%d), 有效期至 %s",
+		merchantId, caCert.Id, serverCert.Id, notAfter.Format("2006-01-02"))
 
 	return &model.GenerateTlsCertResp{
 		CA:     certToResp(caCert),
@@ -145,10 +148,10 @@ func GenerateTlsCerts(validityDays int) (*model.GenerateTlsCertResp, error) {
 	}, nil
 }
 
-// GetTlsCerts 获取当前有效的证书
-func GetTlsCerts() (*model.GenerateTlsCertResp, error) {
+// GetTlsCerts 获取指定商户当前有效的证书
+func GetTlsCerts(merchantId int) (*model.GenerateTlsCertResp, error) {
 	var certs []entity.TlsCertificates
-	err := dbs.DBAdmin.Where("status = 1").OrderBy("cert_type ASC").Find(&certs)
+	err := dbs.DBAdmin.Where("merchant_id = ? AND status = 1", merchantId).OrderBy("cert_type ASC").Find(&certs)
 	if err != nil {
 		return nil, fmt.Errorf("查询证书失败: %v", err)
 	}
@@ -166,23 +169,23 @@ func GetTlsCerts() (*model.GenerateTlsCertResp, error) {
 	return resp, nil
 }
 
-// DisableTlsCerts 停用当前证书（允许重新生成）
-func DisableTlsCerts() error {
-	_, err := dbs.DBAdmin.Where("status = 1").Cols("status", "updated_at").Update(&entity.TlsCertificates{
+// DisableTlsCerts 停用指定商户的证书（允许重新生成）
+func DisableTlsCerts(merchantId int) error {
+	_, err := dbs.DBAdmin.Where("merchant_id = ? AND status = 1", merchantId).Cols("status", "updated_at").Update(&entity.TlsCertificates{
 		Status:    0,
 		UpdatedAt: time.Now(),
 	})
 	if err != nil {
 		return fmt.Errorf("停用证书失败: %v", err)
 	}
-	logx.Info("TLS 证书已停用")
+	logx.Infof("TLS 证书已停用: 商户ID=%d", merchantId)
 	return nil
 }
 
-// GetCertFingerprint 获取证书指纹（供 App 端 Pinning）
-func GetCertFingerprint() (map[string]string, error) {
+// GetCertFingerprint 获取指定商户的证书指纹（供 App 端 Pinning）
+func GetCertFingerprint(merchantId int) (map[string]string, error) {
 	var certs []entity.TlsCertificates
-	err := dbs.DBAdmin.Where("status = 1").Find(&certs)
+	err := dbs.DBAdmin.Where("merchant_id = ? AND status = 1", merchantId).Find(&certs)
 	if err != nil {
 		return nil, fmt.Errorf("查询证书失败: %v", err)
 	}
@@ -208,6 +211,7 @@ func sha256Fingerprint(certDER []byte) string {
 func certToResp(c *entity.TlsCertificates) model.TlsCertificateResp {
 	return model.TlsCertificateResp{
 		Id:          c.Id,
+		MerchantId:  c.MerchantId,
 		Name:        c.Name,
 		CertType:    c.CertType,
 		Fingerprint: c.Fingerprint,

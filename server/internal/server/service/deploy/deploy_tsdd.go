@@ -442,6 +442,7 @@ services:
       TS_MINIO_ACCESSKEYID: ${MINIO_ROOT_USER}
       TS_MINIO_SECRETACCESSKEY: ${MINIO_ROOT_PASSWORD}
       TS_MINIO_UPLOADURL: http://${EXTERNAL_IP}:9000
+      TS_MINIO_DOWNLOADURL: http://${EXTERNAL_IP}:9000
       TS_SMSCODE: "${SMS_CODE}"
       TS_ADMINPWD: "${ADMIN_PASSWORD}"
     ports:
@@ -502,20 +503,33 @@ SMS_CODE=%s
 }
 
 // pullAndStartServices 拉取镜像并启动服务
-func pullAndStartServices(client *utils.SSHClient) model.DeployStep {
+func pullAndStartServices(client *utils.SSHClient, skipPull ...bool) model.DeployStep {
 	step := model.DeployStep{
 		Name:   "拉取镜像并启动服务",
 		Status: "running",
 	}
 
-	// 使用docker compose启动（新版命令）
-	startCmd := `
-cd /opt/tsdd
+	// skipPull[0] == true 时跳过拉取（AMI 部署，镜像已内置）
+	doPull := true
+	if len(skipPull) > 0 && skipPull[0] {
+		doPull = false
+	}
 
-# 拉取镜像
+	pullSection := ""
+	if doPull {
+		pullSection = `# 拉取镜像
 echo ">>> 拉取镜像..."
 docker compose pull 2>&1 || docker-compose pull 2>&1
+`
+	} else {
+		pullSection = `echo ">>> 跳过镜像拉取（AMI 已内置）"
+`
+	}
 
+	startCmd := fmt.Sprintf(`
+cd /opt/tsdd
+
+%s
 # 启动服务
 echo ">>> 启动服务..."
 docker compose up -d 2>&1 || docker-compose up -d 2>&1
@@ -524,7 +538,7 @@ docker compose up -d 2>&1 || docker-compose up -d 2>&1
 sleep 5
 echo ">>> 容器状态:"
 docker ps --format "table {{.Names}}\t{{.Status}}" | grep tsdd || true
-`
+`, pullSection)
 	output, err := client.ExecuteCommandWithTimeout(startCmd, 15*time.Minute)
 	if err != nil {
 		step.Status = "failed"
@@ -874,8 +888,11 @@ updateServerRecord:
 			existingServer.Port = 22
 			existingServer.AwsInstanceId = instanceId
 			existingServer.AwsRegionId = req.RegionId
+			existingServer.CloudType = "aws"
+			existingServer.CloudInstanceId = instanceId
+			existingServer.CloudRegionId = req.RegionId
 			existingServer.UpdatedAt = time.Now()
-			if _, err := dbs.DBAdmin.ID(existingServer.Id).Cols("host", "name", "username", "password", "port", "aws_instance_id", "aws_region_id", "updated_at").Update(&existingServer); err != nil {
+			if _, err := dbs.DBAdmin.ID(existingServer.Id).Cols("host", "name", "username", "password", "port", "aws_instance_id", "aws_region_id", "cloud_type", "cloud_instance_id", "cloud_region_id", "updated_at").Update(&existingServer); err != nil {
 				logx.Errorf("更新商户服务器失败: %v", err)
 			}
 			resp.ServerId = existingServer.Id
@@ -888,8 +905,11 @@ updateServerRecord:
 				Port:          22,
 				Username:      actualUser,
 				Password:      consts.DefaultPassword,
-				AwsInstanceId: instanceId,
-				AwsRegionId:   req.RegionId,
+				AwsInstanceId:   instanceId,
+				AwsRegionId:     req.RegionId,
+				CloudType:       "aws",
+				CloudInstanceId: instanceId,
+				CloudRegionId:   req.RegionId,
 				Status:        1,
 				CreatedAt:     time.Now(),
 				UpdatedAt:     time.Now(),
@@ -1029,12 +1049,12 @@ func dumpSourceDBSchema(sourceServerId int) (string, error) {
 
 // detectCustomAMIPorts 从远程 docker-compose.yml 中检测实际端口映射
 func detectCustomAMIPorts(client *utils.SSHClient) (apiPort, webPort, managerPort int) {
-	apiPort = model.DefaultDeployConfig.APIPort       // 8090
+	apiPort = model.DefaultDeployConfig.APIPort       // 10002
 	webPort = model.DefaultDeployConfig.WebPort        // 82
 	managerPort = model.DefaultDeployConfig.ManagerPort // 8084
 
-	// 检测 tsdd-server 的 API 端口（映射到容器内 5002 或 8090）
-	output, err := client.ExecuteCommand(`cd /opt/tsdd && grep -A 30 'tsdd-server:' docker-compose.yml | grep -E '^\s+-\s+.+:(5002|8090)' | head -1 | grep -oP '(\d+):' | tr -d ':' || true`)
+	// 检测 tsdd-server 的 API 端口（映射到容器内 5002/8090/10002）
+	output, err := client.ExecuteCommand(`cd /opt/tsdd && grep -A 30 'tsdd-server:' docker-compose.yml | grep -E '^\s+-\s+.+:(5002|8090|10002)' | head -1 | grep -oP '(\d+):' | tr -d ':' || true`)
 	if err == nil {
 		output = strings.TrimSpace(output)
 		if p := parsePort(output); p > 0 {

@@ -21,15 +21,8 @@ defineOptions({ name: "ResourceOverview" })
 
 // ========== 基础数据 ==========
 const activeTab = ref("oss")
-const merchantOptions: { label: string; value: number }[] = reactive([])
-const tagOptions: ResourceTagResp[] = reactive([])
-
-const cloudTypeOptions = [
-  { label: "全部", value: "" },
-  { label: "AWS S3", value: "aws" },
-  { label: "阿里云 OSS", value: "aliyun" },
-  { label: "腾讯云 COS", value: "tencent" }
-]
+const merchantOptions = ref<{ label: string; value: number }[]>([])
+const tagOptions = ref<ResourceTagResp[]>([])
 
 function getCloudTypeLabel(type: string) {
   const map: Record<string, string> = { aws: "AWS S3", aliyun: "阿里云", tencent: "腾讯云" }
@@ -48,9 +41,7 @@ function getCloudTypeTagType(type: string): "success" | "warning" | "info" | "pr
 async function loadMerchants() {
   try {
     const res = await getMerchantList({ page: 1, size: 1000 })
-    const list = res.data.list?.map((m: any) => ({ label: `${m.name} (${m.no})`, value: m.id })) || []
-    merchantOptions.length = 0
-    merchantOptions.push(...list)
+    merchantOptions.value = res.data.list?.map((m: any) => ({ label: `${m.name} (${m.no})`, value: m.id })) || []
   } catch (e) {
     console.error("加载商户列表失败", e)
   }
@@ -59,8 +50,7 @@ async function loadMerchants() {
 async function loadTags() {
   try {
     const res = await getTagList()
-    tagOptions.length = 0
-    tagOptions.push(...(res.data || []))
+    tagOptions.value = res.data || []
   } catch (e) {
     console.error("加载标签列表失败", e)
   }
@@ -71,49 +61,30 @@ onMounted(() => {
   loadTags()
 })
 
+// ========== OSS 筛选 ==========
+const ossFilter = reactive({
+  merchant_id: undefined as number | undefined,
+  cloud_type: "" as string,
+  tag_id: undefined as number | undefined
+})
+
+function refreshOssGrid() {
+  ossGridDom.value?.commitProxy("query")
+}
+
+function resetOssFilter() {
+  ossFilter.merchant_id = undefined
+  ossFilter.cloud_type = ""
+  ossFilter.tag_id = undefined
+  refreshOssGrid()
+}
+
 // ========== OSS 配置列表 ==========
 const ossGridDom = ref<VxeGridInstance>()
 const ossGridOpt: VxeGridProps = reactive({
   loading: true,
   autoResize: true,
   pagerConfig: { align: "right" },
-  formConfig: {
-    items: [
-      {
-        field: "merchant_id",
-        itemRender: {
-          name: "$select",
-          options: merchantOptions,
-          props: { placeholder: "商户", clearable: true, filterable: true }
-        }
-      },
-      {
-        field: "cloud_type",
-        itemRender: {
-          name: "$select",
-          options: cloudTypeOptions.slice(1), // 去掉"全部"
-          props: { placeholder: "云类型", clearable: true }
-        }
-      },
-      {
-        field: "tag_id",
-        itemRender: {
-          name: "$select",
-          options: tagOptions.map(t => ({ label: t.name, value: t.id })),
-          props: { placeholder: "标签", clearable: true }
-        }
-      },
-      {
-        itemRender: {
-          name: "$buttons",
-          children: [
-            { props: { type: "submit", content: "查询", status: "primary" } },
-            { props: { type: "reset", content: "重置" } }
-          ]
-        }
-      }
-    ]
-  },
   toolbarConfig: {
     refresh: true,
     custom: true,
@@ -122,30 +93,29 @@ const ossGridOpt: VxeGridProps = reactive({
   columns: [
     { type: "checkbox", width: "50px" },
     { type: "seq", width: "50px", title: "#" },
-    { field: "merchant_name", title: "商户", width: 130 },
-    { field: "name", title: "配置名称", width: 120 },
-    { field: "cloud_type", title: "云类型", width: 100, slots: { default: "cloud-type-slot" } },
-    { field: "bucket", title: "Bucket", width: 150, showOverflow: true },
-    { field: "region", title: "区域", width: 120 },
-    { field: "endpoint", title: "Endpoint", showOverflow: true },
-    { field: "is_default", title: "默认", width: 70, slots: { default: "default-slot" } },
-    { field: "status", title: "状态", width: 70, slots: { default: "status-slot" } },
-    { field: "tags", title: "标签", width: 160, slots: { default: "tags-slot" } },
-    { title: "操作", width: "100px", fixed: "right", slots: { default: "oss-row-operate" } }
+    { field: "merchant_name", title: "商户", width: 120 },
+    { field: "name", title: "配置名称", width: 100 },
+    { field: "cloud_type", title: "云类型", width: 90, slots: { default: "cloud-type-slot" } },
+    { field: "bucket", title: "Bucket", width: 140, showOverflow: true },
+    { field: "region", title: "区域", width: 100 },
+    { field: "download_url", title: "下载地址", minWidth: 240, showOverflow: true, slots: { default: "download-url-slot" } },
+    { field: "is_default", title: "默认", width: 60, slots: { default: "default-slot" } },
+    { field: "status", title: "状态", width: 60, slots: { default: "status-slot" } },
+    { field: "tags", title: "标签", width: 140, slots: { default: "tags-slot" } },
+    { title: "操作", width: "80px", fixed: "right", slots: { default: "oss-row-operate" } }
   ],
   proxyConfig: {
     seq: true,
-    form: true,
     autoLoad: true,
     props: { total: "total" },
     ajax: {
-      query: ({ page, form }) => {
+      query: ({ page }) => {
         ossGridOpt.loading = true
         return new Promise((resolve) => {
           getGlobalOssConfigs({
-            merchant_id: form.merchant_id || undefined,
-            cloud_type: form.cloud_type || undefined,
-            tag_id: form.tag_id || undefined,
+            merchant_id: ossFilter.merchant_id || undefined,
+            cloud_type: ossFilter.cloud_type || undefined,
+            tag_id: ossFilter.tag_id || undefined,
             size: page.pageSize,
             page: page.currentPage
           }).then((res) => {
@@ -158,41 +128,28 @@ const ossGridOpt: VxeGridProps = reactive({
   }
 })
 
+// ========== GOST 筛选 ==========
+const gostFilter = reactive({
+  merchant_id: undefined as number | undefined,
+  tag_id: undefined as number | undefined
+})
+
+function refreshGostGrid() {
+  gostGridDom.value?.commitProxy("query")
+}
+
+function resetGostFilter() {
+  gostFilter.merchant_id = undefined
+  gostFilter.tag_id = undefined
+  refreshGostGrid()
+}
+
 // ========== GOST 服务器列表 ==========
 const gostGridDom = ref<VxeGridInstance>()
 const gostGridOpt: VxeGridProps = reactive({
   loading: true,
   autoResize: true,
   pagerConfig: { align: "right" },
-  formConfig: {
-    items: [
-      {
-        field: "merchant_id",
-        itemRender: {
-          name: "$select",
-          options: merchantOptions,
-          props: { placeholder: "商户", clearable: true, filterable: true }
-        }
-      },
-      {
-        field: "tag_id",
-        itemRender: {
-          name: "$select",
-          options: tagOptions.map(t => ({ label: t.name, value: t.id })),
-          props: { placeholder: "标签", clearable: true }
-        }
-      },
-      {
-        itemRender: {
-          name: "$buttons",
-          children: [
-            { props: { type: "submit", content: "查询", status: "primary" } },
-            { props: { type: "reset", content: "重置" } }
-          ]
-        }
-      }
-    ]
-  },
   toolbarConfig: {
     refresh: true,
     custom: true,
@@ -213,16 +170,15 @@ const gostGridOpt: VxeGridProps = reactive({
   ],
   proxyConfig: {
     seq: true,
-    form: true,
     autoLoad: true,
     props: { total: "total" },
     ajax: {
-      query: ({ page, form }) => {
+      query: ({ page }) => {
         gostGridOpt.loading = true
         return new Promise((resolve) => {
           getGlobalGostServers({
-            merchant_id: form.merchant_id || undefined,
-            tag_id: form.tag_id || undefined,
+            merchant_id: gostFilter.merchant_id || undefined,
+            tag_id: gostFilter.tag_id || undefined,
             size: page.pageSize,
             page: page.currentPage
           }).then((res) => {
@@ -319,7 +275,6 @@ async function submitBatchTag() {
     })
     ElMessage.success("标签分配成功")
     batchTagDialogVisible.value = false
-    // 刷新列表
     if (batchTagResourceType.value === "oss_config") {
       ossGridDom.value?.commitProxy("query")
     } else {
@@ -349,19 +304,10 @@ async function removeResourceTag(resourceType: string, resourceId: number, tagId
   }
 }
 
-// ========== OSS 健康检测 ==========
+// ========== OSS 健康检测（URL 可达性） ==========
 const healthCheckLoading = ref(false)
 const healthCheckDialogVisible = ref(false)
 const healthCheckResults = ref<OssHealthCheckResult[]>([])
-
-const healthStepLabels: Record<string, string> = {
-  sdk_connect: "SDK连接",
-  upload: "上传测试",
-  download_sdk: "SDK下载",
-  download_url: "公网URL",
-  download_cdn: "CDN域名",
-  cleanup: "清理"
-}
 
 async function handleCheckOssHealth() {
   const records = ossGridDom.value?.getCheckboxRecords() || []
@@ -370,21 +316,14 @@ async function handleCheckOssHealth() {
     return
   }
   const ids = records.map((r: any) => r.id)
+  healthCheckLoading.value = true
+  healthCheckResults.value = []
+  healthCheckDialogVisible.value = true
   try {
-    await ElMessageBox.confirm(
-      `将检测 ${ids.length} 个 OSS 配置的可用性（包括SDK连接、上传、下载），是否继续？`,
-      "OSS 健康检测",
-      { type: "info" }
-    )
-    healthCheckLoading.value = true
-    healthCheckResults.value = []
-    healthCheckDialogVisible.value = true
     const res = await checkOssHealth({ oss_config_ids: ids })
     healthCheckResults.value = res.data || []
   } catch (e: any) {
-    if (e !== "cancel") {
-      ElMessage.error(e?.message || "检测失败")
-    }
+    ElMessage.error(e?.message || "检测失败")
   } finally {
     healthCheckLoading.value = false
   }
@@ -399,7 +338,6 @@ async function handleBatchSyncIP() {
     ElMessage.warning("请先勾选要同步的 GOST 服务器")
     return
   }
-  // 提取去重的商户ID
   const merchantIds = [...new Set(records.map((r: any) => r.merchant_id))]
   try {
     await ElMessageBox.confirm(
@@ -436,10 +374,27 @@ async function handleBatchSyncIP() {
     <el-tabs v-model="activeTab" type="border-card">
       <!-- Tab 1: OSS 配置 -->
       <el-tab-pane label="OSS 配置" name="oss">
+        <!-- 自定义筛选栏 -->
+        <div class="filter-bar">
+          <el-select v-model="ossFilter.merchant_id" placeholder="商户" clearable filterable style="width: 200px;">
+            <el-option v-for="m in merchantOptions" :key="m.value" :label="m.label" :value="m.value" />
+          </el-select>
+          <el-select v-model="ossFilter.cloud_type" placeholder="云类型" clearable style="width: 130px;">
+            <el-option label="AWS S3" value="aws" />
+            <el-option label="阿里云 OSS" value="aliyun" />
+            <el-option label="腾讯云 COS" value="tencent" />
+          </el-select>
+          <el-select v-model="ossFilter.tag_id" placeholder="标签" clearable style="width: 140px;">
+            <el-option v-for="tag in tagOptions" :key="tag.id" :label="tag.name" :value="tag.id" />
+          </el-select>
+          <el-button type="primary" @click="refreshOssGrid">查询</el-button>
+          <el-button @click="resetOssFilter">重置</el-button>
+        </div>
+
         <vxe-grid ref="ossGridDom" v-bind="ossGridOpt">
           <template #oss-toolbar-btns>
             <vxe-button status="success" icon="vxe-icon-indicator" :loading="healthCheckLoading" @click="handleCheckOssHealth">
-              检测可用性
+              URL 检测
             </vxe-button>
             <vxe-button status="primary" icon="vxe-icon-tag" @click="showBatchTagDialog('oss')">
               批量打标签
@@ -450,6 +405,13 @@ async function handleBatchSyncIP() {
             <el-tag :type="getCloudTypeTagType(row.cloud_type)" size="small">
               {{ getCloudTypeLabel(row.cloud_type) }}
             </el-tag>
+          </template>
+
+          <template #download-url-slot="{ row }">
+            <a v-if="row.download_url" :href="row.download_url" target="_blank" class="download-url-link">
+              {{ row.download_url }}
+            </a>
+            <span v-else>-</span>
           </template>
 
           <template #default-slot="{ row }">
@@ -488,6 +450,18 @@ async function handleBatchSyncIP() {
 
       <!-- Tab 2: 隧道服务器 -->
       <el-tab-pane label="隧道服务器" name="gost">
+        <!-- 自定义筛选栏 -->
+        <div class="filter-bar">
+          <el-select v-model="gostFilter.merchant_id" placeholder="商户" clearable filterable style="width: 200px;">
+            <el-option v-for="m in merchantOptions" :key="m.value" :label="m.label" :value="m.value" />
+          </el-select>
+          <el-select v-model="gostFilter.tag_id" placeholder="标签" clearable style="width: 140px;">
+            <el-option v-for="tag in tagOptions" :key="tag.id" :label="tag.name" :value="tag.id" />
+          </el-select>
+          <el-button type="primary" @click="refreshGostGrid">查询</el-button>
+          <el-button @click="resetGostFilter">重置</el-button>
+        </div>
+
         <vxe-grid ref="gostGridDom" v-bind="gostGridOpt">
           <template #gost-toolbar-btns>
             <vxe-button status="warning" icon="vxe-icon-refresh" :loading="syncLoading" @click="handleBatchSyncIP">
@@ -536,7 +510,6 @@ async function handleBatchSyncIP() {
     <!-- 标签管理弹窗 -->
     <el-dialog v-model="tagDialogVisible" title="管理标签" width="500px">
       <div class="tag-manager">
-        <!-- 创建/编辑表单 -->
         <div class="tag-form">
           <el-input v-model="tagForm.name" placeholder="标签名称" style="width: 140px;" />
           <el-color-picker v-model="tagForm.color" size="default" />
@@ -549,7 +522,6 @@ async function handleBatchSyncIP() {
           </el-button>
         </div>
 
-        <!-- 标签列表 -->
         <div class="tag-list">
           <div v-for="tag in tagOptions" :key="tag.id" class="tag-item">
             <el-tag :color="tag.color" style="color: #fff;">
@@ -566,15 +538,15 @@ async function handleBatchSyncIP() {
       </div>
     </el-dialog>
 
-    <!-- OSS 健康检测结果弹窗 -->
-    <el-dialog v-model="healthCheckDialogVisible" title="OSS 健康检测结果" width="800px" top="5vh">
+    <!-- OSS URL 检测结果弹窗 -->
+    <el-dialog v-model="healthCheckDialogVisible" title="OSS 下载地址检测" width="900px" top="5vh">
       <div v-if="healthCheckLoading" style="text-align: center; padding: 40px 0;">
         <el-icon class="is-loading" :size="32"><Loading /></el-icon>
         <p style="margin-top: 12px; color: #909399;">正在检测中，请稍候...</p>
       </div>
       <div v-else>
         <el-table :data="healthCheckResults" border stripe max-height="60vh">
-          <el-table-column prop="oss_config_name" label="配置名称" width="120" />
+          <el-table-column prop="oss_config_name" label="配置" width="100" />
           <el-table-column prop="merchant_name" label="商户" width="100" />
           <el-table-column prop="cloud_type" label="云类型" width="80">
             <template #default="{ row }">
@@ -583,27 +555,27 @@ async function handleBatchSyncIP() {
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column prop="bucket" label="Bucket" width="120" show-overflow-tooltip />
-          <el-table-column label="检测结果" min-width="280">
+          <el-table-column prop="download_url" label="下载地址" min-width="220" show-overflow-tooltip />
+          <el-table-column label="状态" width="80" align="center">
             <template #default="{ row }">
-              <div class="health-steps">
-                <el-tooltip v-for="step in row.steps" :key="step.step" :content="`${step.message} (${step.latency})`" placement="top">
-                  <el-tag :type="step.ok ? 'success' : 'danger'" size="small" style="margin: 2px 4px 2px 0;">
-                    {{ healthStepLabels[step.step] || step.step }}
-                    {{ step.ok ? '✓' : '✗' }}
-                  </el-tag>
-                </el-tooltip>
-              </div>
+              <el-tooltip :content="`HTTP ${row.status_code} - ${row.message}`" placement="top">
+                <el-tag :type="row.healthy ? 'success' : 'danger'" size="small">
+                  {{ row.healthy ? "可达" : "不可达" }}
+                </el-tag>
+              </el-tooltip>
             </template>
           </el-table-column>
-          <el-table-column label="总体" width="80" align="center">
+          <el-table-column label="CDN" width="80" align="center">
             <template #default="{ row }">
-              <el-tag :type="row.healthy ? 'success' : 'danger'" size="small">
-                {{ row.healthy ? "正常" : "异常" }}
-              </el-tag>
+              <el-tooltip v-if="row.cdn_url" :content="row.cdn_url" placement="top">
+                <el-tag :type="row.cdn_healthy ? 'success' : 'danger'" size="small">
+                  {{ row.cdn_healthy ? "可达" : "不可达" }}
+                </el-tag>
+              </el-tooltip>
+              <span v-else>-</span>
             </template>
           </el-table-column>
-          <el-table-column prop="duration" label="耗时" width="90" />
+          <el-table-column prop="latency" label="耗时" width="90" />
         </el-table>
       </div>
     </el-dialog>
@@ -643,6 +615,25 @@ async function handleBatchSyncIP() {
   margin: 0;
 }
 
+.filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.download-url-link {
+  color: var(--el-color-primary);
+  text-decoration: none;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.download-url-link:hover {
+  text-decoration: underline;
+}
+
 .tag-manager .tag-form {
   display: flex;
   align-items: center;
@@ -672,11 +663,5 @@ async function handleBatchSyncIP() {
 
 .tag-actions {
   white-space: nowrap;
-}
-
-.health-steps {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
 }
 </style>

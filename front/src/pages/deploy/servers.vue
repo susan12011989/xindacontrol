@@ -2,7 +2,7 @@
 import type { DistributeResult, ServerResp } from "@@/apis/deploy/type"
 import type { MerchantResp } from "@@/apis/merchant/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
-import { createServer, deleteServer, distributeFile, getServerList, getServerStatsBatch, testConnection, toggleServerStatus, updateServer, uploadToLocal, batchUpgradeTls, batchRollbackTls, getTlsStatus, verifyTlsStatus } from "@@/apis/deploy"
+import { createServer, deleteServer, distributeFile, getServerList, getServerStatsBatch, testConnection, toggleServerStatus, updateServer, uploadToLocal, batchUpgradeTls, batchRollbackTls, getTlsStatus, verifyTlsStatus, batchSyncConfig } from "@@/apis/deploy"
 import type { TlsServerResult, TlsStatusResp } from "@@/apis/deploy/type"
 import { getMerchantList } from "@@/apis/merchant"
 
@@ -17,6 +17,7 @@ const serverType = ref(1) // 1-商户服务器 2-系统服务器
 const merchantOptions: { label: string; value: number }[] = reactive([])
 // 商户完整列表（编辑表单用）
 const merchantList = ref<MerchantResp[]>([])
+
 
 // 加载商户列表
 async function loadMerchantList() {
@@ -33,6 +34,7 @@ async function loadMerchantList() {
     console.error("加载商户列表失败:", e)
   }
 }
+
 
 // 根据服务器类型生成表格列
 function getColumns() {
@@ -452,24 +454,87 @@ async function executeBatchUpdate() {
   }
 }
 
+// ========== 同步配置 ==========
+const syncConfigVisible = ref(false)
+const syncConfigLoading = ref(false)
+const syncConfigForm = reactive({
+  targetServerIds: [] as number[]
+})
+const syncConfigResults = ref<{ server_id: number; server_name: string; server_host: string; node_role: string; success: boolean; message: string }[]>([])
+const syncConfigStep = ref<"config" | "result">("config")
+
+async function openSyncConfig() {
+  syncConfigForm.targetServerIds = []
+  syncConfigResults.value = []
+  syncConfigStep.value = "config"
+  await loadServerLists()
+  syncConfigVisible.value = true
+}
+
+function toggleSyncSelectAll() {
+  if (syncConfigForm.targetServerIds.length === merchantServers.value.length) {
+    syncConfigForm.targetServerIds = []
+  } else {
+    syncConfigForm.targetServerIds = merchantServers.value.map(s => s.id)
+  }
+}
+
+async function executeSyncConfig() {
+  if (syncConfigForm.targetServerIds.length === 0) {
+    return ElMessage.warning("请选择至少一个目标服务器")
+  }
+
+  syncConfigLoading.value = true
+  try {
+    const res = await batchSyncConfig({
+      server_ids: syncConfigForm.targetServerIds
+    })
+
+    syncConfigResults.value = res.data.results || []
+    syncConfigStep.value = "result"
+
+    const { success_count, fail_count } = res.data
+    if (fail_count === 0) {
+      ElMessage.success(`同步完成，全部成功 (${success_count}/${res.data.total_count})`)
+    } else {
+      ElMessage.warning(`同步完成，成功 ${success_count}，失败 ${fail_count}`)
+    }
+  } catch (e: any) {
+    ElMessage.error(e.message || "同步配置失败")
+  } finally {
+    syncConfigLoading.value = false
+  }
+}
+
 // ========== TLS 管理 ==========
 const tlsDialogVisible = ref(false)
 const tlsLoading = ref(false)
 const tlsStatus = ref<TlsStatusResp | null>(null)
 const tlsResults = ref<TlsServerResult[]>([])
 const tlsStep = ref<"status" | "result">("status")
+const tlsMerchantId = ref<number | undefined>(undefined)
 
 async function openTlsDialog() {
   tlsStep.value = "status"
   tlsResults.value = []
+  tlsMerchantId.value = undefined
+  tlsStatus.value = null
   tlsDialogVisible.value = true
+}
+
+async function onTlsMerchantChange() {
+  tlsStatus.value = null
+  tlsResults.value = []
+  tlsStep.value = "status"
+  if (!tlsMerchantId.value) return
   await loadTlsStatus()
 }
 
 async function loadTlsStatus() {
+  if (!tlsMerchantId.value) return
   tlsLoading.value = true
   try {
-    const res = await getTlsStatus()
+    const res = await getTlsStatus(tlsMerchantId.value)
     tlsStatus.value = res.data
   } catch (e: any) {
     ElMessage.error(e.message || "获取 TLS 状态失败")
@@ -479,10 +544,12 @@ async function loadTlsStatus() {
 }
 
 async function handleTlsUpgrade() {
-  ElMessageBox.confirm("确定将所有系统服务器升级为 TLS 模式？", "批量升级 TLS", { type: "warning" }).then(async () => {
+  if (!tlsMerchantId.value) return
+  const mid = tlsMerchantId.value
+  ElMessageBox.confirm("确定将该商户的 GOST 服务器升级为 TLS 模式？", "批量升级 TLS", { type: "warning" }).then(async () => {
     tlsLoading.value = true
     try {
-      const res = await batchUpgradeTls({})
+      const res = await batchUpgradeTls({ merchant_id: mid })
       tlsResults.value = res.data.results || []
       tlsStep.value = "result"
       const { success, failed } = res.data
@@ -501,10 +568,12 @@ async function handleTlsUpgrade() {
 }
 
 async function handleTlsRollback() {
-  ElMessageBox.confirm("确定将所有系统服务器回滚为 TCP 模式？", "批量回滚 TLS", { type: "warning" }).then(async () => {
+  if (!tlsMerchantId.value) return
+  const mid = tlsMerchantId.value
+  ElMessageBox.confirm("确定将该商户的 GOST 服务器回滚为 TCP 模式？", "批量回滚 TLS", { type: "warning" }).then(async () => {
     tlsLoading.value = true
     try {
-      const res = await batchRollbackTls({})
+      const res = await batchRollbackTls({ merchant_id: mid })
       tlsResults.value = res.data.results || []
       tlsStep.value = "result"
       const { success, failed } = res.data
@@ -523,9 +592,10 @@ async function handleTlsRollback() {
 }
 
 async function handleTlsVerify() {
+  if (!tlsMerchantId.value) return
   tlsLoading.value = true
   try {
-    const res = await verifyTlsStatus()
+    const res = await verifyTlsStatus({ merchant_id: tlsMerchantId.value })
     tlsStatus.value = res.data
     ElMessage.success("验证完成")
   } catch (e: any) {
@@ -682,7 +752,7 @@ const crudStore = reactive({
   }
 })
 
-// 初始化加载商户列表
+// 初始化加载商户列表和分组列表
 onMounted(() => {
   loadMerchantList()
 })
@@ -713,6 +783,9 @@ onMounted(() => {
           </el-button>
           <el-button v-if="serverType === 1" type="warning" @click="openBatchUpdate()">
             批量更新程序
+          </el-button>
+          <el-button v-if="serverType === 1" type="primary" @click="openSyncConfig()">
+            同步配置
           </el-button>
           <el-button v-if="serverType === 2" type="success" @click="openTlsDialog()">
             TLS 管理
@@ -910,6 +983,84 @@ onMounted(() => {
       </template>
     </el-dialog>
 
+    <!-- 同步配置弹窗 -->
+    <el-dialog
+      v-model="syncConfigVisible"
+      title="同步 Docker Compose 配置"
+      width="650px"
+      :close-on-click-modal="false"
+    >
+      <div v-if="syncConfigStep === 'config'" v-loading="syncConfigLoading">
+        <el-alert
+          title="将根据集群节点信息重新生成 docker-compose.yml 和 .env，推送到目标服务器并自动应用。仅更新有变化的容器，不影响数据。"
+          type="info"
+          :closable="false"
+          show-icon
+          class="mb-4"
+        />
+        <el-form label-width="120px">
+          <el-form-item label="目标服务器">
+            <div class="target-servers">
+              <div class="target-header">
+                <el-button size="small" @click="toggleSyncSelectAll">
+                  {{ syncConfigForm.targetServerIds.length === merchantServers.length ? '取消全选' : '全选' }}
+                </el-button>
+                <span class="selected-count">已选择 {{ syncConfigForm.targetServerIds.length }} 个</span>
+              </div>
+              <el-checkbox-group v-model="syncConfigForm.targetServerIds" class="target-list">
+                <el-checkbox
+                  v-for="s in merchantServers"
+                  :key="s.id"
+                  :value="s.id"
+                  :label="`${s.name} (${s.host})`"
+                />
+              </el-checkbox-group>
+            </div>
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <!-- 同步结果 -->
+      <div v-else class="distribute-results">
+        <el-table :data="syncConfigResults" max-height="400">
+          <el-table-column prop="server_name" label="服务器" width="150" />
+          <el-table-column prop="server_host" label="IP" width="130" />
+          <el-table-column prop="node_role" label="角色" width="70" />
+          <el-table-column prop="success" label="状态" width="70">
+            <template #default="{ row }">
+              <el-tag :type="row.success ? 'success' : 'danger'" size="small">
+                {{ row.success ? '成功' : '失败' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="message" label="消息" show-overflow-tooltip />
+        </el-table>
+      </div>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="syncConfigVisible = false">
+            {{ syncConfigStep === 'result' ? '关闭' : '取消' }}
+          </el-button>
+          <el-button
+            v-if="syncConfigStep === 'config'"
+            type="primary"
+            :loading="syncConfigLoading"
+            @click="executeSyncConfig"
+          >
+            开始同步
+          </el-button>
+          <el-button
+            v-if="syncConfigStep === 'result'"
+            type="primary"
+            @click="syncConfigStep = 'config'"
+          >
+            返回
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
     <!-- TLS 管理弹窗 -->
     <el-dialog
       v-model="tlsDialogVisible"
@@ -918,8 +1069,16 @@ onMounted(() => {
       :close-on-click-modal="false"
     >
       <div v-loading="tlsLoading">
+        <!-- 商户选择 -->
+        <div style="margin-bottom: 16px">
+          <span style="margin-right: 8px; font-weight: bold">选择商户:</span>
+          <el-select v-model="tlsMerchantId" placeholder="请选择商户" style="width: 280px" filterable @change="onTlsMerchantChange">
+            <el-option v-for="m in merchantList" :key="m.id" :label="`${m.name}`" :value="m.id" />
+          </el-select>
+        </div>
+
         <!-- 状态视图 -->
-        <template v-if="tlsStep === 'status'">
+        <template v-if="tlsStep === 'status' && tlsMerchantId">
           <div v-if="tlsStatus" class="tls-summary">
             <el-descriptions :column="3" border size="small">
               <el-descriptions-item label="系统服务器总数">{{ tlsStatus.total }}</el-descriptions-item>
@@ -977,13 +1136,13 @@ onMounted(() => {
         <div class="dialog-footer">
           <el-button @click="tlsDialogVisible = false">关闭</el-button>
           <template v-if="tlsStep === 'status'">
-            <el-button type="info" :loading="tlsLoading" @click="handleTlsVerify">
+            <el-button type="info" :loading="tlsLoading" :disabled="!tlsMerchantId" @click="handleTlsVerify">
               验证连接
             </el-button>
-            <el-button type="warning" :loading="tlsLoading" @click="handleTlsRollback">
+            <el-button type="warning" :loading="tlsLoading" :disabled="!tlsMerchantId" @click="handleTlsRollback">
               批量回滚 TCP
             </el-button>
-            <el-button type="success" :loading="tlsLoading" @click="handleTlsUpgrade">
+            <el-button type="success" :loading="tlsLoading" :disabled="!tlsMerchantId" @click="handleTlsUpgrade">
               批量升级 TLS
             </el-button>
           </template>
@@ -993,6 +1152,7 @@ onMounted(() => {
         </div>
       </template>
     </el-dialog>
+
   </div>
 </template>
 
@@ -1076,4 +1236,5 @@ onMounted(() => {
     margin-bottom: 0;
   }
 }
+
 </style>

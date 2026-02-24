@@ -59,6 +59,7 @@ export interface GlobalOssConfigResp {
   region: string
   endpoint: string
   custom_domain: string
+  download_url: string
   is_default: number
   status: number
   tags: ResourceTagResp[]
@@ -144,25 +145,20 @@ export interface CheckOssHealthReq {
   oss_config_ids: number[]
 }
 
-export interface OssHealthStepResult {
-  step: string // sdk_connect / upload / download_sdk / download_url / download_cdn / cleanup
-  ok: boolean
-  message: string
-  latency: string
-}
-
 export interface OssHealthCheckResult {
   oss_config_id: number
   oss_config_name: string
   merchant_name: string
   cloud_type: string
   bucket: string
-  region: string
+  download_url: string
+  cdn_url?: string
   healthy: boolean
-  steps: OssHealthStepResult[]
-  public_url?: string
-  custom_domain_ok?: boolean
-  duration: string
+  cdn_healthy?: boolean
+  status_code: number
+  cdn_status_code?: number
+  message: string
+  latency: string
 }
 
 // API 响应类型

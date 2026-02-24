@@ -1,5 +1,6 @@
 import type { AxiosProgressEvent } from "axios"
 import type * as Deploy from "./type"
+import type { ApiResponseData } from "@/common/apis/type"
 import { createStreamRequest, request } from "@/http/axios"
 
 // ========== 服务器管理 ==========
@@ -296,6 +297,16 @@ export function batchCommand(data: Deploy.BatchCommandReq) {
   })
 }
 
+/** 批量同步 docker-compose 配置 */
+export function batchSyncConfig(data: { server_ids: number[] }) {
+  return request<ApiResponseData<{ total_count: number; success_count: number; fail_count: number; results: { server_id: number; server_name: string; server_host: string; node_role: string; success: boolean; message: string }[] }>>({
+    url: "deploy/batch/sync-config",
+    method: "post",
+    data,
+    timeout: 300000 // 5分钟超时
+  })
+}
+
 // ========== 日志查询 ==========
 
 /** 统一日志查询 */
@@ -363,6 +374,25 @@ export function deployNode(data: Deploy.DeployNodeReq) {
   })
 }
 
+/** 获取商户集群拓扑 */
+export function getClusterNodes(merchantId: number) {
+  return request<Deploy.ClusterNodeListResponseData>({
+    url: "deploy/tsdd/cluster-nodes",
+    method: "get",
+    params: { merchant_id: merchantId }
+  })
+}
+
+/** 同步集群 GOST 转发 */
+export function syncClusterGost(merchantId: number) {
+  return request<Deploy.GostSyncResultResponseData>({
+    url: "deploy/tsdd/sync-gost",
+    method: "post",
+    data: { merchant_id: merchantId },
+    timeout: 120000
+  })
+}
+
 // ========== GOST 一键部署（流式API） ==========
 
 /** 一键部署 GOST 转发服务器（流式） */
@@ -375,10 +405,30 @@ export function deployGostServer(data: Deploy.DeployGostServerReq, onData: (chun
   }, onData, onError)
 }
 
+/** GOST 一键部署：安装+配置转发（流式） */
+export function setupGostDeploy(data: Deploy.SetupGostDeployReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
+  return createStreamRequest({
+    url: "deploy/gost/setup",
+    method: "post",
+    data,
+    timeout: 600000
+  }, onData, onError)
+}
+
 /** 在已有服务器上安装 GOST（流式） */
 export function installGostToServer(data: Deploy.InstallGostReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
   return createStreamRequest({
     url: "deploy/gost/install",
+    method: "post",
+    data,
+    timeout: 600000
+  }, onData, onError)
+}
+
+/** GOST 诊断修复（流式） */
+export function diagnoseGost(data: Deploy.DiagnoseGostReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
+  return createStreamRequest({
+    url: "deploy/gost/diagnose",
     method: "post",
     data,
     timeout: 600000
@@ -469,16 +519,17 @@ export function clearNginxCache(data: Deploy.ClearNginxCacheReq) {
 
 // ========== TLS 证书管理 ==========
 
-/** 获取当前有效证书 */
-export function getTlsCerts() {
+/** 获取指定商户的有效证书 */
+export function getTlsCerts(merchantId: number) {
   return request<Deploy.TlsCertsResponseData>({
     url: "deploy/tls/certs",
-    method: "get"
+    method: "get",
+    params: { merchant_id: merchantId }
   })
 }
 
-/** 生成 CA + 服务器证书 */
-export function generateTlsCerts(data?: Deploy.GenerateTlsCertReq) {
+/** 为指定商户生成 CA + 服务器证书 */
+export function generateTlsCerts(data: Deploy.GenerateTlsCertReq) {
   return request<Deploy.GenerateTlsCertResponseData>({
     url: "deploy/tls/certs/generate",
     method: "post",
@@ -486,41 +537,45 @@ export function generateTlsCerts(data?: Deploy.GenerateTlsCertReq) {
   })
 }
 
-/** 停用当前证书 */
-export function disableTlsCerts() {
+/** 停用指定商户的证书 */
+export function disableTlsCerts(data: Deploy.DisableTlsCertReq) {
   return request({
     url: "deploy/tls/certs/disable",
-    method: "post"
+    method: "post",
+    data
   })
 }
 
-/** 获取证书指纹（供 App 端 Pinning） */
-export function getTlsCertFingerprint() {
+/** 获取指定商户的证书指纹（供 App 端 Pinning） */
+export function getTlsCertFingerprint(merchantId: number) {
   return request<Deploy.CertFingerprintResponseData>({
     url: "deploy/tls/certs/fingerprint",
-    method: "get"
+    method: "get",
+    params: { merchant_id: merchantId }
   })
 }
 
-/** 查看所有系统服务器 TLS 状态 */
-export function getTlsStatus() {
+/** 查看指定商户的 GOST 服务器 TLS 状态 */
+export function getTlsStatus(merchantId: number) {
   return request<Deploy.TlsStatusResponseData>({
     url: "deploy/tls/status",
-    method: "get"
+    method: "get",
+    params: { merchant_id: merchantId }
   })
 }
 
-/** 验证所有系统服务器 TLS 连接 */
-export function verifyTlsStatus() {
+/** 验证指定商户的 GOST 服务器 TLS 连接 */
+export function verifyTlsStatus(data: Deploy.BatchTlsReq) {
   return request<Deploy.TlsStatusResponseData>({
     url: "deploy/tls/verify",
     method: "post",
+    data,
     timeout: 120000 // 2分钟超时
   })
 }
 
 /** 批量升级为 TLS */
-export function batchUpgradeTls(data?: Deploy.BatchTlsReq) {
+export function batchUpgradeTls(data: Deploy.BatchTlsReq) {
   return request<Deploy.BatchTlsResponseData>({
     url: "deploy/tls/upgrade",
     method: "post",
@@ -530,7 +585,7 @@ export function batchUpgradeTls(data?: Deploy.BatchTlsReq) {
 }
 
 /** 批量回滚为 TCP */
-export function batchRollbackTls(data?: Deploy.BatchTlsReq) {
+export function batchRollbackTls(data: Deploy.BatchTlsReq) {
   return request<Deploy.BatchTlsResponseData>({
     url: "deploy/tls/rollback",
     method: "post",

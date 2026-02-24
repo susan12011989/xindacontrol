@@ -10,6 +10,7 @@ type QueryServersReq struct {
 	Status     *int   `json:"status" form:"status"`
 	ServerType *int   `json:"server_type" form:"server_type"` // 1-商户服务器 2-系统服务器
 	MerchantId *int   `json:"merchant_id" form:"merchant_id"` // 按商户ID筛选
+	GroupId    *int   `json:"group_id" form:"group_id"`       // 按分组ID筛选
 }
 
 // 创建服务器请求
@@ -25,6 +26,7 @@ type CreateServerReq struct {
 	ServerType  int    `json:"server_type"`  // 1-商户服务器 2-系统服务器
 	ForwardType int    `json:"forward_type"` // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
 	MerchantId  int    `json:"merchant_id"`  // 关联的商户ID
+	GroupId     int    `json:"group_id"`     // 分组ID
 	Description string `json:"description"`
 }
 
@@ -41,6 +43,7 @@ type UpdateServerReq struct {
 	ServerType  *int    `json:"server_type"`  // 1-商户服务器 2-系统服务器
 	ForwardType *int    `json:"forward_type"` // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
 	MerchantId  *int    `json:"merchant_id"`  // 关联的商户ID（指针区分未传和清零）
+	GroupId     *int    `json:"group_id"`     // 分组ID（指针区分未传和清零）
 	Status      *int    `json:"status"`
 	Description string  `json:"description"`
 }
@@ -63,6 +66,8 @@ type ServerResp struct {
 	MerchantId    int    `json:"merchant_id"`   // 关联的商户ID
 	MerchantName string `json:"merchant_name"` // 关联的商户名称
 	MerchantNo   string `json:"merchant_no"`   // 商户号
+	GroupId      int    `json:"group_id"`      // 分组ID
+	GroupName    string `json:"group_name"`    // 分组名称
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
 }
@@ -296,6 +301,7 @@ type DeployGostServerReq struct {
 	GroupId        int    `json:"group_id"`                            // 服务器分组ID
 	Password       string `json:"password"`                            // SSH 密码（可选，不填则自动生成密钥）
 	Bandwidth      string `json:"bandwidth"`                           // EIP 带宽，默认 5Mbps
+	ForwardType    int    `json:"forward_type"`                        // 转发类型: 1-加密(默认) 2-直连
 }
 
 // 在已有服务器上安装 GOST 请求
@@ -306,6 +312,18 @@ type InstallGostReq struct {
 	Username   string `json:"username"`    // SSH用户名，默认root
 	Password   string `json:"password"`    // SSH密码
 	PrivateKey string `json:"private_key"` // SSH私钥（二选一）
+}
+
+// GOST 一键部署（安装 + 配置转发）
+type SetupGostDeployReq struct {
+	ServerId    int   `json:"server_id" binding:"required"`    // 系统服务器ID
+	MerchantIds []int `json:"merchant_ids" binding:"required"` // 要配置转发的商户ID列表
+	ForwardType int   `json:"forward_type"`                    // 转发类型: 1-加密(默认) 2-直连
+}
+
+// GOST 诊断修复请求
+type DiagnoseGostReq struct {
+	ServerId int `json:"server_id" binding:"required"` // 系统服务器ID
 }
 
 // ========== GOST 转发配置（一键部署） ==========
@@ -374,4 +392,29 @@ type GostConfigSyncStatusResp struct {
 	FileServiceCount    int    `json:"file_service_count"`    // 文件中的服务数
 	FileChainCount      int    `json:"file_chain_count"`      // 文件中的链数
 	Message             string `json:"message"`               // 状态描述
+}
+
+// ========== 批量同步配置 ==========
+
+// BatchSyncConfigReq 批量同步 docker-compose 配置请求
+type BatchSyncConfigReq struct {
+	ServerIds []int `json:"server_ids" binding:"required"` // 目标服务器 ID 列表
+}
+
+// SyncConfigResult 单台服务器的同步结果
+type SyncConfigResult struct {
+	ServerId   int    `json:"server_id"`
+	ServerName string `json:"server_name"`
+	ServerHost string `json:"server_host"`
+	NodeRole   string `json:"node_role"`
+	Success    bool   `json:"success"`
+	Message    string `json:"message"`
+}
+
+// BatchSyncConfigResp 批量同步配置响应
+type BatchSyncConfigResp struct {
+	TotalCount   int                `json:"total_count"`
+	SuccessCount int                `json:"success_count"`
+	FailCount    int                `json:"fail_count"`
+	Results      []SyncConfigResult `json:"results"`
 }

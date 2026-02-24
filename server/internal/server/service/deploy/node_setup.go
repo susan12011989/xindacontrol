@@ -4,14 +4,27 @@ import (
 	"fmt"
 	"server/internal/server/model"
 	"server/internal/server/utils"
+	"strings"
 	"time"
 )
+
+// DetectPrivateIP 通过 SSH 检测节点自身内网 IP（优先 AWS EC2 metadata，回退 hostname）
+func DetectPrivateIP(client *utils.SSHClient) string {
+	output, err := client.ExecuteCommandWithTimeout(
+		`curl -sf --connect-timeout 2 http://169.254.169.254/latest/meta-data/local-ipv4 2>/dev/null || hostname -I | awk '{print $1}'`,
+		10*time.Second,
+	)
+	if err != nil || output == "" {
+		return ""
+	}
+	return strings.TrimSpace(output)
+}
 
 // SetupNode 初始化节点：安装 Docker、挂载磁盘、创建目录
 func SetupNode(client *utils.SSHClient, config model.DeployConfig) []model.DeployStep {
 	steps := make([]model.DeployStep, 0)
 
-	// Step 1: 安装 Docker
+	// Step 1: 安装 Docker（AMI 部署时已预装，installDocker 内部会检测并跳过）
 	step1 := installDocker(client)
 	steps = append(steps, step1)
 	if step1.Status == "failed" {
@@ -41,6 +54,8 @@ func setupDataDisks(client *utils.SSHClient, config model.DeployConfig) model.De
 	switch config.NodeRole {
 	case "db":
 		mountScript = setupDBDisks()
+	case "minio":
+		mountScript = setupMinioDisks()
 	case "app":
 		mountScript = setupAppDisks()
 	default: // allinone
@@ -61,7 +76,7 @@ func setupDataDisks(client *utils.SSHClient, config model.DeployConfig) model.De
 	return step
 }
 
-// setupDBDisks DB 节点磁盘：/data/db (MySQL+Redis), /data/minio
+// setupDBDisks DB 节点磁盘：/data/db (MySQL+Redis)
 func setupDBDisks() string {
 	return `#!/bin/bash
 set -e
@@ -85,15 +100,11 @@ done
 
 echo "发现 ${#UNATTACHED[@]} 个未挂载磁盘: ${UNATTACHED[*]}"
 
-# DB 节点需要 2 个数据盘：/data/db 和 /data/minio
-MOUNTS=("/data/db" "/data/minio")
+# DB 节点需要 1 个数据盘：/data/db (MySQL+Redis)
+if [ ${#UNATTACHED[@]} -ge 1 ]; then
+    disk="${UNATTACHED[0]}"
+    mount_point="/data/db"
 
-for i in "${!UNATTACHED[@]}"; do
-    disk="${UNATTACHED[$i]}"
-    mount_point="${MOUNTS[$i]:-}"
-    [ -z "$mount_point" ] && break
-
-    # 检查是否已有文件系统
     if ! blkid "$disk" | grep -q "TYPE"; then
         echo "格式化 $disk 为 ext4..."
         mkfs.ext4 -F "$disk"
@@ -105,16 +116,64 @@ for i in "${!UNATTACHED[@]}"; do
         echo "$disk 已挂载到 $mount_point"
     fi
 
-    # 添加到 fstab（如果没有）
     UUID=$(blkid -s UUID -o value "$disk")
     if ! grep -q "$UUID" /etc/fstab 2>/dev/null; then
         echo "UUID=$UUID $mount_point ext4 defaults,nofail 0 2" >> /etc/fstab
         echo "已添加到 fstab: $UUID -> $mount_point"
     fi
-done
+fi
 
 echo "=== 磁盘状态 ==="
-df -h /data/db /data/minio 2>/dev/null || echo "部分挂载点不存在"
+df -h /data/db 2>/dev/null || echo "/data/db 挂载点不存在"
+`
+}
+
+// setupMinioDisks MinIO 节点磁盘：/data/minio
+func setupMinioDisks() string {
+	return `#!/bin/bash
+set -e
+echo "=== 检测未挂载的磁盘 ==="
+
+UNATTACHED=()
+for disk in /dev/nvme?n1 /dev/xvd?; do
+    [ -b "$disk" ] || continue
+    if lsblk -n "$disk" | grep -q "part"; then
+        continue
+    fi
+    if mount | grep -q "^$disk "; then
+        echo "$disk 已挂载，跳过"
+        continue
+    fi
+    UNATTACHED+=("$disk")
+done
+
+echo "发现 ${#UNATTACHED[@]} 个未挂载磁盘: ${UNATTACHED[*]}"
+
+# MinIO 节点需要 1 个数据盘：/data/minio
+if [ ${#UNATTACHED[@]} -ge 1 ]; then
+    disk="${UNATTACHED[0]}"
+    mount_point="/data/minio"
+
+    if ! blkid "$disk" | grep -q "TYPE"; then
+        echo "格式化 $disk 为 ext4..."
+        mkfs.ext4 -F "$disk"
+    fi
+
+    mkdir -p "$mount_point"
+    if ! mount | grep -q "$mount_point"; then
+        mount "$disk" "$mount_point"
+        echo "$disk 已挂载到 $mount_point"
+    fi
+
+    UUID=$(blkid -s UUID -o value "$disk")
+    if ! grep -q "$UUID" /etc/fstab 2>/dev/null; then
+        echo "UUID=$UUID $mount_point ext4 defaults,nofail 0 2" >> /etc/fstab
+        echo "已添加到 fstab: $UUID -> $mount_point"
+    fi
+fi
+
+echo "=== 磁盘状态 ==="
+df -h /data/minio 2>/dev/null || echo "/data/minio 挂载点不存在"
 `
 }
 
@@ -168,7 +227,54 @@ df -h /data/db 2>/dev/null || echo "/data/db 挂载点不存在"
 
 // setupAllinoneDisks 全量节点磁盘：/data/db 和 /data/minio
 func setupAllinoneDisks() string {
-	return setupDBDisks() // 与 DB 节点相同
+	return `#!/bin/bash
+set -e
+echo "=== 检测未挂载的磁盘 ==="
+
+UNATTACHED=()
+for disk in /dev/nvme?n1 /dev/xvd?; do
+    [ -b "$disk" ] || continue
+    if lsblk -n "$disk" | grep -q "part"; then
+        continue
+    fi
+    if mount | grep -q "^$disk "; then
+        echo "$disk 已挂载，跳过"
+        continue
+    fi
+    UNATTACHED+=("$disk")
+done
+
+echo "发现 ${#UNATTACHED[@]} 个未挂载磁盘: ${UNATTACHED[*]}"
+
+# Allinone 节点需要 2 个数据盘：/data/db 和 /data/minio
+MOUNTS=("/data/db" "/data/minio")
+
+for i in "${!UNATTACHED[@]}"; do
+    disk="${UNATTACHED[$i]}"
+    mount_point="${MOUNTS[$i]:-}"
+    [ -z "$mount_point" ] && break
+
+    if ! blkid "$disk" | grep -q "TYPE"; then
+        echo "格式化 $disk 为 ext4..."
+        mkfs.ext4 -F "$disk"
+    fi
+
+    mkdir -p "$mount_point"
+    if ! mount | grep -q "$mount_point"; then
+        mount "$disk" "$mount_point"
+        echo "$disk 已挂载到 $mount_point"
+    fi
+
+    UUID=$(blkid -s UUID -o value "$disk")
+    if ! grep -q "$UUID" /etc/fstab 2>/dev/null; then
+        echo "UUID=$UUID $mount_point ext4 defaults,nofail 0 2" >> /etc/fstab
+        echo "已添加到 fstab: $UUID -> $mount_point"
+    fi
+done
+
+echo "=== 磁盘状态 ==="
+df -h /data/db /data/minio 2>/dev/null || echo "部分挂载点不存在"
+`
 }
 
 // createDirectories 创建工作目录
@@ -178,10 +284,12 @@ func createDirectories(client *utils.SSHClient, config model.DeployConfig) model
 		Status: "running",
 	}
 
-	dirs := "mkdir -p /opt/tsdd /data/db"
+	var dirs string
 	switch config.NodeRole {
 	case "db":
-		dirs = "mkdir -p /opt/tsdd /data/db/mysql /data/db/redis /data/minio"
+		dirs = "mkdir -p /opt/tsdd /data/db/mysql /data/db/redis"
+	case "minio":
+		dirs = "mkdir -p /opt/tsdd /data/minio"
 	case "app":
 		dirs = "mkdir -p /opt/tsdd /opt/tsdd/assets /opt/tsdd/ssl /opt/tsdd/web /data/db/wukongim"
 	default:
@@ -256,8 +364,8 @@ echo "配置文件已写入"
 	configStep.Message = fmt.Sprintf("已生成 %s 模式配置", config.NodeRole)
 	resp.Steps = append(resp.Steps, configStep)
 
-	// Step 6: 拉取镜像并启动
-	startStep := pullAndStartServices(client)
+	// Step 6: 拉取镜像并启动（AMI 部署跳过镜像拉取）
+	startStep := pullAndStartServices(client, config.FromAMI)
 	resp.Steps = append(resp.Steps, startStep)
 	if startStep.Status == "failed" {
 		resp.Success = false
@@ -272,7 +380,7 @@ echo "配置文件已写入"
 	resp.Success = true
 	resp.Message = fmt.Sprintf("%s 节点部署完成", config.NodeRole)
 
-	if config.NodeRole != "db" {
+	if config.NodeRole != "db" && config.NodeRole != "minio" {
 		resp.APIUrl = fmt.Sprintf("http://%s:%d", config.ExternalIP, config.APIPort)
 		resp.WebUrl = fmt.Sprintf("http://%s:%d", config.ExternalIP, config.WebPort)
 		resp.AdminUrl = fmt.Sprintf("http://%s:%d", config.ExternalIP, config.ManagerPort)
@@ -301,6 +409,12 @@ echo "=== MySQL ==="
 docker exec tsdd-mysql mysqladmin ping -h localhost 2>/dev/null && echo "MySQL: OK" || echo "MySQL: FAIL"
 echo "=== Redis ==="
 docker exec tsdd-redis redis-cli ping 2>/dev/null || echo "Redis: FAIL"
+`
+	case "minio":
+		checkCmd = `
+echo "=== 容器状态 ==="
+docker ps --format "table {{.Names}}\t{{.Status}}" | grep tsdd
+echo ""
 echo "=== MinIO ==="
 curl -sf http://localhost:9000/minio/health/live >/dev/null && echo "MinIO: OK" || echo "MinIO: FAIL"
 `

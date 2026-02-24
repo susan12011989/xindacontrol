@@ -12,6 +12,7 @@ import (
 	"server/internal/server/service/auth"
 	"server/pkg/dbs"
 	"server/pkg/entity"
+	"server/pkg/gostapi"
 	"time"
 
 	"github.com/zeromicro/go-zero/core/logx"
@@ -346,12 +347,8 @@ func buildStoragePushPayload(config *entity.MerchantStorageConfigs) map[string]i
 
 // 调用商户服务器存储配置 API
 func callMerchantStorageAPI(merchant *entity.Merchants, payload map[string]interface{}) error {
-	// 构建 URL (默认使用 5001 端口作为 API 端口)
-	apiPort := 5001
-	if merchant.Port > 0 {
-		apiPort = merchant.Port + 1 // API 端口通常是主端口 + 1
-	}
-	url := fmt.Sprintf("http://%s:%d/v1/control/storage", merchant.ServerIP, apiPort)
+	// 构建 URL（统一使用 API 端口 10002）
+	url := fmt.Sprintf("http://%s:%d/v1/control/storage", merchant.ServerIP, gostapi.MerchantAppPortHTTP)
 
 	// 序列化 payload
 	body, err := json.Marshal(payload)

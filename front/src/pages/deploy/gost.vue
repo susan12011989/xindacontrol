@@ -1,11 +1,12 @@
 <script lang="ts" setup>
-import type { DeployGostServerReq, ServerResp } from "@@/apis/deploy/type"
+import type { ServerResp, GostConfigSyncStatusResp, TlsCertificateResp, TlsStatusResp } from "@@/apis/deploy/type"
 import type { MerchantResp } from "@@/apis/merchant/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
-import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus, getProgramConfig, updateProgramConfig, getNginxCacheStatus, clearNginxCache, persistGostConfig, getGostConfigSyncStatus } from "@@/apis/deploy"
-import type { GostConfigSyncStatusResp } from "@@/apis/deploy/type"
-import { getMerchantList } from "@@/apis/merchant"
-import { getCloudAccountList } from "@@/apis/cloud_account"
+import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus, getProgramConfig, updateProgramConfig, getNginxCacheStatus, clearNginxCache, persistGostConfig, getGostConfigSyncStatus, setupGostDeploy, diagnoseGost, generateTlsCerts, getTlsCerts, disableTlsCerts, getTlsCertFingerprint, getTlsStatus, verifyTlsStatus, batchUpgradeTls, batchRollbackTls } from "@@/apis/deploy"
+import type { GostCheckResult } from "@@/apis/monitor/type"
+import { checkGostServers } from "@@/apis/monitor"
+import { getMerchantList, listMerchantGostServers } from "@@/apis/merchant"
+import type { MerchantGostServerResp } from "@@/apis/merchant/type"
 import { createStreamRequest } from "@/http/axios"
 
 defineOptions({
@@ -13,128 +14,152 @@ defineOptions({
 })
 
 // ========== GOST 一键部署 ==========
-const deployDialogVisible = ref(false)
-const deployLogs = ref<string[]>([])
-const isDeploying = ref(false)
-const deployLogRef = ref<HTMLDivElement>()
-
-// 云账号列表
-const cloudAccountList = ref<any[]>([])
+const setupDialogVisible = ref(false)
+const setupLogs = ref<string[]>([])
+const isSettingUp = ref(false)
+const setupLogRef = ref<HTMLDivElement>()
 
 // 部署表单
-const deployForm = reactive<DeployGostServerReq>({
-  cloud_account_id: 0,
-  region_id: "ap-southeast-1",
-  instance_type: "",
-  image_id: "",
-  server_name: "",
-  group_id: 0,
-  password: "",
-  bandwidth: "5"
+const setupForm = reactive({
+  server_id: 0,
+  merchant_ids: [] as number[],
+  forward_type: 1
 })
 
-// 加载云账号列表
-async function loadCloudAccounts() {
-  try {
-    const res = await getCloudAccountList({ page: 1, size: 100 })
-    cloudAccountList.value = Array.isArray(res.data?.list) ? res.data.list : []
-  } catch (e) {
-    console.error("加载云账号失败:", e)
-  }
-}
-
 // 打开部署弹窗
-function openDeployDialog() {
-  deployLogs.value = []
-  deployForm.cloud_account_id = cloudAccountList.value[0]?.id || 0
-  deployForm.region_id = "ap-southeast-1"
-  deployForm.server_name = `gost-${Date.now()}`
-  deployDialogVisible.value = true
+function openSetupDialog() {
+  setupLogs.value = []
+  setupForm.server_id = 0
+  setupForm.merchant_ids = []
+  setupForm.forward_type = 1
+  setupDialogVisible.value = true
 }
 
 // 执行一键部署
-function startDeploy() {
-  if (!deployForm.cloud_account_id) {
-    ElMessage.warning("请选择云账号")
+function startSetup() {
+  if (!setupForm.server_id) {
+    ElMessage.warning("请选择服务器")
     return
   }
-  if (!deployForm.region_id) {
-    ElMessage.warning("请选择地区")
+  if (setupForm.merchant_ids.length === 0) {
+    ElMessage.warning("请选择至少一个商户")
     return
   }
 
-  isDeploying.value = true
-  deployLogs.value = ["开始部署 GOST 服务器..."]
+  isSettingUp.value = true
+  setupLogs.value = ["开始部署..."]
 
-  const cancel = createStreamRequest(
-    {
-      url: "deploy/gost/deploy",
-      method: "POST",
-      data: deployForm
-    },
+  setupGostDeploy(
+    setupForm,
     (data: any, isComplete?: boolean) => {
       if (data?.message) {
-        deployLogs.value.push(data.message)
+        setupLogs.value.push(data.message)
         scrollToBottom()
       }
       if (isComplete) {
-        isDeploying.value = false
+        isSettingUp.value = false
         if (data?.success) {
           ElMessage.success("部署完成!")
-          loadServerList() // 刷新服务器列表
+          loadRecords()
+          loadSyncStatus()
         }
       }
     },
     (error: any) => {
-      isDeploying.value = false
-      deployLogs.value.push(`错误: ${error?.message || error}`)
+      isSettingUp.value = false
+      setupLogs.value.push(`错误: ${error?.message || error}`)
       ElMessage.error("部署失败")
     }
   )
 }
 
+// 全选/取消全选商户
+function toggleAllMerchants(checked: boolean) {
+  if (checked) {
+    setupForm.merchant_ids = merchantList.value.map(m => m.id)
+  } else {
+    setupForm.merchant_ids = []
+  }
+}
+
 // 滚动到日志底部
 function scrollToBottom() {
   nextTick(() => {
-    if (deployLogRef.value) {
-      deployLogRef.value.scrollTop = deployLogRef.value.scrollHeight
+    if (setupLogRef.value) {
+      setupLogRef.value.scrollTop = setupLogRef.value.scrollHeight
     }
   })
 }
-
-// AWS 地区列表（用于一键部署）
-const regionOptions = [
-  { value: "ap-southeast-1", label: "新加坡" },
-  { value: "ap-northeast-1", label: "东京" },
-  { value: "ap-east-1", label: "香港" },
-  { value: "us-west-2", label: "美西(俄勒冈)" },
-  { value: "us-east-1", label: "美东(弗吉尼亚)" },
-  { value: "eu-west-1", label: "欧洲(爱尔兰)" }
-]
 
 // ========== 服务器选择（仅系统服务器） ==========
 const allServerList = ref<ServerResp[]>([])
 const serverList = ref<ServerResp[]>([])
 const selectedServerId = ref<number>(0)
+const merchantGostServers = ref<MerchantGostServerResp[]>([])
 
-// 仅 Service 视图
-
-// 获取系统服务器列表
+// 获取所有系统服务器（用于一键部署弹窗等）
 async function loadServerList() {
   try {
     const res = await getServerList({ page: 1, size: 5000 })
     const list = res.data?.list ?? []
     allServerList.value = Array.isArray(list) ? list : []
-    serverList.value = (allServerList.value || []).filter(s => s.server_type === 2)
-    if (serverList.value.length > 0 && !selectedServerId.value) {
-      selectedServerId.value = serverList.value[0].id
-    }
-    if (selectedServerId.value) {
-      await loadRecords()
-      loadSyncStatus()
-    }
   } catch (error) {
     console.error("获取服务器列表失败:", error)
+  }
+}
+
+// 选择商户后，加载该商户关联的 GOST 服务器
+async function onMerchantChange() {
+  // 重置服务器选择
+  selectedServerId.value = 0
+  serverList.value = []
+  merchantGostServers.value = []
+  records.value = []
+  gostUnreachable.value = false
+
+  // 重置 TLS 数据
+  certs.value = []
+  tlsFingerprint.value = ""
+  fingerprintExpires.value = ""
+  tlsStatus.value = null
+
+  if (!selectedMerchantId.value) return
+
+  try {
+    const res = await listMerchantGostServers(selectedMerchantId.value)
+    merchantGostServers.value = Array.isArray(res.data) ? res.data : []
+
+    // 构建服务器下拉列表（从关联表中提取）
+    serverList.value = merchantGostServers.value.map(mg => ({
+      id: mg.server_id,
+      name: mg.server_name,
+      host: mg.server_host,
+      server_type: 2,
+    } as ServerResp))
+
+    // 只有一台服务器时自动选中
+    if (serverList.value.length === 1) {
+      selectedServerId.value = serverList.value[0].id
+    } else if (serverList.value.length > 1) {
+      // 优先选主服务器
+      const primary = merchantGostServers.value.find(mg => mg.is_primary === 1)
+      if (primary) {
+        selectedServerId.value = primary.server_id
+      } else {
+        selectedServerId.value = serverList.value[0].id
+      }
+    }
+  } catch (error) {
+    console.error("获取商户 GOST 服务器失败:", error)
+  }
+
+  // 加载当前 tab 的数据
+  if (selectedServerId.value) {
+    loadRecords()
+    loadSyncStatus()
+  }
+  if (activeTab.value === "tls") {
+    loadTlsData()
   }
 }
 
@@ -241,13 +266,16 @@ async function loadRecords() {
       ;(xGridOpt.pagerConfig as any).currentPage = pagination.currentPage
       ;(xGridOpt.pagerConfig as any).pageSize = pagination.pageSize
     }
+    gostUnreachable.value = false
   } catch (error: any) {
     console.error("查询列表失败:", error)
     // 检查是否是连接被拒绝的错误
     const errMsg = error?.message || String(error)
     if (errMsg.includes("connection refused") || errMsg.includes("connect:")) {
-      ElMessage.error("GOST 服务未运行或端口未开放，请先安装 GOST")
+      gostUnreachable.value = true
+      ElMessage.error("GOST 服务未运行，请点击「诊断修复」按钮")
     } else if (errMsg.includes("timeout")) {
+      gostUnreachable.value = true
       ElMessage.error("连接超时，请检查服务器网络")
     } else {
       ElMessage.error("查询失败: " + errMsg)
@@ -722,24 +750,302 @@ async function doPersistConfig() {
   }
 }
 
+// ========== 健康检查 ==========
+const healthCheckDialogVisible = ref(false)
+const isChecking = ref(false)
+const healthCheckResults = ref<GostCheckResult[]>([])
+
+async function doHealthCheck() {
+  isChecking.value = true
+  healthCheckDialogVisible.value = true
+  healthCheckResults.value = []
+  try {
+    const res = await checkGostServers()
+    healthCheckResults.value = (res as any).data?.list || res?.list || []
+    const downCount = healthCheckResults.value.filter(r => r.status === "down").length
+    if (downCount > 0) {
+      ElMessage.warning(`检查完成，${downCount} 台服务器异常`)
+    } else {
+      ElMessage.success("所有服务器正常")
+    }
+  } catch (e: any) {
+    ElMessage.error(e?.message || "健康检查失败")
+  } finally {
+    isChecking.value = false
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes === 0) return "0 B"
+  const k = 1024
+  const sizes = ["B", "KB", "MB", "GB", "TB"]
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${(bytes / k ** i).toFixed(1)} ${sizes[i]}`
+}
+
+function getStatusType(status: string): "success" | "danger" | "warning" | "info" {
+  if (status === "up") return "success"
+  if (status === "down") return "danger"
+  if (status === "degraded") return "warning"
+  return "info"
+}
+
+function getStatusLabel(status: string): string {
+  if (status === "up") return "正常"
+  if (status === "down") return "不可达"
+  if (status === "degraded") return "异常"
+  return "未知"
+}
+
+// ========== GOST 诊断修复 ==========
+const diagnoseDialogVisible = ref(false)
+const isDiagnosing = ref(false)
+const diagnoseLogs = ref<string[]>([])
+const diagnoseLogRef = ref<HTMLDivElement>()
+const gostUnreachable = ref(false)
+
+function startDiagnose() {
+  if (!selectedServerId.value) {
+    ElMessage.warning("请先选择服务器")
+    return
+  }
+  isDiagnosing.value = true
+  diagnoseDialogVisible.value = true
+  diagnoseLogs.value = ["开始诊断..."]
+
+  diagnoseGost(
+    { server_id: selectedServerId.value },
+    (data: any, isComplete?: boolean) => {
+      if (data?.message) {
+        diagnoseLogs.value.push(data.message)
+        nextTick(() => {
+          if (diagnoseLogRef.value) {
+            diagnoseLogRef.value.scrollTop = diagnoseLogRef.value.scrollHeight
+          }
+        })
+      }
+      if (isComplete) {
+        isDiagnosing.value = false
+        if (data?.success) {
+          ElMessage.success("诊断修复完成!")
+          gostUnreachable.value = false
+          loadRecords()
+          loadSyncStatus()
+        }
+      }
+    },
+    (error: any) => {
+      isDiagnosing.value = false
+      diagnoseLogs.value.push(`错误: ${error?.message || error}`)
+      ElMessage.error("诊断修复失败")
+    }
+  )
+}
+
+// ========== Tab 切换 ==========
+const activeTab = ref("tunnel")
+
+// ========== TLS 证书管理 ==========
+const tlsLoading = ref(false)
+const certs = ref<TlsCertificateResp[]>([])
+const tlsFingerprint = ref("")
+const fingerprintExpires = ref("")
+const tlsStatus = ref<TlsStatusResp | null>(null)
+
+const selectedMerchantName = computed(() => {
+  const m = merchantList.value.find(m => m.id === selectedMerchantId.value)
+  return m?.name || ""
+})
+
+async function loadTlsData() {
+  if (!selectedMerchantId.value) return
+  await Promise.all([loadCerts(), loadFingerprint(), loadTlsStatus()])
+}
+
+async function loadCerts() {
+  if (!selectedMerchantId.value) return
+  tlsLoading.value = true
+  try {
+    const res = await getTlsCerts(selectedMerchantId.value)
+    const { ca, server } = res.data || {}
+    certs.value = [ca, server].filter(Boolean)
+  } catch {
+    certs.value = []
+  } finally {
+    tlsLoading.value = false
+  }
+}
+
+async function loadFingerprint() {
+  if (!selectedMerchantId.value) return
+  try {
+    const res = await getTlsCertFingerprint(selectedMerchantId.value)
+    tlsFingerprint.value = res.data.fingerprint || ""
+    fingerprintExpires.value = res.data.expires_at || ""
+  } catch {
+    tlsFingerprint.value = ""
+  }
+}
+
+async function loadTlsStatus() {
+  if (!selectedMerchantId.value) return
+  try {
+    const res = await getTlsStatus(selectedMerchantId.value)
+    tlsStatus.value = res.data
+  } catch {
+    tlsStatus.value = null
+  }
+}
+
+async function handleTlsGenerate() {
+  if (!selectedMerchantId.value) return
+  ElMessageBox.confirm(
+    `将为商户「${selectedMerchantName.value}」生成新的 CA 根证书和服务器证书。已部署的服务器需要重新升级 TLS。确定继续？`,
+    "生成证书",
+    { type: "warning" }
+  ).then(async () => {
+    tlsLoading.value = true
+    try {
+      await generateTlsCerts({ merchant_id: selectedMerchantId.value! })
+      ElMessage.success("证书生成成功")
+      await loadCerts()
+      await loadFingerprint()
+    } catch (e: any) {
+      ElMessage.error(e.message || "证书生成失败")
+    } finally {
+      tlsLoading.value = false
+    }
+  })
+}
+
+async function handleTlsDisable() {
+  if (!selectedMerchantId.value) return
+  ElMessageBox.confirm(
+    `停用商户「${selectedMerchantName.value}」的证书后，新部署的服务器将不会自动启用 TLS。确定停用？`,
+    "停用证书",
+    { type: "warning" }
+  ).then(async () => {
+    tlsLoading.value = true
+    try {
+      await disableTlsCerts({ merchant_id: selectedMerchantId.value! })
+      ElMessage.success("证书已停用")
+      await loadCerts()
+      tlsFingerprint.value = ""
+    } catch (e: any) {
+      ElMessage.error(e.message || "停用失败")
+    } finally {
+      tlsLoading.value = false
+    }
+  })
+}
+
+function copyFingerprint() {
+  if (!tlsFingerprint.value) return
+  navigator.clipboard.writeText(tlsFingerprint.value).then(() => {
+    ElMessage.success("指纹已复制到剪贴板")
+  })
+}
+
+async function handleTlsUpgrade() {
+  if (!selectedMerchantId.value) return
+  ElMessageBox.confirm(
+    `将商户「${selectedMerchantName.value}」的所有 GOST 服务器升级为 TLS 模式？`,
+    "批量升级",
+    { type: "warning" }
+  ).then(async () => {
+    tlsLoading.value = true
+    try {
+      const res = await batchUpgradeTls({ merchant_id: selectedMerchantId.value! })
+      const { success, failed, total } = res.data
+      if (failed === 0) {
+        ElMessage.success(`升级完成，全部成功 (${success}/${total})`)
+      } else {
+        ElMessage.warning(`升级完成，成功 ${success}，失败 ${failed}`)
+      }
+      await loadTlsStatus()
+    } catch (e: any) {
+      ElMessage.error(e.message || "升级失败")
+    } finally {
+      tlsLoading.value = false
+    }
+  })
+}
+
+async function handleTlsRollback() {
+  if (!selectedMerchantId.value) return
+  ElMessageBox.confirm(
+    `将商户「${selectedMerchantName.value}」的所有 GOST 服务器回滚为 TCP 模式？`,
+    "批量回滚",
+    { type: "warning" }
+  ).then(async () => {
+    tlsLoading.value = true
+    try {
+      const res = await batchRollbackTls({ merchant_id: selectedMerchantId.value! })
+      const { success, failed, total } = res.data
+      if (failed === 0) {
+        ElMessage.success(`回滚完成，全部成功 (${success}/${total})`)
+      } else {
+        ElMessage.warning(`回滚完成，成功 ${success}，失败 ${failed}`)
+      }
+      await loadTlsStatus()
+    } catch (e: any) {
+      ElMessage.error(e.message || "回滚失败")
+    } finally {
+      tlsLoading.value = false
+    }
+  })
+}
+
+async function handleTlsVerify() {
+  if (!selectedMerchantId.value) return
+  tlsLoading.value = true
+  try {
+    const res = await verifyTlsStatus({ merchant_id: selectedMerchantId.value! })
+    tlsStatus.value = res.data
+    ElMessage.success("验证完成")
+  } catch (e: any) {
+    ElMessage.error(e.message || "验证失败")
+  } finally {
+    tlsLoading.value = false
+  }
+}
+
+// Tab 切换时加载数据
+watch(activeTab, (tab) => {
+  if (tab === "tls" && selectedMerchantId.value && !certs.value.length) {
+    loadTlsData()
+  }
+})
+
 // ========== 生命周期 ==========
 onMounted(() => {
+  // 加载所有服务器（用于一键部署弹窗等场景）
   loadServerList()
-  loadCloudAccounts()
   // 加载商户下拉
   getMerchantList({ page: 1, size: 2000 }).then((res) => {
     merchantList.value = Array.isArray(res.data?.list) ? res.data.list : []
+    // 只有一个商户时自动选中
+    if (merchantList.value.length === 1) {
+      selectedMerchantId.value = merchantList.value[0].id
+      onMerchantChange()
+    }
   })
 })
 </script>
 
 <template>
   <div class="app-container">
-    <!-- 服务器选择 + 视图切换 -->
+    <!-- 顶部：商户 → 服务器 → 操作 -->
     <el-card class="server-select-card" shadow="never">
       <div class="flex items-center gap-4 flex-wrap">
-        <span class="font-bold w-24">系统服务器:</span>
-        <el-select v-model="selectedServerId" placeholder="请选择服务器" style="width: 450px" filterable>
+        <span class="font-bold">商户:</span>
+        <el-select v-model="selectedMerchantId" placeholder="请选择商户" style="width: 280px" filterable @change="onMerchantChange">
+          <el-option v-for="m in merchantList" :key="m.id" :label="`${m.name} (${m.no})`" :value="m.id" />
+        </el-select>
+
+        <el-divider direction="vertical" />
+        <span class="font-bold">GOST 服务器:</span>
+        <el-select v-model="selectedServerId" placeholder="请先选择商户" style="width: 360px" filterable :disabled="!selectedMerchantId">
           <el-option
             v-for="server in serverList"
             :key="server.id"
@@ -752,102 +1058,227 @@ onMounted(() => {
             </div>
           </el-option>
         </el-select>
-        <el-tag type="info">共 {{ serverList.length }} 台</el-tag>
-        <div class="flex items-center gap-2 ml-6">
-          <span class="font-bold">商户:</span>
-          <el-select v-model="selectedMerchantId" placeholder="选择商户(可选)" style="width: 260px" filterable clearable @change="loadRecords">
-            <el-option v-for="m in merchantList" :key="m.id" :label="`${m.name}${(m as any).port ? ` (端口:${(m as any).port})` : ''}`" :value="m.id" />
-          </el-select>
-        </div>
+        <el-tag v-if="serverList.length > 0" type="info">{{ serverList.length }} 台</el-tag>
 
-        <el-button type="primary" icon="Refresh" @click="loadRecords">刷新列表</el-button>
         <el-divider direction="vertical" />
-        <el-button type="info" icon="Connection" @click="openForwardDialog">配置转发</el-button>
-        <el-button type="info" icon="View" @click="openForwardStatusDialog">转发状态</el-button>
-        <el-button type="danger" icon="Delete" @click="doClearForward">清除转发</el-button>
-        <el-divider direction="vertical" />
-        <el-button type="warning" icon="Document" @click="openConfigDialog">配置文件</el-button>
-        <el-divider direction="vertical" />
-        <!-- 配置同步状态 -->
-        <el-tooltip v-if="configSyncStatus" :content="configSyncStatus.message" placement="bottom">
-          <el-tag
-            :type="configSyncStatus.synced ? 'success' : 'warning'"
-            style="cursor: pointer"
-            @click="loadSyncStatus"
-          >
-            {{ configSyncStatus.synced ? '已同步' : '未同步' }}
-            <span v-if="!configSyncStatus.synced" class="text-xs">
-              (运行:{{ configSyncStatus.running_service_count }} / 文件:{{ configSyncStatus.file_service_count }})
-            </span>
-          </el-tag>
-        </el-tooltip>
-        <el-button
-          type="success"
-          icon="Download"
-          :loading="isPersisting"
-          :disabled="configSyncStatus?.synced === true"
-          @click="doPersistConfig"
-        >保存到文件</el-button>
-        <el-divider direction="vertical" />
-        <el-button type="info" icon="Box" @click="openCacheDialog">缓存管理</el-button>
-        <el-divider direction="vertical" />
-        <el-button type="success" icon="Plus" @click="openDeployDialog">一键部署 GOST 服务器</el-button>
+        <el-button type="primary" icon="Refresh" @click="loadRecords" :disabled="!selectedServerId">刷新</el-button>
+        <el-button type="success" icon="Plus" @click="openSetupDialog">一键部署</el-button>
+        <el-button type="primary" icon="Monitor" :loading="isChecking" @click="doHealthCheck" :disabled="!selectedServerId">健康检查</el-button>
+        <el-button type="warning" icon="SetUp" :loading="isDiagnosing" @click="startDiagnose" :disabled="!selectedServerId">诊断修复</el-button>
       </div>
     </el-card>
 
-    <!-- 列表 -->
-    <el-card class="service-list-card" shadow="never">
-      <vxe-grid ref="xGridDom" v-bind="xGridOpt">
-        <template #pager>
-          <vxe-pager
-            v-model:current-page="pagination.currentPage"
-            v-model:page-size="pagination.pageSize"
-            :total="pagination.total"
-            :page-sizes="[10, 20, 50, 100]"
-            @page-change="handlePageChange"
-          />
-        </template>
-        <!-- 工具栏按钮 -->
-        <template #toolbar-btns>
-          <vxe-button icon="vxe-icon-refresh" @click="loadRecords">刷新列表</vxe-button>
-          <vxe-button status="primary" icon="vxe-icon-add" @click="onCreate">新增 Service</vxe-button>
-        </template>
+    <template v-if="selectedMerchantId">
+    <!-- GOST 不可达提示 -->
+    <el-alert
+      v-if="gostUnreachable && selectedServerId"
+      type="error"
+      show-icon
+      :closable="false"
+      style="margin-bottom: 16px"
+    >
+      <template #title>
+        <span>GOST 服务不可达 (connection refused)</span>
+      </template>
+      <template #default>
+        <span>当前服务器的 GOST 服务未运行或端口未开放，无法查询转发规则。</span>
+        <el-button type="warning" size="small" style="margin-left: 12px" :loading="isDiagnosing" @click="startDiagnose">
+          诊断修复
+        </el-button>
+      </template>
+    </el-alert>
 
-        <!-- 商户列 -->
-        <template #service-merchant="{ row }">
-          <template v-if="getMerchantByServiceName(row.name)">
-            <div class="merchant-info">
-              <span class="merchant-name">{{ getMerchantByServiceName(row.name)?.name }}</span>
-              <span class="merchant-port text-xs text-gray-400">端口: {{ (getMerchantByServiceName(row.name) as any)?.port }}</span>
+    <!-- 无关联服务器提示 -->
+    <el-alert
+      v-if="serverList.length === 0"
+      type="warning"
+      show-icon
+      :closable="false"
+      style="margin-bottom: 16px"
+    >
+      该商户暂无关联的 GOST 服务器，请先在「一键部署」中为该商户配置服务器。
+    </el-alert>
+
+    <!-- Tab 切换 -->
+    <el-tabs v-model="activeTab" type="border-card">
+      <!-- Tab 1: 隧道服务 -->
+      <el-tab-pane label="隧道服务" name="tunnel">
+        <!-- 隧道服务工具栏 -->
+        <div class="tunnel-toolbar flex items-center gap-2 flex-wrap" style="margin-bottom: 12px">
+          <el-button type="info" icon="Connection" @click="openForwardDialog">配置转发</el-button>
+          <el-button type="info" icon="View" @click="openForwardStatusDialog">转发状态</el-button>
+          <el-button type="danger" icon="Delete" @click="doClearForward">清除转发</el-button>
+          <el-divider direction="vertical" />
+          <el-button type="warning" icon="Document" @click="openConfigDialog">配置文件</el-button>
+          <el-tooltip v-if="configSyncStatus" :content="configSyncStatus.message" placement="bottom">
+            <el-tag
+              :type="configSyncStatus.synced ? 'success' : 'warning'"
+              style="cursor: pointer"
+              @click="loadSyncStatus"
+            >
+              {{ configSyncStatus.synced ? '已同步' : '未同步' }}
+              <span v-if="!configSyncStatus.synced" class="text-xs">
+                (运行:{{ configSyncStatus.running_service_count }} / 文件:{{ configSyncStatus.file_service_count }})
+              </span>
+            </el-tag>
+          </el-tooltip>
+          <el-button
+            type="success"
+            icon="Download"
+            :loading="isPersisting"
+            :disabled="configSyncStatus?.synced === true"
+            @click="doPersistConfig"
+          >保存到文件</el-button>
+          <el-divider direction="vertical" />
+          <el-button type="info" icon="Box" @click="openCacheDialog">缓存管理</el-button>
+        </div>
+
+        <!-- 服务列表 -->
+        <vxe-grid ref="xGridDom" v-bind="xGridOpt">
+          <template #pager>
+            <vxe-pager
+              v-model:current-page="pagination.currentPage"
+              v-model:page-size="pagination.pageSize"
+              :total="pagination.total"
+              :page-sizes="[10, 20, 50, 100]"
+              @page-change="handlePageChange"
+            />
+          </template>
+          <template #toolbar-btns>
+            <vxe-button icon="vxe-icon-refresh" @click="loadRecords">刷新列表</vxe-button>
+            <vxe-button status="primary" icon="vxe-icon-add" @click="onCreate">新增 Service</vxe-button>
+          </template>
+          <template #service-merchant="{ row }">
+            <template v-if="getMerchantByServiceName(row.name)">
+              <div class="merchant-info">
+                <span class="merchant-name">{{ getMerchantByServiceName(row.name)?.name }}</span>
+                <span class="merchant-port text-xs text-gray-400">端口: {{ (getMerchantByServiceName(row.name) as any)?.port }}</span>
+              </div>
+            </template>
+            <span v-else class="text-gray-400">-</span>
+          </template>
+          <template #service-types="{ row }">
+            <div class="flex items-center gap-1">
+              <el-tag size="small" type="info" v-if="row.handler?.type">H: {{ row.handler.type }}</el-tag>
+              <el-tag size="small" type="info" v-if="row.listener?.type">L: {{ row.listener.type }}</el-tag>
             </div>
           </template>
-          <span v-else class="text-gray-400">-</span>
-        </template>
-        <!-- 类型列 -->
-        <template #service-types="{ row }">
-          <div class="flex items-center gap-1">
-            <el-tag size="small" type="info" v-if="row.handler?.type">H: {{ row.handler.type }}</el-tag>
-            <el-tag size="small" type="info" v-if="row.listener?.type">L: {{ row.listener.type }}</el-tag>
-          </div>
-        </template>
-        <!-- Chain 列 -->
-        <template #service-chain="{ row }">
-          <div class="flex flex-col">
-            <div class="truncate" :title="row.handler?.chain || '-'">
-              {{ row.handler?.chain || '-' }}
+          <template #service-chain="{ row }">
+            <div class="flex flex-col">
+              <div class="truncate" :title="row.handler?.chain || '-'">
+                {{ row.handler?.chain || '-' }}
+              </div>
+              <div class="text-xs text-gray-500 truncate" :title="(chainMap[row.handler?.chain]?.hops?.[0]?.nodes?.map((n: any) => n.addr).join(', ')) || '-'">
+                {{ (chainMap[row.handler?.chain]?.hops?.[0]?.nodes?.map((n: any) => n.addr).join(', ')) || '-' }}
+              </div>
             </div>
-            <div class="text-xs text-gray-500 truncate" :title="(chainMap[row.handler?.chain]?.hops?.[0]?.nodes?.map((n: any) => n.addr).join(', ')) || '-'">
-              {{ (chainMap[row.handler?.chain]?.hops?.[0]?.nodes?.map((n: any) => n.addr).join(', ')) || '-' }}
+          </template>
+          <template #row-operate="{ row }">
+            <el-button v-permission="['admin']" link type="primary" size="small" @click="crudStore.onShowModal(row)">编辑</el-button>
+            <el-button v-permission="['admin']" link type="danger" size="small" @click="onDelete(row)">删除</el-button>
+          </template>
+        </vxe-grid>
+      </el-tab-pane>
+
+      <!-- Tab 2: TLS 证书 -->
+      <el-tab-pane label="TLS 证书" name="tls">
+          <!-- 证书管理 -->
+          <el-card v-loading="tlsLoading" shadow="never" style="margin-bottom: 0">
+            <template #header>
+              <div class="card-header">
+                <span class="font-bold text-base">TLS 证书 — {{ selectedMerchantName }}</span>
+                <div>
+                  <el-button type="primary" @click="handleTlsGenerate">生成证书</el-button>
+                  <el-button type="danger" :disabled="certs.length === 0" @click="handleTlsDisable">停用证书</el-button>
+                </div>
+              </div>
+            </template>
+            <el-table v-if="certs.length > 0" :data="certs" border size="small">
+              <el-table-column prop="name" label="名称" width="160" />
+              <el-table-column label="类型" width="120">
+                <template #default="{ row }">
+                  <el-tag :type="row.cert_type === 1 ? 'warning' : 'primary'" size="small">
+                    {{ row.cert_type === 1 ? 'CA 根证书' : '服务器证书' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="80">
+                <template #default="{ row }">
+                  <el-tag :type="row.status === 1 ? 'success' : 'info'" size="small">
+                    {{ row.status === 1 ? '启用' : '停用' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="fingerprint" label="指纹 (SHA-256)" show-overflow-tooltip />
+              <el-table-column prop="expires_at" label="过期时间" width="160" />
+              <el-table-column prop="created_at" label="创建时间" width="160" />
+            </el-table>
+            <el-empty v-else description="暂未生成证书，请点击「生成证书」" />
+          </el-card>
+
+          <!-- 证书指纹（App 端 Pinning） -->
+          <el-card v-if="tlsFingerprint" shadow="never" class="mt-4">
+            <template #header>
+              <span class="font-bold text-base">App 证书指纹 (Certificate Pinning)</span>
+            </template>
+            <el-descriptions :column="1" border size="small">
+              <el-descriptions-item label="SHA-256 指纹">
+                <code class="fingerprint-text">{{ tlsFingerprint }}</code>
+                <el-button type="primary" link size="small" style="margin-left: 8px" @click="copyFingerprint">复制</el-button>
+              </el-descriptions-item>
+              <el-descriptions-item label="证书过期时间">{{ fingerprintExpires }}</el-descriptions-item>
+            </el-descriptions>
+          </el-card>
+
+          <!-- 系统服务器 TLS 状态 -->
+          <el-card v-loading="tlsLoading" shadow="never" class="mt-4">
+            <template #header>
+              <div class="card-header">
+                <span class="font-bold text-base">GOST 服务器 TLS 状态 — {{ selectedMerchantName }}</span>
+                <div>
+                  <el-button @click="handleTlsVerify">验证连接</el-button>
+                  <el-button type="warning" @click="handleTlsRollback">批量回滚 TCP</el-button>
+                  <el-button type="success" :disabled="certs.length === 0" @click="handleTlsUpgrade">批量升级 TLS</el-button>
+                </div>
+              </div>
+            </template>
+            <div v-if="tlsStatus">
+              <el-descriptions :column="3" border size="small" class="mb-4">
+                <el-descriptions-item label="总数">{{ tlsStatus.total }}</el-descriptions-item>
+                <el-descriptions-item label="TLS">
+                  <el-tag type="success" size="small">{{ tlsStatus.tls_count }}</el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="TCP">
+                  <el-tag type="info" size="small">{{ tlsStatus.tcp_count }}</el-tag>
+                </el-descriptions-item>
+              </el-descriptions>
+              <el-table :data="tlsStatus.servers" border size="small">
+                <el-table-column prop="server_name" label="服务器" width="160" />
+                <el-table-column prop="host" label="IP" width="140" />
+                <el-table-column label="TLS" width="80">
+                  <template #default="{ row }">
+                    <el-tag :type="row.tls_enabled === 1 ? 'success' : 'info'" size="small">
+                      {{ row.tls_enabled === 1 ? 'TLS' : 'TCP' }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="验证" width="120">
+                  <template #default="{ row }">
+                    <el-tag v-if="row.tls_verified" type="success" size="small">通过</el-tag>
+                    <el-tag v-else-if="row.verify_error" type="danger" size="small">失败</el-tag>
+                    <span v-else class="text-gray-400">-</span>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="verify_error" label="错误详情" show-overflow-tooltip />
+                <el-table-column prop="tls_deployed_at" label="部署时间" width="160" />
+              </el-table>
             </div>
-          </div>
-        </template>
-        <!-- 操作列 -->
-        <template #row-operate="{ row }">
-          <el-button v-permission="['admin']" link type="primary" size="small" @click="crudStore.onShowModal(row)">编辑</el-button>
-          <el-button v-permission="['admin']" link type="danger" size="small" @click="onDelete(row)">删除</el-button>
-        </template>
-      </vxe-grid>
-    </el-card>
+            <el-empty v-else description="该商户暂无关联的 GOST 服务器" />
+          </el-card>
+      </el-tab-pane>
+    </el-tabs>
+    </template>
+    <el-empty v-else description="请先选择商户" style="margin-top: 40px" />
 
     <!-- 编辑弹窗（JSON） -->
     <vxe-modal ref="xModalDom" v-bind="xModalOpt">
@@ -859,42 +1290,68 @@ onMounted(() => {
       <vxe-form ref="xCreateFormDom" v-bind="xCreateFormOpt" />
     </vxe-modal>
 
-    <!-- 一键部署 GOST 服务器弹窗 -->
-    <el-dialog v-model="deployDialogVisible" title="一键部署 GOST 服务器" width="700px" :close-on-click-modal="false">
-      <el-form :model="deployForm" label-width="120px">
-        <el-form-item label="云账号" required>
-          <el-select v-model="deployForm.cloud_account_id" placeholder="选择云账号" style="width: 100%">
-            <el-option v-for="acc in cloudAccountList" :key="acc.id" :label="`${acc.name} (${acc.cloud_type})`" :value="acc.id" />
+    <!-- 一键部署 GOST 弹窗 -->
+    <el-dialog v-model="setupDialogVisible" title="一键部署 GOST" width="700px" :close-on-click-modal="false">
+      <el-form :model="setupForm" label-width="120px">
+        <el-form-item label="系统服务器" required>
+          <el-select v-model="setupForm.server_id" placeholder="选择服务器" style="width: 100%" filterable>
+            <el-option
+              v-for="s in allServerList.filter(s => s.server_type === 2)"
+              :key="s.id"
+              :label="`${s.name} (${s.host})`"
+              :value="s.id"
+            />
           </el-select>
         </el-form-item>
-        <el-form-item label="地区" required>
-          <el-select v-model="deployForm.region_id" placeholder="选择地区" style="width: 100%">
-            <el-option v-for="r in regionOptions" :key="r.value" :label="r.label" :value="r.value" />
-          </el-select>
+        <el-form-item label="转发类型" required>
+          <el-radio-group v-model="setupForm.forward_type">
+            <el-radio :value="1">
+              <span>加密 (relay+tls)</span>
+              <span class="text-xs text-gray-400 ml-1">(推荐)</span>
+            </el-radio>
+            <el-radio :value="2">
+              <span>直连 (tcp)</span>
+            </el-radio>
+          </el-radio-group>
         </el-form-item>
-        <el-form-item label="服务器名称">
-          <el-input v-model="deployForm.server_name" placeholder="自动生成" />
-        </el-form-item>
-        <el-form-item label="带宽(Mbps)">
-          <el-input v-model="deployForm.bandwidth" placeholder="默认 5Mbps" />
-        </el-form-item>
-        <el-form-item label="SSH密码">
-          <el-input v-model="deployForm.password" type="password" placeholder="留空则自动生成密钥" show-password />
+        <el-form-item label="选择商户" required>
+          <div style="margin-bottom: 8px">
+            <el-checkbox
+              :model-value="setupForm.merchant_ids.length === merchantList.length && merchantList.length > 0"
+              :indeterminate="setupForm.merchant_ids.length > 0 && setupForm.merchant_ids.length < merchantList.length"
+              @change="(val: any) => toggleAllMerchants(!!val)"
+            >全选 ({{ setupForm.merchant_ids.length }}/{{ merchantList.length }})</el-checkbox>
+          </div>
+          <el-checkbox-group v-model="setupForm.merchant_ids">
+            <el-checkbox
+              v-for="m in merchantList"
+              :key="m.id"
+              :value="m.id"
+              style="display: block; margin-left: 0; margin-bottom: 4px"
+            >
+              {{ m.name }}
+              <span class="text-xs text-gray-400 ml-1">端口: {{ (m as any).port || '-' }} | IP: {{ (m as any).server_ip || '-' }}</span>
+            </el-checkbox>
+          </el-checkbox-group>
         </el-form-item>
       </el-form>
 
+      <el-alert type="info" :closable="false" style="margin-bottom: 12px">
+        系统自动检测 GOST 安装状态，未安装则自动安装。TLS 证书如已生成也会自动部署。
+      </el-alert>
+
       <!-- 部署日志 -->
-      <div v-if="deployLogs.length > 0" class="deploy-log-container">
+      <div v-if="setupLogs.length > 0" class="deploy-log-container">
         <div class="deploy-log-title">部署日志:</div>
-        <div ref="deployLogRef" class="deploy-log-content">
-          <div v-for="(log, idx) in deployLogs" :key="idx" class="deploy-log-line">{{ log }}</div>
+        <div ref="setupLogRef" class="deploy-log-content">
+          <div v-for="(log, idx) in setupLogs" :key="idx" class="deploy-log-line">{{ log }}</div>
         </div>
       </div>
 
       <template #footer>
-        <el-button @click="deployDialogVisible = false" :disabled="isDeploying">取消</el-button>
-        <el-button type="primary" @click="startDeploy" :loading="isDeploying">
-          {{ isDeploying ? '部署中...' : '开始部署' }}
+        <el-button @click="setupDialogVisible = false" :disabled="isSettingUp">取消</el-button>
+        <el-button type="primary" @click="startSetup" :loading="isSettingUp">
+          {{ isSettingUp ? '部署中...' : '开始部署' }}
         </el-button>
       </template>
     </el-dialog>
@@ -1034,6 +1491,100 @@ onMounted(() => {
       </template>
     </el-dialog>
 
+    <!-- 健康检查结果弹窗 -->
+    <el-dialog v-model="healthCheckDialogVisible" title="GOST 健康检查" width="1100px" :close-on-click-modal="false">
+      <div v-loading="isChecking" element-loading-text="正在检查所有 GOST 服务器...">
+        <!-- 概览 -->
+        <div v-if="healthCheckResults.length > 0" class="health-summary">
+          <el-tag type="success" size="large">
+            正常: {{ healthCheckResults.filter(r => r.status === 'up').length }}
+          </el-tag>
+          <el-tag type="danger" size="large" style="margin-left: 8px">
+            不可达: {{ healthCheckResults.filter(r => r.status === 'down').length }}
+          </el-tag>
+          <el-tag type="warning" size="large" style="margin-left: 8px">
+            异常: {{ healthCheckResults.filter(r => r.status === 'degraded').length }}
+          </el-tag>
+        </div>
+
+        <!-- 结果表格 -->
+        <el-table :data="healthCheckResults" border stripe style="margin-top: 16px" max-height="500">
+          <el-table-column prop="server_name" label="服务器" width="140" />
+          <el-table-column prop="server_host" label="IP" width="140" />
+          <el-table-column label="状态" width="90" align="center">
+            <template #default="{ row }">
+              <el-tag :type="getStatusType(row.status)" effect="dark">{{ getStatusLabel(row.status) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="API" width="70" align="center">
+            <template #default="{ row }">
+              <el-tag :type="row.api_reachable ? 'success' : 'danger'" size="small">
+                {{ row.api_reachable ? 'OK' : 'FAIL' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="转发端口" width="110" align="center">
+            <template #default="{ row }">
+              <span :class="{ 'text-red-500': row.actual_ports < row.expected_ports }">
+                {{ row.actual_ports }} / {{ row.expected_ports }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="活跃连接" width="90" align="right">
+            <template #default="{ row }">{{ row.current_conns }}</template>
+          </el-table-column>
+          <el-table-column label="总连接" width="90" align="right">
+            <template #default="{ row }">{{ row.total_conns }}</template>
+          </el-table-column>
+          <el-table-column label="流入" width="90" align="right">
+            <template #default="{ row }">{{ formatBytes(row.input_bytes) }}</template>
+          </el-table-column>
+          <el-table-column label="流出" width="90" align="right">
+            <template #default="{ row }">{{ formatBytes(row.output_bytes) }}</template>
+          </el-table-column>
+          <el-table-column label="错误率" width="90" align="right">
+            <template #default="{ row }">
+              <span :class="{ 'text-red-500 font-bold': row.error_rate >= 0.05 }">
+                {{ (row.error_rate * 100).toFixed(2) }}%
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="耗时" width="70" align="right">
+            <template #default="{ row }">{{ row.check_duration }}ms</template>
+          </el-table-column>
+        </el-table>
+
+        <!-- 错误详情 -->
+        <div v-for="r in healthCheckResults.filter(r => r.error_message)" :key="r.server_id" class="health-error-item">
+          <el-alert :title="`${r.server_name}: ${r.error_message}`" type="error" :closable="false" show-icon />
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button :loading="isChecking" type="primary" @click="doHealthCheck">重新检查</el-button>
+        <el-button @click="healthCheckDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- GOST 诊断修复弹窗 -->
+    <el-dialog v-model="diagnoseDialogVisible" title="GOST 诊断修复" width="700px" :close-on-click-modal="false">
+      <el-alert type="info" :closable="false" style="margin-bottom: 12px">
+        自动检测 GOST 二进制、服务状态、配置文件、端口监听，并尝试修复问题。
+      </el-alert>
+      <div class="deploy-log-container">
+        <div class="deploy-log-title">诊断日志:</div>
+        <div ref="diagnoseLogRef" class="deploy-log-content">
+          <div v-for="(log, idx) in diagnoseLogs" :key="idx" class="deploy-log-line">{{ log }}</div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="diagnoseDialogVisible = false" :disabled="isDiagnosing">关闭</el-button>
+        <el-button type="warning" @click="startDiagnose" :loading="isDiagnosing">
+          {{ isDiagnosing ? '诊断中...' : '重新诊断' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
@@ -1044,12 +1595,6 @@ onMounted(() => {
 
 .server-select-card {
   margin-bottom: 20px;
-}
-
-.service-list-card {
-  :deep(.el-card__body) {
-    padding: 0;
-  }
 }
 
 .deploy-log-container {
@@ -1095,5 +1640,41 @@ onMounted(() => {
 
 .merchant-port {
   color: #909399;
+}
+
+.health-summary {
+  padding: 12px 16px;
+  background: #f5f7fa;
+  border-radius: 8px;
+}
+
+.health-error-item {
+  margin-top: 12px;
+}
+
+// TLS tab styles
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.mt-4 {
+  margin-top: 16px;
+}
+
+.mb-4 {
+  margin-bottom: 16px;
+}
+
+.fingerprint-text {
+  font-family: monospace;
+  font-size: 12px;
+  color: #303133;
+  word-break: break-all;
+}
+
+.tunnel-toolbar {
+  padding: 4px 0;
 }
 </style>

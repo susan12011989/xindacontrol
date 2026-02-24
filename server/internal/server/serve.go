@@ -15,6 +15,7 @@ import (
 	"server/internal/server/router/cloud_account"
 	"server/internal/server/router/cloud_aliyun"
 	"server/internal/server/router/cloud_aws"
+	cloudMonitorRouter "server/internal/server/router/cloud_monitor"
 	"server/internal/server/router/cloud_tencent"
 	"server/internal/server/router/deploy"
 	"server/internal/server/router/docker"
@@ -25,6 +26,7 @@ import (
 	"server/internal/server/router/merchant"
 	"server/internal/server/router/merchant_api"
 	"server/internal/server/router/merchant_storage"
+	monitorRouter "server/internal/server/router/monitor"
 	"server/internal/server/router/project"
 	"server/internal/server/router/resource_group"
 	"server/internal/server/router/resource_overview"
@@ -73,6 +75,10 @@ func Serve(ctx context.Context) {
 	_ = dbs.DBAdmin.Sync2(new(entity.ResourceGroups))
 	// 同步 Servers 表结构（新增字段自动加列）
 	_ = dbs.DBAdmin.Sync2(new(entity.Servers))
+	// 集群节点拓扑
+	_ = dbs.DBAdmin.Sync2(new(entity.ClusterNodes))
+	// GOST 监控日志
+	_ = dbs.DBAdmin.Sync2(new(entity.GostMonitorLogs))
 	// http api
 	ge := gin.Default()
 
@@ -124,13 +130,15 @@ func Serve(ctx context.Context) {
 	resource_group.Routes(group)    // 资源分组管理
 	resource_overview.Routes(group) // 资源总览
 	clients.Routes(group)           // 客户端管理
+	monitorRouter.Routes(group)        // GOST 监控
+	cloudMonitorRouter.Routes(group)   // 统一云监控 (AWS/阿里云/腾讯云)
 
 	// 配置静态文件服务（前端页面 + SPA 回退）
 	fsys := static.FS()
 	spa := static.NewSPAHandler(fsys, "index.html")
 
 	// 前端 publicPath 前缀（对应 VITE_PUBLIC_PATH）
-	const spaPrefix = "/jdt-admin"
+	const spaPrefix = "/hxdadmin"
 
 	// 上传资源的静态文件服务（Logo等）- 支持环境变量 ASSETS_DIR 覆盖
 	ge.Static("/assets", consts.AssetsDir)
@@ -157,12 +165,13 @@ func Serve(ctx context.Context) {
 	})
 
 	// 创建 HTTP 服务器
+	// WriteTimeout 需要足够大以支持部署等长时间操作（SSH 命令最长 15 分钟）
 	srv := &http.Server{
 		Addr:         cfg.C.ListenOn,
 		Handler:      ge,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  5 * time.Minute,
+		WriteTimeout: 20 * time.Minute,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	// 启动服务器（非阻塞）

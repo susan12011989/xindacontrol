@@ -61,6 +61,20 @@ export interface AliyunBalanceResp {
   balance: string
 }
 
+// 腾讯云账户余额响应
+export interface TencentBalanceResp {
+  balance: number // 可用余额（分）
+  balance_yuan: string // 可用余额（元）
+  cash_balance: number // 现金余额（分）
+  cash_balance_yuan: string // 现金余额（元）
+  income_balance: number // 收入余额（分，代金券等）
+  present_balance: number // 赠送余额（分）
+  freeze_balance: number // 冻结金额（分）
+  owe_balance: number // 欠费金额（分）
+  is_overdue: boolean // 是否欠费
+  is_overdue_balance: boolean // 余额是否小于0
+}
+
 // 云账号列表响应
 export interface QueryCloudAccountsResponse {
   list: CloudAccountResp[]
