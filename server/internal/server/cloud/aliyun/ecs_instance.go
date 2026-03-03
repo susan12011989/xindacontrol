@@ -1476,3 +1476,144 @@ func waitForSSHReady(host string, maxRetries int) error {
 	}
 	return fmt.Errorf("SSH connection timeout after %d attempts", maxRetries)
 }
+
+// BandwidthInfo 实例带宽信息
+type BandwidthInfo struct {
+	InternetMaxBandwidthIn  int32  `json:"internet_max_bandwidth_in"`
+	InternetMaxBandwidthOut int32  `json:"internet_max_bandwidth_out"`
+	InternetChargeType      string `json:"internet_charge_type"`
+	// EIP 相关 (实例绑定了 EIP 时填充)
+	EipAllocationId string `json:"eip_allocation_id,omitempty"`
+	EipBandwidth    int32  `json:"eip_bandwidth,omitempty"`
+	EipChargeType   string `json:"eip_charge_type,omitempty"`
+	HasEip          bool   `json:"has_eip"`
+}
+
+// GetInstanceBandwidth 查询实例的公网带宽信息
+func GetInstanceBandwidth(cloudAccountId int64, regionId, instanceId string) (*BandwidthInfo, error) {
+	cloud, err := GetSystemCloudAccount(cloudAccountId)
+	if err != nil {
+		return nil, err
+	}
+	client, err := NewEcsClient(cloud.AccessKey, cloud.AccessSecret, regionId)
+	if err != nil {
+		return nil, err
+	}
+
+	request := &ecs20140526.DescribeInstancesRequest{
+		RegionId:    tea.String(regionId),
+		InstanceIds: tea.String(fmt.Sprintf("[\"%s\"]", instanceId)),
+	}
+	response, err := client.DescribeInstances(request)
+	if err != nil {
+		return nil, fmt.Errorf("查询实例失败: %v", err)
+	}
+	if response.Body.Instances == nil || len(response.Body.Instances.Instance) == 0 {
+		return nil, fmt.Errorf("实例不存在: %s", instanceId)
+	}
+
+	inst := response.Body.Instances.Instance[0]
+	info := &BandwidthInfo{}
+	if inst.InternetMaxBandwidthIn != nil {
+		info.InternetMaxBandwidthIn = *inst.InternetMaxBandwidthIn
+	}
+	if inst.InternetMaxBandwidthOut != nil {
+		info.InternetMaxBandwidthOut = *inst.InternetMaxBandwidthOut
+	}
+	if inst.InternetChargeType != nil {
+		info.InternetChargeType = *inst.InternetChargeType
+	}
+	// 检测 EIP
+	if inst.EipAddress != nil && inst.EipAddress.AllocationId != nil && *inst.EipAddress.AllocationId != "" {
+		info.HasEip = true
+		info.EipAllocationId = *inst.EipAddress.AllocationId
+		if inst.EipAddress.Bandwidth != nil {
+			info.EipBandwidth = int32(*inst.EipAddress.Bandwidth)
+		}
+		if inst.EipAddress.InternetChargeType != nil {
+			info.EipChargeType = *inst.EipAddress.InternetChargeType
+		}
+		// EIP 场景下，实际带宽以 EIP 为准
+		if info.EipBandwidth > 0 {
+			info.InternetMaxBandwidthOut = info.EipBandwidth
+		}
+	}
+	return info, nil
+}
+
+// ModifyInstanceNetworkSpecRequest 修改实例公网带宽请求
+type ModifyInstanceNetworkSpecRequest struct {
+	CloudAccountId          int64  `json:"cloud_account_id"`
+	RegionId                string `json:"region_id"`
+	InstanceId              string `json:"instance_id"`
+	InternetMaxBandwidthOut int32  `json:"internet_max_bandwidth_out"`
+}
+
+// ModifyInstanceNetworkSpec 修改实例公网带宽
+func ModifyInstanceNetworkSpec(req *ModifyInstanceNetworkSpecRequest) error {
+	cloud, err := GetSystemCloudAccount(req.CloudAccountId)
+	if err != nil {
+		return err
+	}
+	client, err := NewEcsClient(cloud.AccessKey, cloud.AccessSecret, req.RegionId)
+	if err != nil {
+		return err
+	}
+
+	request := &ecs20140526.ModifyInstanceNetworkSpecRequest{
+		InstanceId:              tea.String(req.InstanceId),
+		InternetMaxBandwidthOut: tea.Int32(req.InternetMaxBandwidthOut),
+	}
+	response, err := client.ModifyInstanceNetworkSpec(request)
+	if err != nil {
+		return fmt.Errorf("修改实例带宽失败: %v", err)
+	}
+	if *response.StatusCode != 200 {
+		return errors.New(response.String())
+	}
+
+	logx.Infof("修改实例带宽成功: InstanceId=%s, BandwidthOut=%d Mbps", req.InstanceId, req.InternetMaxBandwidthOut)
+	return nil
+}
+
+// ModifyAutoRenewAttribute 修改实例自动续费属性
+func ModifyAutoRenewAttribute(merchantId int, cloudAccountId int64, regionId, instanceId string, autoRenew bool, duration int32) error {
+	var cloud *CloudAccountInfo
+	var credErr error
+	if cloudAccountId > 0 {
+		cloud, credErr = GetSystemCloudAccount(cloudAccountId)
+	} else {
+		cloud, credErr = GetMerchantCloud(merchantId)
+	}
+	if credErr != nil {
+		return credErr
+	}
+	client, err := NewEcsClient(cloud.AccessKey, cloud.AccessSecret, regionId)
+	if err != nil {
+		return fmt.Errorf("创建ECS客户端失败: %v", err)
+	}
+
+	request := &ecs20140526.ModifyInstanceAutoRenewAttributeRequest{
+		RegionId:   tea.String(regionId),
+		InstanceId: tea.String(instanceId),
+	}
+
+	if autoRenew {
+		request.RenewalStatus = tea.String("AutoRenewal")
+		if duration > 0 {
+			request.Duration = tea.Int32(duration)
+		} else {
+			request.Duration = tea.Int32(1)
+		}
+		request.PeriodUnit = tea.String("Month")
+	} else {
+		request.RenewalStatus = tea.String("Normal")
+	}
+
+	runtime := &util.RuntimeOptions{}
+	_, err = client.ModifyInstanceAutoRenewAttributeWithOptions(request, runtime)
+	if err != nil {
+		return fmt.Errorf("修改自动续费失败: %v", err)
+	}
+	return nil
+}

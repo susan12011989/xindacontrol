@@ -154,6 +154,15 @@ export function exportMerchantDatabaseApi(merchant_no: string) {
   })
 }
 
+/** 同步群订阅者到 WuKongIM */
+export function syncMerchantSubscribersApi(merchantId: number) {
+  return request({
+    url: `merchant/${merchantId}/sync-subscribers`,
+    method: "post",
+    timeout: 60000
+  })
+}
+
 /** 清除商户数据（需要密码或2FA验证） */
 export function clearMerchantDataApi(merchant_no: string, password?: string, totp_code?: string) {
   return request<Types.AdminmSaveResponseData>({

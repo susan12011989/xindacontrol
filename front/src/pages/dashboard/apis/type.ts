@@ -5,6 +5,8 @@ export interface PackageConfiguration {
   group_member_limit: number // 群人数限制
   app_packages?: string[] // 套餐内可用应用列表（客户端包名）
   turn_server?: string // TURN服务器地址 (格式: ip:port)
+  turn_username?: string // TURN用户名
+  turn_credential?: string // TURN密码
 }
 
 // 商户区域信息
@@ -191,7 +193,8 @@ export interface PushLogoReq {
   merchant_no?: string
   merchant_nos?: string[]
   broadcast?: boolean
-  logo_url: string // Control 资源路径，如 /assets/logo/xxx.png
+  logo_url?: string // Control 资源路径，如 /assets/logo/xxx.png
+  use_own_logo?: boolean // 使用每个商户自己的 logo_url
 }
 
 // ========== 隧道统计 ==========

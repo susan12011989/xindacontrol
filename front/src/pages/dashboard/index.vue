@@ -2,7 +2,6 @@
 import type { FormInstance } from "element-plus"
 import type { MerchantQueryRequestData, SmsConfig, TunnelCheckItem, TunnelStats, BatchFailure } from "./apis/type"
 import type { MerchantStorageResp } from "@@/apis/merchant_storage/type"
-import { getClientList } from "@/common/apis/clients"
 import { usePagination } from "@/common/composables/usePagination"
 import { queryAdminmActive } from "@@/apis/adminm_users"
 import { getMerchantStorageList, createMerchantStorage, updateMerchantStorage, deleteMerchantStorage, pushMerchantStorage } from "@@/apis/merchant_storage"
@@ -15,7 +14,7 @@ import {
   Search,
   Shop
 } from "@element-plus/icons-vue"
-import { changeMerchantGostPortApi, changeMerchantIPApi, clearMerchantDataApi, exportMerchantDatabaseApi, getAdminmSmsConfigApi, getAdminmTestSmsCodeApi, getTunnelStatsApi, merchantQueryApi, pushWebLogoApi, saveAdminmNicknameApi, saveAdminmSensitiveContentsApi, saveAdminmSmsConfigApi, saveAdminmTestSmsCodeApi, tunnelCheckApi, updateMerchantApi } from "./apis/index"
+import { changeMerchantGostPortApi, changeMerchantIPApi, clearMerchantDataApi, exportMerchantDatabaseApi, getAdminmSmsConfigApi, getTunnelStatsApi, merchantQueryApi, pushWebLogoApi, saveAdminmNicknameApi, saveAdminmSensitiveContentsApi, saveAdminmSmsConfigApi, syncMerchantSubscribersApi, tunnelCheckApi, updateMerchantApi } from "./apis/index"
 import { getTwoFAStatusApi } from "@/common/apis/twofa"
 import ImageUploader from "@/common/components/ImageUploader.vue"
 import AdminmUsersDialog from "./components/AdminmUsersDialog.vue"
@@ -300,6 +299,37 @@ async function handleExportDatabase(row: any) {
   }
 }
 
+// 同步群订阅者
+const syncSubLoading = ref(false)
+async function handleSyncSubscribers(row: any) {
+  if (!row?.id) return
+  try {
+    await ElMessageBox.confirm(
+      `确定同步商户 "${row.name}" 的群订阅者到 WuKongIM 吗？\n\n此操作会从 MySQL 读取所有群成员并同步到 WuKongIM 的频道订阅者列表。`,
+      "同步群订阅者",
+      { confirmButtonText: "开始同步", cancelButtonText: "取消", type: "info" }
+    )
+  } catch {
+    return
+  }
+
+  syncSubLoading.value = true
+  ElMessage.info("正在同步群订阅者，请稍候...")
+  try {
+    const res = await syncMerchantSubscribersApi(row.id) as any
+    const data = res?.data
+    if (data) {
+      ElMessage.success(`同步完成: ${data.synced_groups}/${data.total_groups} 群成功，共 ${data.total_members} 成员`)
+    } else {
+      ElMessage.success("同步完成")
+    }
+  } catch (err: any) {
+    ElMessage.error(err?.message || "同步失败")
+  } finally {
+    syncSubLoading.value = false
+  }
+}
+
 // 清除商户数据
 const clearDataLoading = ref(false)
 async function handleClearData(row: any) {
@@ -371,13 +401,6 @@ const batchTarget = reactive<{ mode: "broadcast" | "merchant_nos", selectedNos: 
 const batchMerchantLoading = ref(false)
 const batchMerchantOptions = ref<{ label: string, value: string }[]>([])
 
-// 测试验证码
-const testSmsCode = ref("")
-
-// Client 选择用于预填配置
-const clientLoading = ref(false)
-const clientOptions = ref<{ label: string, value: number, raw: any }[]>([])
-const selectedSmsClientId = ref<number | undefined>(undefined)
 
 // 系统昵称批量更新
 const nicknameDialogVisible = ref(false)
@@ -448,10 +471,7 @@ function resetSmsForm() {
 async function fetchSmsConfig(merchantNo: string) {
   configLoading.value = true
   try {
-    const [smsRes, codeRes] = await Promise.all([
-      getAdminmSmsConfigApi(merchantNo),
-      getAdminmTestSmsCodeApi(merchantNo).catch(() => null)
-    ])
+    const smsRes = await getAdminmSmsConfigApi(merchantNo)
     const data = smsRes.data
     if (data) {
       smsConfigForm.provider = data.provider || "aliyun"
@@ -470,7 +490,6 @@ async function fetchSmsConfig(merchantNo: string) {
     } else {
       resetSmsForm()
     }
-    testSmsCode.value = codeRes?.data?.test_sms_code || ""
   } catch {
     ElMessage.error("获取短信配置失败")
   } finally {
@@ -482,12 +501,9 @@ function openSmsConfig(row: any) {
   if (!row?.no) return
   configMerchantNo.value = row.no
   resetSmsForm()
-  testSmsCode.value = ""
-  selectedSmsClientId.value = undefined
   configDialogVisible.value = true
   isBatchConfig.value = false
   fetchSmsConfig(row.no)
-  fetchClients("")
 }
 
 // 批量修改：打开短信配置
@@ -497,10 +513,7 @@ function openBatchSmsConfig() {
   batchTarget.mode = "broadcast"
   batchTarget.selectedNos = []
   resetSmsForm()
-  testSmsCode.value = ""
-  selectedSmsClientId.value = undefined
   configDialogVisible.value = true
-  fetchClients("")
 }
 
 function openBatchNicknameDialog() {
@@ -602,29 +615,15 @@ async function handleSaveSms() {
         }
         batchParams.merchant_nos = nos
       }
-      // 并行推送短信配置和测试验证码
-      const [smsRes, codeRes] = await Promise.all([
-        saveAdminmSmsConfigApi({ ...batchParams, config: { ...smsConfigForm } }),
-        saveAdminmTestSmsCodeApi({ ...batchParams, test_sms_code: testSmsCode.value })
-      ])
+      const smsRes = await saveAdminmSmsConfigApi({ ...batchParams, config: { ...smsConfigForm } })
       showBatchResult("短信配置", smsRes)
-      // 测试验证码如果也有失败，额外提示
-      const codeFailures: BatchFailure[] = codeRes.data?.failures || []
-      if (codeFailures.length > 0) {
-        const codeTotal = codeRes.data?.total ?? 0
-        const codeSuccess = codeRes.data?.success ?? codeRes.data?.updated ?? 0
-        ElMessage.warning(`测试验证码：成功 ${codeSuccess}/${codeTotal}，失败 ${codeFailures.length} 个`)
-      }
       return
     }
     if (!configMerchantNo.value) {
       ElMessage.error("未指定商户")
       return
     }
-    await Promise.all([
-      saveAdminmSmsConfigApi({ merchant_no: configMerchantNo.value, config: { ...smsConfigForm } }),
-      saveAdminmTestSmsCodeApi({ merchant_no: configMerchantNo.value, test_sms_code: testSmsCode.value })
-    ])
+    await saveAdminmSmsConfigApi({ merchant_no: configMerchantNo.value, config: { ...smsConfigForm } })
     ElMessage.success("短信配置已保存")
   } catch {
     // 错误提示由拦截器处理
@@ -732,44 +731,6 @@ watch(
   }
 )
 
-// 远程搜索 Client
-async function fetchClients(query: string) {
-  clientLoading.value = true
-  try {
-    const res = await getClientList({
-      page: 1,
-      size: 50,
-      app_name: query || undefined,
-      app_package_name: query || undefined
-    })
-    const list = (res as any).data?.list || []
-    clientOptions.value = list.map((c: any) => ({ label: `${c.app_name} (${c.app_package_name})`, value: c.id, raw: c }))
-  } finally {
-    clientLoading.value = false
-  }
-}
-
-function onSelectSmsClient(id: number | undefined) {
-  if (id == null) return
-  const found = clientOptions.value.find(o => o.value === id)
-  if (!found) return
-  const cfg = found.raw?.sms_config
-  if (!cfg) return
-  smsConfigForm.provider = cfg.provider || "aliyun"
-  smsConfigForm.region_id = cfg.region_id || ""
-  smsConfigForm.access_key = cfg.access_key || ""
-  smsConfigForm.secret_key = cfg.secret_key || ""
-  smsConfigForm.sign_name = cfg.sign_name || ""
-  smsConfigForm.template_code = cfg.template_code || ""
-  smsConfigForm.unisms_access_key_id = cfg.unisms_access_key_id || ""
-  smsConfigForm.unisms_access_key_secret = cfg.unisms_access_key_secret || ""
-  smsConfigForm.unisms_signature = cfg.unisms_signature || ""
-  smsConfigForm.unisms_template_id = cfg.unisms_template_id || ""
-  smsConfigForm.smsbao_account = cfg.smsbao_account || ""
-  smsConfigForm.smsbao_api_key = cfg.smsbao_api_key || ""
-  smsConfigForm.smsbao_template = cfg.smsbao_template || ""
-}
-
 // Logo 上传相关
 const logoUploadVisible = ref<Record<number, boolean>>({})
 const uploadingLogoId = ref<number | null>(null)
@@ -828,47 +789,33 @@ async function handlePushLogo(row: any) {
   }
 }
 
-// 批量推送 Logo
-const batchPushLogoDialogVisible = ref(false)
-const batchPushLogoUrl = ref("")
-const batchPushLogoTarget = reactive<{ mode: "broadcast" | "merchant_nos", selectedNos: string[] }>({ mode: "broadcast", selectedNos: [] })
+// 批量推送 Logo（使用每个商户自己的 logo）
 const batchPushLogoLoading = ref(false)
 
-function openBatchPushLogoDialog() {
-  batchPushLogoUrl.value = ""
-  batchPushLogoTarget.mode = "broadcast"
-  batchPushLogoTarget.selectedNos = []
-  batchPushLogoDialogVisible.value = true
-}
-
 async function handleBatchPushLogo() {
-  if (!batchPushLogoUrl.value) {
-    ElMessage.warning("请先上传Logo图片")
+  try {
+    await ElMessageBox.confirm(
+      "将根据每个商户自己的Logo和名称，批量推送到对应的网页版。\n未上传Logo的商户将被跳过。",
+      "批量推送Logo到Web",
+      { confirmButtonText: "推送", cancelButtonText: "取消", type: "info" }
+    )
+  } catch {
     return
   }
   batchPushLogoLoading.value = true
   try {
-    const params: any = { logo_url: batchPushLogoUrl.value }
-    if (batchPushLogoTarget.mode === "broadcast") {
-      params.broadcast = true
-    } else {
-      const nos = batchPushLogoTarget.selectedNos.filter(Boolean)
-      if (nos.length === 0) {
-        ElMessage.warning("请选择目标商户")
-        return
-      }
-      params.merchant_nos = nos
-    }
-    const res = await pushWebLogoApi(params)
+    const res = await pushWebLogoApi({ broadcast: true, use_own_logo: true })
     const failures: BatchFailure[] = res.data?.failures || []
+    const skipped = res.data?.skipped || []
     const total = res.data?.total ?? 0
-    const success = res.data?.success ?? res.data?.pushed ?? 0
+    const success = res.data?.success ?? 0
     if (failures.length > 0) {
-      ElMessage.warning(`推送完成: ${success}/${total} 成功，${failures.length} 失败`)
+      ElMessage.warning(`推送完成: ${success}/${total} 成功，${failures.length} 失败，${skipped.length} 跳过`)
+    } else if (skipped.length > 0) {
+      ElMessage.success(`Logo 已推送到 ${success} 个商户，${skipped.length} 个跳过（未上传Logo）`)
     } else {
       ElMessage.success(`Logo 已推送到 ${success} 个商户`)
     }
-    batchPushLogoDialogVisible.value = false
   } catch {
     // 错误提示由拦截器处理
   } finally {
@@ -1127,7 +1074,7 @@ async function handlePush() {
           <el-button type="primary" plain style="margin-left: 8px;" @click="openBatchSensitiveDialog">
             批量修改敏感词
           </el-button>
-          <el-button type="primary" plain style="margin-left: 8px;" @click="openBatchPushLogoDialog">
+          <el-button type="primary" plain style="margin-left: 8px;" :loading="batchPushLogoLoading" @click="handleBatchPushLogo">
             批量推送Logo
           </el-button>
         </div>
@@ -1245,6 +1192,7 @@ async function handlePush() {
                       <el-dropdown-item @click="$router.push({ name: 'MerchantEdit', params: { id: row.id }, query: { data: JSON.stringify(row) } })">编辑</el-dropdown-item>
                       <el-dropdown-item @click="handleQuickBuild(row)">一键打包</el-dropdown-item>
                       <el-dropdown-item :disabled="exportDbLoading" @click="handleExportDatabase(row)">导出数据库</el-dropdown-item>
+                      <el-dropdown-item :disabled="syncSubLoading" @click="handleSyncSubscribers(row)">同步群订阅者</el-dropdown-item>
                       <el-dropdown-item divided class="danger-item" :disabled="clearDataLoading" @click="handleClearData(row)">清除数据</el-dropdown-item>
                       <el-dropdown-item class="danger-item" :disabled="changeIpLoading" @click="handleChangeIP(row)">更换IP</el-dropdown-item>
                       <el-dropdown-item class="danger-item" @click="handleDelete(row)">删除</el-dropdown-item>
@@ -1360,23 +1308,6 @@ async function handlePush() {
         </el-form>
       </template>
       <el-form label-width="120px" v-loading="configLoading">
-        <el-form-item>
-          <template #label>
-            <span>从模板导入</span>
-            <el-text type="info" size="small" style="margin-left: 4px;">（可选）</el-text>
-          </template>
-          <el-select
-            v-model="selectedSmsClientId"
-            filterable
-            clearable
-            placeholder="选择已有客户端配置快速填充"
-            :loading="clientLoading"
-            style="width: 100%;"
-            @change="onSelectSmsClient"
-          >
-            <el-option v-for="opt in clientOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
-          </el-select>
-        </el-form-item>
         <el-form-item label="短信通道">
           <el-select v-model="smsConfigForm.provider" placeholder="选择短信通道" style="width: 100%;">
             <el-option label="阿里云 (Aliyun)" value="aliyun" />
@@ -1429,22 +1360,6 @@ async function handlePush() {
             <el-input v-model="smsConfigForm.smsbao_template" type="textarea" :rows="2" placeholder="模板内容，用 {code} 作为验证码占位符" clearable />
           </el-form-item>
         </template>
-        <el-divider content-position="left">测试验证码</el-divider>
-        <el-form-item label="测试验证码">
-          <el-input v-model="testSmsCode" placeholder="留空则走真实短信发送" clearable style="width: 200px;" />
-          <el-text type="info" size="small" style="margin-left: 8px;">
-            设置后注册/登录将使用固定验证码，不发真实短信；清空则恢复真实短信
-          </el-text>
-        </el-form-item>
-        <el-alert
-          v-if="testSmsCode"
-          type="warning"
-          show-icon
-          :closable="false"
-          class="mb-2"
-          title="当前处于测试模式，短信不会真实发送"
-          description="用户注册/登录时将使用上方固定验证码，阿里云等短信通道不会收到请求。如需真实发送短信，请清空测试验证码。"
-        />
         <el-form-item>
           <el-button type="primary" @click="handleSaveSms">保存</el-button>
         </el-form-item>
@@ -1648,53 +1563,6 @@ async function handlePush() {
       <template #footer>
         <el-button @click="pushDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="pushLoading" @click="handlePush">确认推送</el-button>
-      </template>
-    </el-dialog>
-    <!-- 批量推送 Logo 弹窗 -->
-    <el-dialog v-model="batchPushLogoDialogVisible" title="批量推送Logo到Web" width="520px">
-      <el-form label-width="100px">
-        <el-form-item label="Logo图片">
-          <ImageUploader
-            v-model="batchPushLogoUrl"
-            :width="120"
-            :height="120"
-            asset-type="logo"
-            tip="推荐方形图片，1024x1024 以上"
-          />
-        </el-form-item>
-        <el-form-item label="推送目标">
-          <el-radio-group v-model="batchPushLogoTarget.mode">
-            <el-radio value="broadcast">全部商户</el-radio>
-            <el-radio value="merchant_nos">选择商户</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item v-if="batchPushLogoTarget.mode === 'merchant_nos'" label="选择商户">
-          <el-select
-            v-model="batchPushLogoTarget.selectedNos"
-            multiple
-            filterable
-            placeholder="选择目标商户"
-            style="width: 100%;"
-          >
-            <el-option
-              v-for="m in tableData"
-              :key="m.no"
-              :label="`${m.name} (${m.no})`"
-              :value="m.no"
-            />
-          </el-select>
-        </el-form-item>
-        <el-alert
-          type="warning"
-          show-icon
-          :closable="false"
-          class="mb-2"
-          title="推送后将替换商户网页版的所有图标文件（logo、favicon、PWA图标等），立即生效。"
-        />
-      </el-form>
-      <template #footer>
-        <el-button @click="batchPushLogoDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="batchPushLogoLoading" @click="handleBatchPushLogo">推送</el-button>
       </template>
     </el-dialog>
   </div>

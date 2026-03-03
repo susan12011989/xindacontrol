@@ -82,6 +82,19 @@ type BatchCommandResult struct {
 
 // ========== 日志查询 ==========
 
+// ========== 同步群订阅者 ==========
+
+// SyncSubscribersResp 同步群订阅者响应
+type SyncSubscribersResp struct {
+	TotalGroups  int    `json:"total_groups"`
+	SyncedGroups int    `json:"synced_groups"`
+	TotalMembers int    `json:"total_members"`
+	FailedGroups int    `json:"failed_groups"`
+	Message      string `json:"message"`
+}
+
+// ========== 日志查询 ==========
+
 // LogQueryReq 日志查询请求
 type LogQueryReq struct {
 	ServerId      int    `json:"server_id" binding:"required"`

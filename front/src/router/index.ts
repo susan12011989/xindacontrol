@@ -152,26 +152,6 @@ export const constantRoutes: RouteRecordRaw[] = [
       keepAlive: true
     },
     children: [
-      // {
-      //   path: "oss-url",
-      //   component: () => import("@/pages/global/oss-url.vue"),
-      //   name: "GlobalOssUrl",
-      //   meta: {
-      //     title: "IP文件管理",
-      //     elIcon: "Document",
-      //     keepAlive: true
-      //   }
-      // },
-      {
-        path: "clients",
-        component: () => import("@/pages/clients/list.vue"),
-        name: "GlobalClients",
-        meta: {
-          title: "客户端管理",
-          elIcon: "Iphone",
-          keepAlive: true
-        }
-      },
       {
         path: "announcements",
         component: () => import("@/pages/announcements/index.vue"),
@@ -340,12 +320,32 @@ export const constantRoutes: RouteRecordRaw[] = [
         }
       },
       {
+        path: "turn-config",
+        component: () => import("@/pages/deploy/turn-config.vue"),
+        name: "DeployTurnConfig",
+        meta: {
+          title: "TURN配置",
+          elIcon: "VideoCamera",
+          keepAlive: false
+        }
+      },
+      {
         path: "resources",
         component: () => import("@/pages/resource-overview/index.vue"),
         name: "DeployResources",
         meta: {
           title: "资源总览",
           elIcon: "Grid",
+          keepAlive: false
+        }
+      },
+      {
+        path: "ratelimit",
+        component: () => import("@/pages/deploy/ratelimit.vue"),
+        name: "DeployRateLimit",
+        meta: {
+          title: "限流管理",
+          elIcon: "Stopwatch",
           keepAlive: false
         }
       }

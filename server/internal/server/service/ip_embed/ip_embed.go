@@ -35,13 +35,29 @@ func GetSystemIPs() (*model.GetSystemIPsResp, error) {
 		return nil, err
 	}
 
-	// 批量查询关联商户名称
+	// 查询 merchant_gost_servers 关联表，补充 servers.merchant_id 为 0 的情况
+	serverMerchantMap := make(map[int]int) // server_id -> merchant_id
+	var relations []entity.MerchantGostServers
+	_ = dbs.DBAdmin.Where("status = 1").Find(&relations)
+	for _, r := range relations {
+		serverMerchantMap[r.ServerId] = r.MerchantId
+	}
+
+	// 确定每台服务器关联的商户ID：优先 servers.merchant_id，其次关联表
 	merchantIds := make([]int, 0)
+	serverFinalMerchant := make(map[int]int) // server_id -> final merchant_id
 	for _, s := range servers {
-		if s.MerchantId > 0 {
-			merchantIds = append(merchantIds, s.MerchantId)
+		mid := s.MerchantId
+		if mid == 0 {
+			mid = serverMerchantMap[s.Id]
+		}
+		serverFinalMerchant[s.Id] = mid
+		if mid > 0 {
+			merchantIds = append(merchantIds, mid)
 		}
 	}
+
+	// 批量查询商户名称
 	merchantMap := make(map[int]string)
 	if len(merchantIds) > 0 {
 		var merchants []entity.Merchants
@@ -53,14 +69,15 @@ func GetSystemIPs() (*model.GetSystemIPsResp, error) {
 
 	items := make([]model.SystemIPItem, 0, len(servers))
 	for _, s := range servers {
+		mid := serverFinalMerchant[s.Id]
 		items = append(items, model.SystemIPItem{
 			ServerId:     s.Id,
 			ServerName:   s.Name,
 			IP:           s.Host,
 			AuxiliaryIP:  s.AuxiliaryIP,
 			Status:       s.Status,
-			MerchantId:   s.MerchantId,
-			MerchantName: merchantMap[s.MerchantId],
+			MerchantId:   mid,
+			MerchantName: merchantMap[mid],
 		})
 	}
 

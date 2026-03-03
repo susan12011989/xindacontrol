@@ -1,4 +1,5 @@
 import type * as Merchant from "./type"
+import type { ApiResponseData } from "@@/apis/type"
 import { request } from "@/http/axios"
 
 export function getMerchantList(params: Merchant.QueryMerchantsReq) {
@@ -67,5 +68,38 @@ export function deleteMerchantOssConfig(configId: number) {
   return request({
     url: `merchant/oss-configs/${configId}`,
     method: "delete"
+  })
+}
+
+// ========== TURN 服务器配置管理 ==========
+
+/** 获取所有商户 TURN 配置列表 */
+export function listMerchantTurnConfigs(params?: { name?: string }) {
+  return request<Merchant.MerchantTurnConfigsResponseData>({
+    url: "merchant/turn-configs",
+    method: "get",
+    params
+  })
+}
+
+/** 更新单个商户 TURN 服务器 */
+export function updateMerchantTurnServer(
+  merchantId: number,
+  data: { turn_server: string; turn_username?: string; turn_credential?: string }
+) {
+  return request<ApiResponseData<Merchant.BatchTurnUpdateResult>>({
+    url: `merchant/${merchantId}/turn-server`,
+    method: "put",
+    data
+  })
+}
+
+/** 批量更新商户 TURN 服务器 */
+export function batchUpdateTurnServer(data: Merchant.BatchUpdateTurnServerReq) {
+  return request<Merchant.BatchUpdateTurnServerResponseData>({
+    url: "merchant/batch-turn-update",
+    method: "post",
+    data,
+    timeout: 120000
   })
 }

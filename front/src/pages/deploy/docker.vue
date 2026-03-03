@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import type { DockerContainerResp, HealthCheckResponse, HealthCheckItem } from "@@/apis/docker/type"
+import type { DockerContainerResp, HealthCheckResponse, HealthCheckItem, ServerInfo } from "@@/apis/docker/type"
 import type { FeatureFlagResp } from "@@/apis/feature/type"
 import { getServerList } from "@@/apis/deploy"
 import { batchOperateContainers, getContainerList, getContainerLogs, operateContainer, checkServerHealth, batchCheckServerHealth } from "@@/apis/docker"
@@ -10,13 +10,16 @@ defineOptions({
   name: "DeployDocker"
 })
 
+// 容器操作后等待再检查健康状态的延迟(ms)
+const HEALTH_RECHECK_DELAY = 3000
+
 // 当前 Tab
 const activeTab = ref("containers")
 
 // 服务器选择
-const serverList = ref<any[]>([])
+const serverList = ref<ServerInfo[]>([])
 const currentServerId = ref(0)
-const currentServerInfo = ref<any>({})
+const currentServerInfo = ref<Partial<ServerInfo>>({})
 
 // 容器列表
 const containerList = ref<DockerContainerResp[]>([])
@@ -47,18 +50,6 @@ const batchHealthLoading = ref(false)
 const batchHealthResults = ref<HealthCheckResponse[]>([])
 const selectedServerIds = ref<number[]>([])
 
-// 服务-容器名称映射（用于健康检查中重启容器）
-const serviceContainerMap: Record<string, string> = {
-  "MySQL": "mysql",
-  "Redis": "redis",
-  "Nginx": "nginx",
-  "Docker": "",  // Docker 本身不能通过 Docker API 重启
-  "商户管理后台(GET)": "manager",
-  "后端API直连(GET)": "api",
-  "WuKongIM": "wukongim",
-  "WebSocket": "ws"
-}
-
 // 容器重启状态
 const restartingServices = ref<Set<string>>(new Set())
 
@@ -69,8 +60,8 @@ const featureFlags = ref<FeatureFlagResp[]>([])
 
 // 按商户分组的服务器列表
 const groupedServers = computed(() => {
-  const groups: { label: string; servers: any[] }[] = []
-  const map = new Map<string, any[]>()
+  const groups: { label: string; servers: ServerInfo[] }[] = []
+  const map = new Map<string, ServerInfo[]>()
   for (const s of serverList.value) {
     const key = s.merchant_name || "未分配商户"
     if (!map.has(key)) map.set(key, [])
@@ -154,8 +145,10 @@ async function handleOperate(container: DockerContainerResp, action: string) {
 
     ElMessage.success(`${actionText}成功`)
     refreshContainers()
-  } catch {
-    // 用户取消操作
+  } catch (error: any) {
+    if (error !== "cancel") {
+      ElMessage.error(`${actionText}失败`)
+    }
   }
 }
 
@@ -185,8 +178,10 @@ async function handleBatchOperate(action: string) {
 
     ElMessage.success(`批量${actionText}成功`)
     refreshContainers()
-  } catch {
-    // 用户取消操作
+  } catch (error: any) {
+    if (error !== "cancel") {
+      ElMessage.error(`批量${actionText}失败`)
+    }
   }
 }
 
@@ -203,20 +198,14 @@ async function loadLogs() {
 
   logLoading.value = true
   try {
-    const params: any = {
+    const res = await getContainerLogs({
       server_id: currentServerId.value,
       container_id: currentContainer.value.container_id,
       lines: logOptions.lines,
-      timestamps: logOptions.timestamps
-    }
-
-    // 时间范围
-    if (logTimeRange.value) {
-      params.since = logTimeRange.value[0].toISOString()
-      params.until = logTimeRange.value[1].toISOString()
-    }
-
-    const res = await getContainerLogs(params)
+      timestamps: logOptions.timestamps,
+      since: logTimeRange.value?.[0]?.toISOString(),
+      until: logTimeRange.value?.[1]?.toISOString()
+    })
     logContent.value = res.data.logs
   } catch {
     ElMessage.error("读取日志失败")
@@ -329,11 +318,6 @@ function getOverallStatusText(overall: string) {
   return map[overall] || overall
 }
 
-// 服务器多选改变
-function handleServerSelectionChange(val: number[]) {
-  selectedServerIds.value = val
-}
-
 // ========== 健康检查中操作容器 ==========
 
 // 执行服务操作（启动/重启/部署）
@@ -391,67 +375,12 @@ async function executeServiceAction(item: HealthCheckItem) {
     // 等待几秒后重新检查健康状态
     setTimeout(() => {
       runHealthCheck()
-    }, 3000)
+    }, HEALTH_RECHECK_DELAY)
   } catch (error) {
     ElMessage.error(`${actionText} ${item.name} 失败`)
     console.error(error)
   } finally {
     restartingServices.value.delete(item.name)
-  }
-}
-
-// 重启API对应的容器（用于API健康检查表格）
-async function restartServiceContainer(apiName: string) {
-  const containerName = serviceContainerMap[apiName]
-  if (!containerName) {
-    ElMessage.warning("未找到该API对应的容器")
-    return
-  }
-
-  try {
-    await ElMessageBox.confirm(
-      `确定要重启 "${apiName}" 对应的容器 "${containerName}" 吗？`,
-      "确认重启",
-      { type: "warning" }
-    )
-  } catch {
-    return // 用户取消
-  }
-
-  restartingServices.value.add(apiName)
-
-  try {
-    // 通过容器名称查找容器
-    const res = await getContainerList({
-      server_id: currentServerId.value,
-      name: containerName
-    })
-
-    const containers = res.data.list || []
-    if (containers.length === 0) {
-      ElMessage.error(`未找到匹配 "${containerName}" 的容器`)
-      return
-    }
-
-    // 重启容器
-    const container = containers[0]
-    await operateContainer({
-      server_id: currentServerId.value,
-      container_id: container.container_id,
-      action: "restart"
-    })
-
-    ElMessage.success(`重启 ${apiName} 容器成功`)
-
-    // 等待几秒后重新检查健康状态
-    setTimeout(() => {
-      runHealthCheck()
-    }, 3000)
-  } catch (error) {
-    ElMessage.error(`重启 ${apiName} 容器失败`)
-    console.error(error)
-  } finally {
-    restartingServices.value.delete(apiName)
   }
 }
 
@@ -467,10 +396,8 @@ async function loadFeatureFlags() {
 
   featureLoading.value = true
   try {
-    const res = await getFeatureFlags(merchantId) as any
-    if (res.code === 0 || res.code === 200) {
-      featureFlags.value = res.data.list || []
-    }
+    const res = await getFeatureFlags(merchantId)
+    featureFlags.value = res.data.list || []
   } catch (error) {
     ElMessage.error("加载功能开关失败")
     console.error(error)
@@ -486,17 +413,13 @@ async function toggleFeatureFlag(flag: FeatureFlagResp) {
 
   const newEnabled = !flag.enabled
   try {
-    const res = await updateFeatureFlag({
+    await updateFeatureFlag({
       merchant_id: merchantId,
       feature_name: flag.feature_name,
       enabled: newEnabled
-    }) as any
-    if (res.code === 0 || res.code === 200) {
-      ElMessage.success(`${flag.label} 已${newEnabled ? "启用" : "禁用"}`)
-      await loadFeatureFlags()
-    } else {
-      ElMessage.error(res.message || "操作失败")
-    }
+    })
+    ElMessage.success(`${flag.label} 已${newEnabled ? "启用" : "禁用"}`)
+    await loadFeatureFlags()
   } catch (error) {
     ElMessage.error("操作失败")
     console.error(error)

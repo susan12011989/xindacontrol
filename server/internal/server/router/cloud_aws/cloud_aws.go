@@ -10,6 +10,8 @@ import (
 	cloudService "server/internal/server/service/cloud_aws"
 	"server/internal/server/utils"
 	"server/pkg/consts"
+	"server/pkg/dbs"
+	"server/pkg/entity"
 	"server/pkg/result"
 	"strconv"
 	"strings"
@@ -22,6 +24,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	ssmtypes "github.com/aws/aws-sdk-go-v2/service/ssm/types"
 	"github.com/gin-gonic/gin"
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // Routes AWS 服务API路由
@@ -185,12 +188,80 @@ func createEc2Instance(c *gin.Context) {
 		result.GErr(c, err)
 		return
 	}
-	id, err := cloudService.CreateEc2Instance(acc, req)
+	instanceId, err := cloudService.CreateEc2Instance(acc, req)
 	if err != nil {
 		result.GErr(c, err)
 		return
 	}
-	result.GOK(c, gin.H{"instance_id": id})
+
+	// 异步等待实例启动并自动创建服务器记录（绑定商户）
+	merchantId := acc.MerchantId
+	if req.MerchantId > 0 {
+		merchantId = req.MerchantId
+	}
+	go autoCreateServerRecord(acc, req, instanceId, merchantId)
+
+	result.GOK(c, gin.H{"instance_id": instanceId})
+}
+
+// autoCreateServerRecord 异步等待 EC2 实例启动，获取公网 IP 后自动创建服务器记录
+func autoCreateServerRecord(acc *entity.CloudAccounts, req model.AwsCreateEc2InstanceReq, instanceId string, merchantId int) {
+	logx.Infof("[autoCreateServerRecord] 开始: instanceId=%s, merchantId=%d", instanceId, merchantId)
+
+	// 等待实例运行
+	if err := cloudService.WaitForInstanceRunning(acc, req.RegionId, instanceId, 5*time.Minute); err != nil {
+		logx.Errorf("[autoCreateServerRecord] 等待实例启动超时: %v", err)
+		return
+	}
+
+	// 等待一段时间让网络初始化
+	time.Sleep(10 * time.Second)
+
+	// 获取公网 IP
+	publicIP, err := cloudService.GetInstancePublicIP(acc, req.RegionId, instanceId)
+	if err != nil || publicIP == "" {
+		logx.Errorf("[autoCreateServerRecord] 获取公网 IP 失败: %v", err)
+		return
+	}
+
+	// 检查是否已存在相同云实例的服务器记录
+	has, _ := dbs.DBAdmin.Where("cloud_instance_id = ? AND cloud_type = 'aws'", instanceId).Exist(&entity.Servers{})
+	if has {
+		logx.Infof("[autoCreateServerRecord] 服务器记录已存在: instanceId=%s", instanceId)
+		return
+	}
+
+	// 生成服务器名称
+	serverName := req.InstanceName
+	if serverName == "" {
+		serverName = fmt.Sprintf("aws-%s", instanceId)
+	}
+
+	// 创建服务器记录
+	now := time.Now()
+	server := entity.Servers{
+		ServerType:      1, // 商户服务器
+		MerchantId:      merchantId,
+		Name:            serverName,
+		Host:            publicIP,
+		Port:            22,
+		Username:        "root",
+		AuthType:        1, // 密码
+		Password:        consts.DefaultPassword,
+		CloudAccountId:  acc.Id,
+		CloudType:       "aws",
+		CloudInstanceId: instanceId,
+		CloudRegionId:   req.RegionId,
+		Status:          1,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	if _, err := dbs.DBAdmin.Insert(&server); err != nil {
+		logx.Errorf("[autoCreateServerRecord] 创建服务器记录失败: %v", err)
+		return
+	}
+	logx.Infof("[autoCreateServerRecord] 服务器记录创建成功: id=%d, ip=%s, merchantId=%d", server.Id, publicIP, merchantId)
 }
 
 func modifyEc2Instance(c *gin.Context) {

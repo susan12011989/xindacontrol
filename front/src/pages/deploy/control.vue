@@ -360,6 +360,11 @@ let latencyChart: echarts.ECharts | null = null
 
 async function loadCloudWatchMetrics() {
   if (!serverId.value) return
+  // 没有配置云实例的服务器，不请求监控指标
+  if (!serverInfo.value?.cloud_instance_id) {
+    cwAvailable.value = false
+    return
+  }
   cwLoading.value = true
   try {
     const res = await getCloudMonitorMetrics({
@@ -372,10 +377,8 @@ async function loadCloudWatchMetrics() {
     renderCharts()
   } catch (err: any) {
     cwData.value = null
-    // 未配置云实例时不报错，静默隐藏
-    if (err?.response?.data?.message?.includes("未配置")) {
-      cwAvailable.value = false
-    }
+    // 未配置云实例时静默隐藏监控面板
+    cwAvailable.value = false
   } finally {
     cwLoading.value = false
   }
@@ -546,9 +549,9 @@ function handleCwResize() {
 }
 
 // 初始化
-onMounted(() => {
+onMounted(async () => {
   if (serverId.value) {
-    loadServerInfo()
+    await loadServerInfo()
     refreshAll()
     loadCloudWatchMetrics()
   } else {
@@ -568,12 +571,12 @@ onUnmounted(() => {
 })
 
 // 路由 server_id 变化时，自动刷新
-watch(() => route.query.server_id, (val) => {
+watch(() => route.query.server_id, async (val) => {
   const nextId = Number(Array.isArray(val) ? val?.[0] : val) || 0
   if (nextId && nextId !== serverId.value) {
     serverId.value = nextId
     selectedServerId.value = nextId
-    loadServerInfo()
+    await loadServerInfo()
     refreshAll()
     loadCloudWatchMetrics()
   }

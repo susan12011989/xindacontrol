@@ -88,3 +88,43 @@ export interface CreateMerchantOssConfigReq {
 export interface UpdateMerchantOssConfigReq extends CreateMerchantOssConfigReq {
   status?: number
 }
+
+// ========== TURN 服务器配置管理 ==========
+
+export interface MerchantTurnConfigItem {
+  merchant_id: number
+  merchant_no: string
+  merchant_name: string
+  server_ip: string
+  status: number
+  turn_server: string
+  turn_username: string
+  turn_credential: string
+  updated_at: string
+}
+
+export type MerchantTurnConfigsResponseData = ApiResponseData<MerchantTurnConfigItem[]>
+
+export interface BatchUpdateTurnServerReq {
+  merchant_ids: number[]
+  turn_server: string
+  turn_username?: string
+  turn_credential?: string
+}
+
+export interface BatchTurnUpdateResult {
+  merchant_id: number
+  merchant_name: string
+  server_ip: string
+  success: boolean
+  message: string
+}
+
+export interface BatchUpdateTurnServerResp {
+  total_count: number
+  success_count: number
+  fail_count: number
+  results: BatchTurnUpdateResult[]
+}
+
+export type BatchUpdateTurnServerResponseData = ApiResponseData<BatchUpdateTurnServerResp>

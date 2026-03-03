@@ -48,6 +48,11 @@ func Routes(ge gin.IRouter) {
 	merchantGroup.PUT("/gost-servers/:relation_id", updateMerchantGostServer)
 	merchantGroup.DELETE("/gost-servers/:relation_id", deleteMerchantGostServer)
 
+	// TURN 服务器配置管理
+	merchantGroup.GET("turn-configs", listMerchantTurnConfigs)
+	merchantGroup.PUT("/:id/turn-server", updateMerchantTurnServer)
+	merchantGroup.POST("batch-turn-update", batchUpdateTurnServer)
+
 	// 商户 GOST IP 同步到 OSS
 	merchantGroup.GET("/:id/gost-sync-status", getMerchantGostSyncStatus)
 	merchantGroup.POST("/:id/sync-gost-ip", syncMerchantGostIP)
@@ -59,6 +64,9 @@ func Routes(ge gin.IRouter) {
 	RoutesAdminmConfig(merchantGroup)
 	// 应用日志
 	RoutesAppLogs(merchantGroup)
+
+	// 同步群订阅者到 WuKongIM
+	merchantGroup.POST("/:id/sync-subscribers", syncMerchantSubscribers)
 
 	// 资源上传（Logo等）
 	merchantGroup.POST("upload-asset", uploadAsset)
@@ -281,6 +289,30 @@ func changeGostPort(c *gin.Context) {
 	}
 
 	data, err := merchant.ChangeMerchantGostPort(id, req.GostPort)
+	if err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, data)
+}
+
+// ========== 同步群订阅者 ==========
+
+func syncMerchantSubscribers(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+
+	// 防抖：同一商户 30 秒内只允许一次
+	key := "syncsubscribers:" + strconv.Itoa(id)
+	if !allowAndMark(key, 30*time.Second) {
+		result.GResult(c, 429, nil, "操作过于频繁，请稍后再试")
+		return
+	}
+
+	data, err := merchant.SyncMerchantSubscribers(id)
 	if err != nil {
 		result.GErr(c, err)
 		return

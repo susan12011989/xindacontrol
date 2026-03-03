@@ -154,8 +154,9 @@ type GostSyncResult struct {
 	TargetIP    string            `json:"target_ip"`
 	ForwardType string            `json:"forward_type"` // encrypted/direct
 	Ports       []GostPortForward `json:"ports"`        // 端口转发详情
-	Success     bool              `json:"success"`
-	Error       string            `json:"error,omitempty"`
+	Success      bool              `json:"success"`
+	Error        string            `json:"error,omitempty"`
+	PersistError string            `json:"persist_error,omitempty"` // 持久化失败信息（转发成功但持久化失败时填充）
 }
 
 // SyncClusterGostReq 同步集群 GOST 转发请求

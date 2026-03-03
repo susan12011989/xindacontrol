@@ -94,7 +94,7 @@ export interface CreateInstanceData {
   cloud_account_id?: number // 系统云账号ID（系统类型时必填）
   region_id: string // 区域
   zone: string // 可用区
-  image_id: string // 镜像ID
+  image_id?: string // 镜像ID（留空自动使用 Ubuntu 公共镜像）
   instance_type: string // 实例规格
   instance_charge_type: string // 付费类型 PREPAID/POSTPAID_BY_HOUR
   system_disk_type: string // 系统盘类型

@@ -635,13 +635,18 @@ func SetupGostDeploy(req *model.SetupGostDeployReq, progressCallback func(string
 
 			// 配置 Nginx 缓存（HTTP 端口 = basePort+2）
 			httpPort := m.Port + 2
+			sslEnabled := tlsDeployed || server.TlsEnabled == 1
 			if isNginxInstalled(req.ServerId) {
-				if err := UpdateGostServiceToLoopback(req.ServerId, httpPort); err == nil {
-					if err := ConfigureNginxCacheForPort(req.ServerId, httpPort); err != nil {
+				if err := UpdateGostServiceToLoopback(req.ServerId, httpPort, sslEnabled); err == nil {
+					if err := ConfigureNginxCacheForPort(req.ServerId, httpPort, sslEnabled); err != nil {
 						_ = RestoreGostServiceToPublic(req.ServerId, httpPort)
 						progressCallback(fmt.Sprintf("  Nginx 缓存配置失败(端口 %d): %s", httpPort, err))
 					} else {
-						progressCallback(fmt.Sprintf("  Nginx 缓存已配置(端口 %d)", httpPort))
+						sslLabel := ""
+						if sslEnabled {
+							sslLabel = "+SSL"
+						}
+						progressCallback(fmt.Sprintf("  Nginx 缓存已配置(端口 %d%s)", httpPort, sslLabel))
 					}
 				}
 			}
@@ -666,9 +671,14 @@ func SetupGostDeploy(req *model.SetupGostDeployReq, progressCallback func(string
 		progressCallback("配置已保存")
 	}
 
-	// 更新服务器的 ForwardType
-	_, _ = dbs.DBAdmin.Where("id = ?", req.ServerId).Cols("forward_type", "updated_at").
-		Update(&entity.Servers{ForwardType: forwardType, UpdatedAt: time.Now()})
+	// 更新服务器的 ForwardType，并关联第一个成功的商户
+	updateServer := entity.Servers{ForwardType: forwardType, UpdatedAt: time.Now()}
+	updateCols := []string{"forward_type", "updated_at"}
+	if successCount > 0 && len(merchants) > 0 && server.MerchantId == 0 {
+		updateServer.MerchantId = merchants[0].Id
+		updateCols = append(updateCols, "merchant_id")
+	}
+	_, _ = dbs.DBAdmin.Where("id = ?", req.ServerId).Cols(updateCols...).Update(&updateServer)
 
 	progressCallback("========================================")
 	progressCallback(fmt.Sprintf("部署完成! 成功: %d, 失败: %d", successCount, failCount))
@@ -1051,7 +1061,11 @@ $SUDO systemctl is-active gost 2>/dev/null || echo STILL_FAILED
 	}
 	progressCallback("GOST API 验证成功")
 
-	// 9. 如果是系统服务器，检查 TLS 证书
+	// 9. 检查本地转发服务是否齐全（tcp/ws/http/minio）
+	progressCallback("步骤 7/8: 检查本地转发服务...")
+	repairLocalForwards(host, server, serverId, progressCallback)
+
+	// 10. 如果是系统服务器，检查 TLS 证书
 	if server.ServerType == 2 {
 		deployTlsCertsIfAvailable(server, progressCallback)
 	}
@@ -1061,4 +1075,260 @@ $SUDO systemctl is-active gost 2>/dev/null || echo STILL_FAILED
 	progressCallback("========================================")
 
 	return nil
+}
+
+// repairLocalForwards 检查并修复商户服务器上的本地转发服务
+// 确保 tcp(10010), ws(10011), http(10012), minio(10013) 四个本地转发都存在
+func repairLocalForwards(host string, server entity.Servers, serverId int, progressCallback func(string)) {
+	// 获取当前 GOST 上已有的服务列表
+	config, err := gostapi.GetConfig(host, "json")
+	if err != nil {
+		progressCallback(fmt.Sprintf("获取 GOST 配置失败，跳过转发检查: %s", err))
+		return
+	}
+
+	existingServices := make(map[string]bool)
+	for _, svc := range config.Services {
+		existingServices[svc.Name] = true
+	}
+
+	// 检查基本转发 (tcp/ws/http)
+	expectedServices := []struct {
+		name string
+		port int
+	}{
+		{fmt.Sprintf("local-tcp-%d", gostapi.MerchantGostPortTCP), gostapi.MerchantGostPortTCP},
+		{fmt.Sprintf("local-ws-%d", gostapi.MerchantGostPortWS), gostapi.MerchantGostPortWS},
+		{fmt.Sprintf("local-http-%d", gostapi.MerchantGostPortHTTP), gostapi.MerchantGostPortHTTP},
+	}
+
+	missingBasic := false
+	for _, svc := range expectedServices {
+		if !existingServices[svc.name] {
+			progressCallback(fmt.Sprintf("缺少本地转发: %s (端口 %d)", svc.name, svc.port))
+			missingBasic = true
+		}
+	}
+
+	// 检查是否需要 mtls 升级（本地转发的 listener 从 tls 升级到 mtls 多路复用）
+	needMtlsUpgrade := false
+	if !missingBasic {
+		for _, svc := range config.Services {
+			if strings.HasPrefix(svc.Name, "local-") && svc.Listener != nil && svc.Listener.Type == "tls" {
+				needMtlsUpgrade = true
+				break
+			}
+		}
+	}
+
+	if missingBasic {
+		progressCallback("补建基本本地转发 (tcp/ws/http)...")
+		if err := gostapi.CreateMerchantLocalForwards(host); err != nil {
+			progressCallback(fmt.Sprintf("补建基本本地转发失败: %s", err))
+		} else {
+			progressCallback("基本本地转发已补建")
+		}
+	} else if needMtlsUpgrade {
+		progressCallback("升级本地转发: tls → mtls (多路复用)...")
+		if err := gostapi.UpdateMerchantLocalForwards(host); err != nil {
+			progressCallback(fmt.Sprintf("升级基本本地转发失败: %s", err))
+		} else {
+			progressCallback("基本本地转发已升级到 mtls")
+		}
+	} else {
+		progressCallback("基本本地转发完整 (tcp/ws/http)")
+	}
+
+	// 确定 MinIO 地址
+	minioAddr := "127.0.0.1:9000" // 默认 allinone
+	if server.MerchantId > 0 {
+		var minioNode entity.ClusterNodes
+		if has, err := dbs.DBAdmin.Where("merchant_id = ? AND node_role = 'minio'", server.MerchantId).Get(&minioNode); err == nil && has && minioNode.PrivateIP != "" {
+			minioAddr = fmt.Sprintf("%s:9000", minioNode.PrivateIP)
+			progressCallback(fmt.Sprintf("检测到集群模式，MinIO 节点: %s", minioNode.PrivateIP))
+		}
+	}
+
+	// 检查 MinIO 转发
+	minioServiceName := fmt.Sprintf("local-minio-%d", gostapi.MerchantGostPortMinIO)
+	if !existingServices[minioServiceName] {
+		progressCallback(fmt.Sprintf("缺少 MinIO 本地转发: %s", minioServiceName))
+		progressCallback(fmt.Sprintf("补建 MinIO 本地转发: 10013 → %s", minioAddr))
+		if err := gostapi.CreateMinioLocalForward(host, minioAddr); err != nil {
+			progressCallback(fmt.Sprintf("补建 MinIO 本地转发失败: %s", err))
+		} else {
+			progressCallback("MinIO 本地转发已补建")
+		}
+	} else if needMtlsUpgrade {
+		progressCallback("升级 MinIO 本地转发: tls → mtls...")
+		if err := gostapi.UpdateMinioLocalForward(host, minioAddr); err != nil {
+			progressCallback(fmt.Sprintf("升级 MinIO 本地转发失败: %s", err))
+		} else {
+			progressCallback("MinIO 本地转发已升级到 mtls")
+		}
+	} else {
+		progressCallback("MinIO 本地转发完整")
+	}
+
+	// 检查 relay chains 的 dialer 是否需要 mtls 升级
+	repairRelayChains(host, server, serverId, config, progressCallback)
+}
+
+// repairRelayChains 检查并升级 relay chain 的 dialer 从 tls 到 mtls
+// 升级顺序: 删除中继链 → 重启 GOST → 升级商户 listener → 重建中继链
+func repairRelayChains(host string, server entity.Servers, serverId int, config *gostapi.Config, progressCallback func(string)) {
+	needUpgrade := false
+	for _, chain := range config.Chains {
+		for _, hop := range chain.Hops {
+			for _, node := range hop.Nodes {
+				if node.Dialer != nil && node.Dialer.Type == "tls" && node.Connector != nil && node.Connector.Type == "relay" {
+					needUpgrade = true
+					break
+				}
+			}
+			if needUpgrade {
+				break
+			}
+		}
+		if needUpgrade {
+			break
+		}
+	}
+
+	if !needUpgrade {
+		progressCallback("中继 chain 配置正常")
+		return
+	}
+
+	progressCallback("升级中继 chain dialer: tls → mtls (多路复用)...")
+
+	// 1. 提取商户 IP（在删除配置之前）
+	merchantIPs := make(map[string]bool)
+	for _, chain := range config.Chains {
+		for _, hop := range chain.Hops {
+			for _, node := range hop.Nodes {
+				if node.Connector != nil && node.Connector.Type == "relay" {
+					if idx := strings.LastIndex(node.Addr, ":"); idx > 0 {
+						ip := node.Addr[:idx]
+						if ip != host {
+							merchantIPs[ip] = true
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// 2. 查询关联的商户转发规则
+	var gostServers []entity.MerchantGostServers
+	_ = dbs.DBAdmin.Where("server_id = ? AND status = 1", server.Id).Find(&gostServers)
+	if len(gostServers) == 0 {
+		progressCallback("未找到关联的商户转发规则，跳过 chain 升级")
+		return
+	}
+
+	// 3. 获取最新配置并删除所有中继服务和链
+	freshConfig, _ := gostapi.GetConfig(host, "json")
+	if freshConfig != nil {
+		config = freshConfig
+	}
+	progressCallback("  清理中继转发服务...")
+	for _, svc := range config.Services {
+		if !strings.HasPrefix(svc.Name, "local-") {
+			gostapi.DeleteService(host, svc.Name)
+			if svc.Handler != nil && svc.Handler.Chain != "" {
+				gostapi.DeleteChain(host, svc.Handler.Chain)
+			}
+		}
+	}
+	for _, chain := range config.Chains {
+		gostapi.DeleteChain(host, chain.Name)
+	}
+	_, _ = gostapi.SaveConfig(host, "yaml", "")
+
+	// 4. 重启 GOST 释放端口
+	progressCallback("  重启 GOST 服务释放端口...")
+	restartSSH, err := GetSSHClient(serverId)
+	if err != nil {
+		progressCallback(fmt.Sprintf("  获取 SSH 连接失败: %s，尝试不重启继续...", err))
+	} else {
+		defer restartSSH.Close()
+		restartSSH.ExecuteCommand("sudo systemctl restart gost")
+		for i := 0; i < 10; i++ {
+			time.Sleep(time.Second)
+			if _, err := gostapi.GetConfig(host, "json"); err == nil {
+				progressCallback("  GOST 服务已重启")
+				break
+			}
+			if i == 9 {
+				progressCallback("  等待 GOST 重启超时")
+				return
+			}
+		}
+	}
+
+	// 5. 在无活跃中继连接时，升级商户端 GOST listener (tls → mtls)
+	for ip := range merchantIPs {
+		merchantConfig, configErr := gostapi.GetConfig(ip, "json")
+		if configErr != nil {
+			progressCallback(fmt.Sprintf("  获取商户 %s 配置失败: %s", ip, configErr))
+			continue
+		}
+		needMerchantUpgrade := false
+		minioTargetAddr := ""
+		for _, svc := range merchantConfig.Services {
+			if strings.HasPrefix(svc.Name, "local-") && svc.Listener != nil && svc.Listener.Type == "tls" {
+				needMerchantUpgrade = true
+			}
+			if strings.HasPrefix(svc.Name, "local-minio-") && svc.Forwarder != nil && len(svc.Forwarder.Nodes) > 0 {
+				minioTargetAddr = svc.Forwarder.Nodes[0].Addr
+			}
+		}
+		if !needMerchantUpgrade {
+			progressCallback(fmt.Sprintf("  商户 %s 本地转发已是 mtls", ip))
+			continue
+		}
+		progressCallback(fmt.Sprintf("  升级商户 %s 本地转发: tls → mtls...", ip))
+		if err := gostapi.UpdateMerchantLocalForwards(ip); err != nil {
+			progressCallback(fmt.Sprintf("  商户 %s 基本转发升级失败: %s", ip, err))
+		}
+		if minioTargetAddr == "" {
+			minioTargetAddr = "127.0.0.1:9000"
+		}
+		if err := gostapi.UpdateMinioLocalForward(ip, minioTargetAddr); err != nil {
+			progressCallback(fmt.Sprintf("  商户 %s MinIO 转发升级失败: %s", ip, err))
+		}
+		_, _ = gostapi.SaveConfig(ip, "yaml", "")
+		progressCallback(fmt.Sprintf("  商户 %s 本地转发已升级到 mtls", ip))
+	}
+
+	// 6. 重建中继转发（使用 mtls dialer）
+	progressCallback("  重建中继转发...")
+	successCount := 0
+	for _, gs := range gostServers {
+		var merchant entity.Merchants
+		has, err := dbs.DBAdmin.ID(gs.MerchantId).Get(&merchant)
+		if err != nil || !has || merchant.ServerIP == "" || merchant.Port == 0 {
+			continue
+		}
+
+		var forwardErr error
+		if server.TlsEnabled == 1 {
+			forwardErr = gostapi.CreateMerchantForwardsWithTls(host, merchant.Port, merchant.ServerIP)
+		} else {
+			forwardErr = gostapi.CreateMerchantForwards(host, merchant.Port, merchant.ServerIP)
+		}
+
+		if forwardErr != nil {
+			progressCallback(fmt.Sprintf("  商户 %s 转发创建失败: %s", merchant.Name, forwardErr))
+		} else {
+			successCount++
+			progressCallback(fmt.Sprintf("  商户 %s 转发已创建 (mtls)", merchant.Name))
+		}
+	}
+
+	if successCount > 0 {
+		_, _ = gostapi.SaveConfig(host, "yaml", "")
+		progressCallback(fmt.Sprintf("中继 chain 升级完成，%d 个商户转发已升级", successCount))
+	}
 }

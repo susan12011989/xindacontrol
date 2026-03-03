@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"server/internal/dbhelper"
 	"server/internal/server/cfg"
 	"server/internal/server/utils"
+	"server/pkg/consts"
 	"server/pkg/dbs"
 	"server/pkg/entity"
 	"time"
@@ -379,15 +382,24 @@ echo "=== All clear done ==="
 // ============ Push Web Logo ============
 
 // PushWebLogo 推送 Logo + 应用名称到商户的 tsdd-web 容器
-// logoPath 为 Control 服务器上 logo 原图的本地路径，appName 为应用显示名称（空则不改名称）
+// logoPath 为 Control 服务器上 logo 原图的本地路径（空则不推 logo），appName 为应用显示名称（空则不改名称）
 func PushWebLogo(merchantNo string, logoPath string, appName string) error {
-	// 1. 生成所有尺寸的图标文件
-	files, err := utils.GenerateWebLogoFiles(logoPath)
-	if err != nil {
-		return fmt.Errorf("生成Logo文件失败: %v", err)
+	// 生成 logo 文件（如果有 logoPath）
+	var files map[string][]byte
+	if logoPath != "" {
+		var err error
+		files, err = utils.GenerateWebLogoFiles(logoPath)
+		if err != nil {
+			return fmt.Errorf("生成Logo文件失败: %v", err)
+		}
 	}
 
-	// 2. 获取商户 SSH 客户端
+	// 既没有 logo 也没有 appName，无需操作
+	if len(files) == 0 && appName == "" {
+		return nil
+	}
+
+	// 获取商户 SSH 客户端
 	sshClient, err := GetMerchantSSHClient(merchantNo)
 	if err != nil {
 		return fmt.Errorf("获取SSH连接失败: %v", err)
@@ -398,26 +410,27 @@ func PushWebLogo(merchantNo string, logoPath string, appName string) error {
 		return fmt.Errorf("SSH连接失败: %v", err)
 	}
 
-	// 3. 创建临时目录
+	// 上传 logo 文件（如果有）
 	tmpDir := "/tmp/tsdd-logo"
-	if _, err := sshClient.ExecuteCommandWithTimeout(fmt.Sprintf("mkdir -p %s", tmpDir), 10*time.Second); err != nil {
-		return fmt.Errorf("创建临时目录失败: %v", err)
-	}
+	hasLogoFiles := len(files) > 0
+	if hasLogoFiles {
+		if _, err := sshClient.ExecuteCommandWithTimeout(fmt.Sprintf("mkdir -p %s", tmpDir), 10*time.Second); err != nil {
+			return fmt.Errorf("创建临时目录失败: %v", err)
+		}
 
-	// 4. 上传所有文件到临时目录
-	for filename, data := range files {
-		remotePath := fmt.Sprintf("%s/%s", tmpDir, filename)
-		if err := sshClient.UploadFile(remotePath, bytes.NewReader(data)); err != nil {
-			logx.Errorf("上传文件失败: merchant=%s, file=%s, err=%v", merchantNo, filename, err)
-			return fmt.Errorf("上传 %s 失败: %v", filename, err)
+		for filename, data := range files {
+			remotePath := fmt.Sprintf("%s/%s", tmpDir, filename)
+			if err := sshClient.UploadFile(remotePath, bytes.NewReader(data)); err != nil {
+				logx.Errorf("上传文件失败: merchant=%s, file=%s, err=%v", merchantNo, filename, err)
+				return fmt.Errorf("上传 %s 失败: %v", filename, err)
+			}
 		}
 	}
 
-	// 5. 复制到宿主机 web 目录 + 更新应用名称 + nginx reload + 清理
+	// 构建脚本：复制 logo + 更新应用名称 + nginx reload
 	// web 容器挂载 /opt/tsdd/web:/usr/share/nginx/html:ro，直接写宿主机目录即可
 	appNameScript := ""
 	if appName != "" {
-		// 转义 sed 中的特殊字符
 		escapedName := strings.ReplaceAll(appName, `/`, `\/`)
 		escapedName = strings.ReplaceAll(escapedName, `&`, `\&`)
 		appNameScript = fmt.Sprintf(`
@@ -432,9 +445,10 @@ fi
 `, escapedName, escapedName, escapedName)
 	}
 
-	script := fmt.Sprintf(`
-set -e
-WEB_DIR="/opt/tsdd/web"
+	logoCopyScript := ""
+	cleanupScript := ""
+	if hasLogoFiles {
+		logoCopyScript = fmt.Sprintf(`
 if [ -d "$WEB_DIR" ]; then
     sudo cp %s/* "$WEB_DIR/"
 else
@@ -444,21 +458,80 @@ else
         docker cp "$f" tsdd-web:${WEB_ROOT}/${fname}
     done
 fi
+`, tmpDir, tmpDir)
+		cleanupScript = fmt.Sprintf("rm -rf %s", tmpDir)
+	}
+
+	script := fmt.Sprintf(`
+set -e
+WEB_DIR="/opt/tsdd/web"
+%s
 %s
 docker exec tsdd-web nginx -s reload
-rm -rf %s
+%s
 echo "OK"
-`, tmpDir, tmpDir, appNameScript, tmpDir)
+`, logoCopyScript, appNameScript, cleanupScript)
 
 	output, err := sshClient.ExecuteCommandWithTimeout(script, 60*time.Second)
 	if err != nil {
 		logx.Errorf("推送Logo到容器失败: merchant=%s, err=%v, output=%s", merchantNo, err, output)
-		// 尝试清理
-		sshClient.ExecuteCommandSilent(fmt.Sprintf("rm -rf %s", tmpDir))
+		if hasLogoFiles {
+			sshClient.ExecuteCommandSilent(fmt.Sprintf("rm -rf %s", tmpDir))
+		}
 		return fmt.Errorf("推送Logo失败: %v", err)
 	}
 
-	logx.Infof("Logo已推送: merchant=%s, files=%d", merchantNo, len(files))
+	logx.Infof("Logo已推送: merchant=%s, files=%d, appName=%s", merchantNo, len(files), appName)
 	return nil
+}
+
+// ReapplyWebBranding 根据商户 ID 重新应用 Web 品牌配置（logo/应用名称）
+// 从数据库读取商户的 LogoUrl 和 AppName，如果已配置则重新推送到 Web 前端
+// 用于部署后自动恢复品牌配置，避免被新部署覆盖
+func ReapplyWebBranding(merchantId int) {
+	var m entity.Merchants
+	has, err := dbs.DBAdmin.Where("id = ?", merchantId).Get(&m)
+	if err != nil || !has {
+		logx.Infof("[ReapplyWebBranding] 商户不存在或查询失败: merchantId=%d, err=%v", merchantId, err)
+		return
+	}
+
+	// appName fallback 到商户名称
+	appName := m.AppName
+	if appName == "" {
+		appName = m.Name
+	}
+
+	// 没有配置 logo 和 appName，跳过
+	if m.LogoUrl == "" && appName == "" {
+		logx.Infof("[ReapplyWebBranding] 商户未配置品牌: merchantId=%d, no=%s", merchantId, m.No)
+		return
+	}
+
+	var logoPath string
+	if m.LogoUrl != "" {
+		logoRelPath := strings.TrimPrefix(m.LogoUrl, "/assets/")
+		logoPath = filepath.Join(consts.AssetsDir, logoRelPath)
+
+		// 检查 logo 文件是否存在
+		if _, err := os.Stat(logoPath); os.IsNotExist(err) {
+			logx.Errorf("[ReapplyWebBranding] Logo 文件不存在: path=%s, merchant=%s", logoPath, m.No)
+			logoPath = "" // 文件不存在则只推 appName
+		}
+	}
+
+	// logo 文件不存在且没有 appName，跳过
+	if logoPath == "" && appName == "" {
+		return
+	}
+
+	// 等待一段时间让容器完全启动
+	time.Sleep(15 * time.Second)
+
+	if err := PushWebLogo(m.No, logoPath, appName); err != nil {
+		logx.Errorf("[ReapplyWebBranding] 推送失败: merchant=%s, err=%v", m.No, err)
+	} else {
+		logx.Infof("[ReapplyWebBranding] 品牌配置已恢复: merchant=%s, logo=%s, appName=%s", m.No, m.LogoUrl, m.AppName)
+	}
 }
 

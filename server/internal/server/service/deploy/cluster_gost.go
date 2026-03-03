@@ -1,12 +1,15 @@
 package deploy
 
 import (
+	"context"
 	"fmt"
 	"server/internal/server/model"
 	"server/pkg/dbs"
 	"server/pkg/entity"
 	"server/pkg/gostapi"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -50,9 +53,15 @@ func SyncClusterGostForward(merchantId int) ([]model.GostSyncResult, error) {
 	appIPs := make([]string, 0, len(appNodes))
 	for _, n := range appNodes {
 		var server entity.Servers
-		has, _ := dbs.DBAdmin.Where("id = ?", n.ServerId).Cols("host").Get(&server)
+		has, err := dbs.DBAdmin.Where("id = ?", n.ServerId).Cols("host").Get(&server)
+		if err != nil {
+			logx.Errorf("[SyncClusterGost] 查询 App 节点 serverId=%d 的服务器信息失败: %v", n.ServerId, err)
+			continue
+		}
 		if has && server.Host != "" {
 			appIPs = append(appIPs, server.Host)
+		} else {
+			logx.Infof("[SyncClusterGost] App 节点 serverId=%d 无公网 IP，跳过", n.ServerId)
 		}
 	}
 	if len(appIPs) == 0 {
@@ -102,7 +111,17 @@ func SyncClusterGostForward(merchantId int) ([]model.GostSyncResult, error) {
 	for _, gs := range gostRefs {
 		// 获取 GOST 服务器信息
 		var server entity.Servers
-		has, _ := dbs.DBAdmin.Where("id = ?", gs.ServerId).Get(&server)
+		has, err := dbs.DBAdmin.Where("id = ?", gs.ServerId).Get(&server)
+		if err != nil {
+			results = append(results, model.GostSyncResult{
+				ServerId:   gs.ServerId,
+				ServerName: "未知",
+				TargetIP:   targetIPsStr,
+				Success:    false,
+				Error:      fmt.Sprintf("查询服务器信息失败: %v", err),
+			})
+			continue
+		}
 		if !has {
 			results = append(results, model.GostSyncResult{
 				ServerId:   gs.ServerId,
@@ -160,6 +179,41 @@ func SyncClusterGostForward(merchantId int) ([]model.GostSyncResult, error) {
 		results = append(results, r)
 	}
 
+	// 同步持久化配置到磁盘（并发执行，但等待全部完成后再返回）
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for i, r := range results {
+		if r.Success {
+			wg.Add(1)
+			go func(idx int, sid int, host string) {
+				defer wg.Done()
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+
+				done := make(chan error, 1)
+				go func() { done <- PersistGostConfig(sid) }()
+
+				select {
+				case persistErr := <-done:
+					if persistErr != nil {
+						mu.Lock()
+						results[idx].PersistError = fmt.Sprintf("持久化失败: %v", persistErr)
+						mu.Unlock()
+						logx.Errorf("[SyncClusterGost] 持久化 GOST 配置失败 %s(id=%d): %v", host, sid, persistErr)
+					} else {
+						logx.Infof("[SyncClusterGost] 已持久化 GOST 配置 %s(id=%d)", host, sid)
+					}
+				case <-ctx.Done():
+					mu.Lock()
+					results[idx].PersistError = "持久化超时(30s)"
+					mu.Unlock()
+					logx.Errorf("[SyncClusterGost] 持久化 GOST 配置超时 %s(id=%d)", host, sid)
+				}
+			}(i, r.ServerId, r.ServerHost)
+		}
+	}
+	wg.Wait()
+
 	return results, nil
 }
 
@@ -177,8 +231,16 @@ func syncClusterEncryptedForward(gostServerIP string, basePort int, targetIPs []
 		_ = gostapi.DeleteRelayTLSForward(gostServerIP, basePort+cfg.Offset)
 		_ = gostapi.DeleteRelayTLSForward(gostServerIP, gostapi.ForwardPorts[0]+cfg.Offset)
 	}
+	// 4. 直连转发规则 (fwd-{port})（转发类型可能从直连切换到加密）
+	clearPorts := make([]int, 0, len(gostapi.MerchantPortConfigs)*2)
+	for _, cfg := range gostapi.MerchantPortConfigs {
+		clearPorts = append(clearPorts, basePort+cfg.Offset)
+		clearPorts = append(clearPorts, gostapi.ForwardPorts[0]+cfg.Offset)
+	}
+	_ = gostapi.ClearDirectForwardTargetWithPorts(gostServerIP, clearPorts)
 
 	// 创建新规则：监听 basePort+offset → relay+tls → appNode:targetPort
+	var createdPorts []int
 	for _, cfg := range gostapi.MerchantPortConfigs {
 		listenPort := basePort + cfg.Offset
 		targetPort := cfg.TargetPort
@@ -189,8 +251,13 @@ func syncClusterEncryptedForward(gostServerIP string, basePort int, targetIPs []
 			_, err = gostapi.CreateRelayTLSForwardMultiTarget(gostServerIP, listenPort, targetIPs, targetPort)
 		}
 		if err != nil {
+			// 回滚已创建的规则
+			for _, p := range createdPorts {
+				_ = gostapi.DeleteRelayTLSForward(gostServerIP, p)
+			}
 			return fmt.Errorf("创建端口 %d→%d relay+tls 转发失败: %w", listenPort, targetPort, err)
 		}
+		createdPorts = append(createdPorts, listenPort)
 	}
 
 	return nil
@@ -216,13 +283,17 @@ func syncClusterDirectForward(gostServerIP string, basePort int, targetIPs []str
 	}
 
 	// 创建新规则：监听 basePort+offset → TCP → appNode:targetPort
+	var createdPorts []int
 	for _, cfg := range gostapi.MerchantPortConfigs {
 		listenPort := basePort + cfg.Offset
 		targetPort := cfg.TargetPort
 		_, err := gostapi.CreateDirectForwardMultiTarget(gostServerIP, listenPort, targetIPs, targetPort)
 		if err != nil {
+			// 回滚已创建的规则
+			_ = gostapi.ClearDirectForwardTargetWithPorts(gostServerIP, createdPorts)
 			return fmt.Errorf("创建端口 %d→%d TCP 直连转发失败: %w", listenPort, targetPort, err)
 		}
+		createdPorts = append(createdPorts, listenPort)
 	}
 
 	return nil

@@ -92,23 +92,27 @@ func QueryServers(req model.QueryServersReq) (model.QueryServersResponse, error)
 
 	for _, s := range servers {
 		item := model.ServerResp{
-			Id:          s.Id,
-			Name:        s.Name,
-			Host:        s.Host,
-			AuxiliaryIP: s.AuxiliaryIP,
-			Port:        s.Port,
-			Username:    s.Username,
-			AuthType:    s.AuthType,
-			ServerType:  s.ServerType,
-			ForwardType: s.ForwardType,
-			Status:      s.Status,
-			TlsEnabled:  s.TlsEnabled,
-			Description: s.Description,
-			MerchantId:  s.MerchantId,
-			GroupId:     s.GroupId,
-			GroupName:   groupMap[s.GroupId],
-			CreatedAt:   s.CreatedAt.Format("2006-01-02 15:04:05"),
-			UpdatedAt:   s.UpdatedAt.Format("2006-01-02 15:04:05"),
+			Id:              s.Id,
+			Name:            s.Name,
+			Host:            s.Host,
+			AuxiliaryIP:     s.AuxiliaryIP,
+			Port:            s.Port,
+			Username:        s.Username,
+			AuthType:        s.AuthType,
+			ServerType:      s.ServerType,
+			ForwardType:     s.ForwardType,
+			Status:          s.Status,
+			TlsEnabled:      s.TlsEnabled,
+			Description:     s.Description,
+			MerchantId:      s.MerchantId,
+			GroupId:         s.GroupId,
+			GroupName:       groupMap[s.GroupId],
+			CloudAccountId:  s.CloudAccountId,
+			CloudType:       s.CloudType,
+			CloudInstanceId: s.CloudInstanceId,
+			CloudRegionId:   s.CloudRegionId,
+			CreatedAt:       s.CreatedAt.Format("2006-01-02 15:04:05"),
+			UpdatedAt:       s.UpdatedAt.Format("2006-01-02 15:04:05"),
 		}
 		if s.TlsDeployedAt != nil {
 			item.TlsDeployedAt = s.TlsDeployedAt.Format("2006-01-02 15:04:05")
@@ -139,22 +143,26 @@ func GetServerDetail(id int) (model.ServerResp, error) {
 	}
 
 	resp = model.ServerResp{
-		Id:          server.Id,
-		Name:        server.Name,
-		Host:        server.Host,
-		AuxiliaryIP: server.AuxiliaryIP,
-		Port:        server.Port,
-		Username:    server.Username,
-		AuthType:    server.AuthType,
-		ServerType:  server.ServerType,
-		ForwardType: server.ForwardType,
-		Status:      server.Status,
-		TlsEnabled:  server.TlsEnabled,
-		Description: server.Description,
-		MerchantId:  server.MerchantId,
-		GroupId:     server.GroupId,
-		CreatedAt:   server.CreatedAt.Format("2006-01-02 15:04:05"),
-		UpdatedAt:   server.UpdatedAt.Format("2006-01-02 15:04:05"),
+		Id:              server.Id,
+		Name:            server.Name,
+		Host:            server.Host,
+		AuxiliaryIP:     server.AuxiliaryIP,
+		Port:            server.Port,
+		Username:        server.Username,
+		AuthType:        server.AuthType,
+		ServerType:      server.ServerType,
+		ForwardType:     server.ForwardType,
+		Status:          server.Status,
+		TlsEnabled:      server.TlsEnabled,
+		Description:     server.Description,
+		MerchantId:      server.MerchantId,
+		GroupId:         server.GroupId,
+		CloudAccountId:  server.CloudAccountId,
+		CloudType:       server.CloudType,
+		CloudInstanceId: server.CloudInstanceId,
+		CloudRegionId:   server.CloudRegionId,
+		CreatedAt:       server.CreatedAt.Format("2006-01-02 15:04:05"),
+		UpdatedAt:       server.UpdatedAt.Format("2006-01-02 15:04:05"),
 	}
 	if server.TlsDeployedAt != nil {
 		resp.TlsDeployedAt = server.TlsDeployedAt.Format("2006-01-02 15:04:05")
@@ -348,6 +356,19 @@ func UpdateServer(id int, req model.UpdateServerReq) error {
 	if req.Description != "" {
 		updates["description"] = req.Description
 	}
+	// 云绑定字段
+	if req.CloudAccountId != nil {
+		updates["cloud_account_id"] = *req.CloudAccountId
+	}
+	if req.CloudType != nil {
+		updates["cloud_type"] = *req.CloudType
+	}
+	if req.CloudInstanceId != nil {
+		updates["cloud_instance_id"] = *req.CloudInstanceId
+	}
+	if req.CloudRegionId != nil {
+		updates["cloud_region_id"] = *req.CloudRegionId
+	}
 
 	if len(updates) == 0 {
 		return errors.New("没有需要更新的字段")
@@ -456,6 +477,25 @@ func enqueueDeleteGostServicesForMerchants(serverHost string, forwardType int) {
 // TestConnection 测试SSH连接
 func TestConnection(req model.TestConnectionReq) error {
 	return utils.TestSSHConnection(req.Host, req.Port, req.Username, req.Password, req.PrivateKey)
+}
+
+// TestServerConnection 测试已有服务器的SSH连接（使用数据库存储的凭证，可选覆盖Host）
+func TestServerConnection(serverId int, hostOverride string) error {
+	var server entity.Servers
+	has, err := dbs.DBAdmin.Where("id = ?", serverId).Get(&server)
+	if err != nil {
+		return fmt.Errorf("查询服务器失败: %v", err)
+	}
+	if !has {
+		return errors.New("服务器不存在")
+	}
+
+	host := server.Host
+	if hostOverride != "" {
+		host = hostOverride
+	}
+
+	return utils.TestSSHConnection(host, server.Port, server.Username, server.Password, server.PrivateKey)
 }
 
 // GetSSHClient 获取SSH客户端（使用连接池）

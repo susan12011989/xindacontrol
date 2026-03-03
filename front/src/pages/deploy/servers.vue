@@ -2,7 +2,7 @@
 import type { DistributeResult, ServerResp } from "@@/apis/deploy/type"
 import type { MerchantResp } from "@@/apis/merchant/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
-import { createServer, deleteServer, distributeFile, getServerList, getServerStatsBatch, testConnection, toggleServerStatus, updateServer, uploadToLocal, batchUpgradeTls, batchRollbackTls, getTlsStatus, verifyTlsStatus, batchSyncConfig } from "@@/apis/deploy"
+import { createServer, deleteServer, distributeFile, getServerList, getServerStatsBatch, testConnection, testServerConnection, toggleServerStatus, updateServer, uploadToLocal, batchUpgradeTls, batchRollbackTls, getTlsStatus, verifyTlsStatus, batchSyncConfig } from "@@/apis/deploy"
 import type { TlsServerResult, TlsStatusResp } from "@@/apis/deploy/type"
 import { getMerchantList } from "@@/apis/merchant"
 
@@ -650,16 +650,21 @@ const crudStore = reactive({
     xFormDom.value?.validate((errMap) => {
       if (errMap) return
       ElMessageBox.confirm("确定测试SSH连接?", "提示", { type: "warning" }).then(() => {
-        const authType = Number(xFormOpt.data.auth_type)
-        const data = {
-          host: xFormOpt.data.host,
-          port: Number(xFormOpt.data.port),
-          username: xFormOpt.data.username,
-          auth_type: authType,
-          password: authType === 1 ? xFormOpt.data.password : "",
-          private_key: authType === 2 ? xFormOpt.data.private_key : ""
-        }
-        testConnection(data)
+        const apiCall = crudStore.isUpdate
+          ? testServerConnection(crudStore.currentId, { host: xFormOpt.data.host })
+          : (() => {
+              const authType = Number(xFormOpt.data.auth_type)
+              return testConnection({
+                host: xFormOpt.data.host,
+                port: Number(xFormOpt.data.port),
+                username: xFormOpt.data.username,
+                auth_type: authType,
+                password: authType === 1 ? xFormOpt.data.password : "",
+                private_key: authType === 2 ? xFormOpt.data.private_key : ""
+              })
+            })()
+
+        apiCall
           .then(() => {
             ElMessage.success("连接测试成功!")
           })
@@ -870,6 +875,7 @@ onMounted(() => {
             style="width: 100%"
             filterable
             clearable
+            popper-class="merchant-select-popper"
             @clear="xFormOpt.data.merchant_id = 0"
           >
             <el-option
@@ -1236,5 +1242,11 @@ onMounted(() => {
     margin-bottom: 0;
   }
 }
+</style>
 
+<!-- el-select 下拉在 vxe-modal 内需要更高 z-index -->
+<style lang="scss">
+.merchant-select-popper {
+  z-index: 99999 !important;
+}
 </style>

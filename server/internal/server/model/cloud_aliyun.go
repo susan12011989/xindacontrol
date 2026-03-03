@@ -275,3 +275,39 @@ type OssDeleteObjectReq struct {
 	Bucket         string `json:"bucket" binding:"required"`
 	ObjectKey      string `json:"object_key" binding:"required"`
 }
+
+// ========== ECS 实例带宽管理 ==========
+
+// 查询服务器带宽请求
+type GetServerBandwidthReq struct {
+	ServerId int `form:"server_id" binding:"required"`
+}
+
+// 修改服务器带宽请求
+type ModifyServerBandwidthReq struct {
+	ServerId                int   `json:"server_id" binding:"required"`
+	InternetMaxBandwidthOut int32 `json:"internet_max_bandwidth_out" binding:"required,min=1"`
+}
+
+// 服务器带宽信息响应
+type BandwidthInfoResp struct {
+	ServerId                int    `json:"server_id"`
+	ServerName              string `json:"server_name"`
+	InternetMaxBandwidthIn  int32  `json:"internet_max_bandwidth_in"`
+	InternetMaxBandwidthOut int32  `json:"internet_max_bandwidth_out"`
+	InternetChargeType      string `json:"internet_charge_type"`
+	HasEip                  bool   `json:"has_eip"`
+	EipAllocationId         string `json:"eip_allocation_id,omitempty"`
+	EipBandwidth            int32  `json:"eip_bandwidth,omitempty"`
+	EipChargeType           string `json:"eip_charge_type,omitempty"`
+}
+
+// 修改自动续费请求
+type ModifyAutoRenewReq struct {
+	MerchantId     int    `json:"merchant_id"`
+	CloudAccountId int64  `json:"cloud_account_id"`
+	RegionId       string `json:"region_id" binding:"required"`
+	InstanceId     string `json:"instance_id" binding:"required"`
+	AutoRenew      bool   `json:"auto_renew"`
+	Duration       int32  `json:"duration"` // 续费周期（月），默认1
+}

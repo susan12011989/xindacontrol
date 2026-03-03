@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type * as Types from "./apis/type"
 import { merchantQueryApi } from "@/pages/dashboard/apis"
-import { getInstanceList, operateInstance, modifyInstanceAttribute, resetInstancePassword } from "./apis"
+import { getInstanceList, operateInstance, modifyInstanceAttribute, resetInstancePassword, modifyRenewFlag } from "./apis"
 import { getCloudAccountOptions } from "@@/apis/cloud_account"
 import { getTencentRegions } from "@@/constants/tencent-regions"
 import { ArrowDown, Delete, Edit, Plus, RefreshRight, VideoPause, VideoPlay } from "@element-plus/icons-vue"
@@ -291,6 +291,65 @@ async function onSubmitResetPwd() {
   }
 }
 
+// ========== 自动续费操作 ==========
+const renewFlagVisible = ref(false)
+const renewFlagLoading = ref(false)
+const renewFlagForm = reactive({
+  instance_id: "",
+  zone: "",
+  renew_flag: "NOTIFY_AND_AUTO_RENEW"
+})
+
+const renewFlagOptions = [
+  { value: "NOTIFY_AND_AUTO_RENEW", label: "通知且自动续费" },
+  { value: "NOTIFY_AND_MANUAL_RENEW", label: "通知但不自动续费" },
+  { value: "DISABLE_NOTIFY_AND_MANUAL_RENEW", label: "不通知不自动续费" }
+]
+
+function getRenewFlagText(flag: string | undefined): string {
+  const opt = renewFlagOptions.find(o => o.value === flag)
+  return opt ? opt.label : flag || "-"
+}
+
+function onShowRenewFlag(row: Types.Instance) {
+  const region = getRegionFromZone(row.Placement?.Zone)
+  if (!region) return ElMessage.warning("无法获取区域信息")
+  renewFlagForm.instance_id = row.InstanceId
+  renewFlagForm.zone = row.Placement?.Zone || ""
+  renewFlagForm.renew_flag = row.RenewFlag || "NOTIFY_AND_MANUAL_RENEW"
+  renewFlagVisible.value = true
+}
+
+async function onSubmitRenewFlag() {
+  const region = getRegionFromZone(renewFlagForm.zone)
+  if (!region) return ElMessage.warning("无法获取区域信息")
+
+  const data: any = {
+    region_id: region,
+    instance_ids: [renewFlagForm.instance_id],
+    renew_flag: renewFlagForm.renew_flag
+  }
+  if (accountType.value === "system") {
+    if (!selectedCloudAccount.value) return ElMessage.warning("请选择系统云账号")
+    data.cloud_account_id = selectedCloudAccount.value
+  } else {
+    if (!selectedMerchant.value) return ElMessage.warning("请选择商户")
+    data.merchant_id = selectedMerchant.value
+  }
+
+  renewFlagLoading.value = true
+  try {
+    await modifyRenewFlag(data)
+    ElMessage.success("续费标识修改成功")
+    renewFlagVisible.value = false
+    onQuery()
+  } catch (error: any) {
+    ElMessage.error(error.message || "修改续费标识失败")
+  } finally {
+    renewFlagLoading.value = false
+  }
+}
+
 function formatDiskSize(disk: Types.SystemDisk | undefined): string {
   if (!disk) return "-"
   return `${disk.DiskSize}GB`
@@ -404,6 +463,9 @@ function formatDiskSize(disk: Types.SystemDisk | undefined): string {
                   <el-dropdown-item @click="onShowResetPwd(row)">
                     <el-icon><Edit /></el-icon> 重置密码
                   </el-dropdown-item>
+                  <el-dropdown-item v-if="row.InstanceChargeType === 'PREPAID'" @click="onShowRenewFlag(row)">
+                    <el-icon><RefreshRight /></el-icon> 自动续费
+                  </el-dropdown-item>
                   <el-dropdown-item divided @click="onOperate(row, 'start')">
                     <el-icon><VideoPlay /></el-icon> 启动
                   </el-dropdown-item>
@@ -459,6 +521,29 @@ function formatDiskSize(disk: Types.SystemDisk | undefined): string {
       <template #footer>
         <el-button @click="resetPwdVisible = false">取消</el-button>
         <el-button type="primary" :loading="loading" @click="onSubmitResetPwd">确定</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 自动续费弹窗 -->
+    <el-dialog v-model="renewFlagVisible" title="自动续费设置" width="450px">
+      <el-form :model="renewFlagForm" label-width="100px">
+        <el-form-item label="实例ID">
+          <span>{{ renewFlagForm.instance_id }}</span>
+        </el-form-item>
+        <el-form-item label="续费策略">
+          <el-select v-model="renewFlagForm.renew_flag" style="width: 100%">
+            <el-option
+              v-for="opt in renewFlagOptions"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="renewFlagVisible = false">取消</el-button>
+        <el-button type="primary" :loading="renewFlagLoading" @click="onSubmitRenewFlag">确定</el-button>
       </template>
     </el-dialog>
   </div>

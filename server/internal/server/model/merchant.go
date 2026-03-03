@@ -132,3 +132,43 @@ type TunnelStats struct {
 	TotalGostServers     int `json:"total_gost_servers"`     // 系统服务器（GOST）总数
 	TotalMerchantServers int `json:"total_merchant_servers"` // 商户服务器总数
 }
+
+// ========== TURN 服务器配置管理 ==========
+
+// MerchantTurnConfigItem 商户 TURN 配置项
+type MerchantTurnConfigItem struct {
+	MerchantId     int    `json:"merchant_id"`
+	MerchantNo     string `json:"merchant_no"`
+	MerchantName   string `json:"merchant_name"`
+	ServerIP       string `json:"server_ip"`
+	Status         int    `json:"status"`
+	TurnServer     string `json:"turn_server"`
+	TurnUsername   string `json:"turn_username"`
+	TurnCredential string `json:"turn_credential"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
+// BatchUpdateTurnServerReq 批量更新 TURN 请求
+type BatchUpdateTurnServerReq struct {
+	MerchantIds    []int  `json:"merchant_ids" binding:"required,min=1"`
+	TurnServer     string `json:"turn_server" binding:"required"`
+	TurnUsername   string `json:"turn_username"`
+	TurnCredential string `json:"turn_credential"`
+}
+
+// BatchTurnUpdateResult 单商户更新结果
+type BatchTurnUpdateResult struct {
+	MerchantId   int    `json:"merchant_id"`
+	MerchantName string `json:"merchant_name"`
+	ServerIP     string `json:"server_ip"`
+	Success      bool   `json:"success"`
+	Message      string `json:"message"`
+}
+
+// BatchUpdateTurnServerResp 批量更新响应
+type BatchUpdateTurnServerResp struct {
+	TotalCount   int                     `json:"total_count"`
+	SuccessCount int                     `json:"success_count"`
+	FailCount    int                     `json:"fail_count"`
+	Results      []BatchTurnUpdateResult `json:"results"`
+}

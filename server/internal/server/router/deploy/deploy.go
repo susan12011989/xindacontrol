@@ -43,6 +43,7 @@ func Routes(gi gin.IRouter) {
 	group.PUT("servers/:id", updateServer)
 	group.DELETE("servers/:id", deleteServer)
 	group.POST("servers/test", testConnection)
+	group.POST("servers/:id/test-connection", testServerConnection)
 	group.POST("servers/:id/toggle-status", toggleStatus)
 
 	// 服务操作（systemctl 管理 server/wukongim/gost）
@@ -108,6 +109,12 @@ func Routes(gi gin.IRouter) {
 	group.GET("tsdd/cluster-nodes", getClusterNodes)   // 获取商户集群拓扑
 	group.POST("tsdd/sync-gost", syncClusterGost)      // 同步集群 GOST 转发配置
 	group.POST("tsdd/cluster-wizard", clusterWizard)   // 集群一站式向导（流式API）
+
+	// ========== 限流管理 ==========
+	group.GET("ratelimit/status", getRateLimitStatus)            // 获取限流状态
+	group.POST("ratelimit/toggle", toggleRateLimit)              // 切换限流开关
+	group.POST("ratelimit/whitelist/add", addWhitelistIP)        // 添加白名单IP
+	group.POST("ratelimit/whitelist/remove", removeWhitelistIP)  // 移除白名单IP
 
 	// ========== 批量运维操作 ==========
 	group.POST("batch/service-action", batchServiceAction)  // 批量服务操作（start/stop/restart）
@@ -240,6 +247,27 @@ func testConnection(ctx *gin.Context) {
 	}
 
 	err := deployService.TestConnection(req)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, gin.H{"message": "连接测试成功"})
+}
+
+// testServerConnection 测试已有服务器的SSH连接（使用存储的凭证，可选覆盖Host）
+func testServerConnection(ctx *gin.Context) {
+	idStr := ctx.Param("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	var req model.TestServerConnectionReq
+	_ = ctx.ShouldBindJSON(&req) // body 可选
+
+	err = deployService.TestServerConnection(id, req.Host)
 	if err != nil {
 		result.GErr(ctx, err)
 		return
@@ -1039,6 +1067,80 @@ func diagnoseGost(ctx *gin.Context) {
 	}
 
 	result.GStreamEnd(ctx, true, "诊断修复完成")
+}
+
+// ========== 限流管理 ==========
+
+// getRateLimitStatus 获取限流状态
+func getRateLimitStatus(ctx *gin.Context) {
+	var req model.RateLimitStatusReq
+	if err := ctx.ShouldBindQuery(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	data, err := deployService.GetRateLimitStatus(req.MerchantId)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// toggleRateLimit 切换限流开关
+func toggleRateLimit(ctx *gin.Context) {
+	var req model.RateLimitToggleReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	err := deployService.ToggleRateLimit(req.MerchantId, req.Enabled)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	status := "已开启"
+	if !req.Enabled {
+		status = "已关闭"
+	}
+	result.GOK(ctx, gin.H{"message": fmt.Sprintf("限流%s", status)})
+}
+
+// addWhitelistIP 添加白名单IP
+func addWhitelistIP(ctx *gin.Context) {
+	var req model.RateLimitWhitelistReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	err := deployService.AddWhitelistIP(req.MerchantId, req.IP)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, gin.H{"message": fmt.Sprintf("已添加 %s 到白名单", req.IP)})
+}
+
+// removeWhitelistIP 移除白名单IP
+func removeWhitelistIP(ctx *gin.Context) {
+	var req model.RateLimitWhitelistReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	err := deployService.RemoveWhitelistIP(req.MerchantId, req.IP)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, gin.H{"message": fmt.Sprintf("已从白名单移除 %s", req.IP)})
 }
 
 // ========== 批量运维操作 ==========

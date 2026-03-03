@@ -140,3 +140,19 @@ export function unbindInstanceMerchant(data: { instance_id: string; cloud_type?:
     data
   })
 }
+
+// 修改自动续费
+export function modifyAutoRenew(data: {
+  merchant_id?: number
+  cloud_account_id?: number
+  region_id: string
+  instance_id: string
+  auto_renew: boolean
+  duration?: number
+}) {
+  return request<null>({
+    url: "/cloud/ecs/instance/modify-auto-renew",
+    method: "post",
+    data
+  })
+}

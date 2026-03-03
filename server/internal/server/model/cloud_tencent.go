@@ -202,7 +202,7 @@ type TencentCreateInstanceReq struct {
 	CloudAccountId          int64    `json:"cloud_account_id"`
 	RegionId                string   `json:"region_id" binding:"required"`
 	Zone                    string   `json:"zone" binding:"required"`
-	ImageId                 string   `json:"image_id" binding:"required"`
+	ImageId                 string   `json:"image_id"`
 	InstanceType            string   `json:"instance_type" binding:"required"`
 	InstanceChargeType      string   `json:"instance_charge_type"`
 	SystemDiskType          string   `json:"system_disk_type"`
@@ -246,4 +246,13 @@ type TencentVpcReq struct {
 	CloudAccountId int64  `form:"cloud_account_id"`
 	RegionId       string `form:"region_id" binding:"required"`
 	VpcId          string `form:"vpc_id"`
+}
+
+// TencentModifyRenewFlagReq 修改续费标识请求
+type TencentModifyRenewFlagReq struct {
+	MerchantId     int      `json:"merchant_id"`
+	CloudAccountId int64    `json:"cloud_account_id"`
+	RegionId       string   `json:"region_id" binding:"required"`
+	InstanceIds    []string `json:"instance_ids" binding:"required"`
+	RenewFlag      string   `json:"renew_flag" binding:"required"` // NOTIFY_AND_AUTO_RENEW / NOTIFY_AND_MANUAL_RENEW / DISABLE_NOTIFY_AND_MANUAL_RENEW
 }

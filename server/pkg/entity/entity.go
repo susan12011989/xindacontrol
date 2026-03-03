@@ -26,6 +26,8 @@ type PackageConfiguration struct {
 	ExpiredAt        int64    `json:"expired_at"`         // 套餐到期时间(秒级时间戳)
 	AppPackages      []string `json:"app_packages"`       // 套餐内可用应用列表
 	TurnServer       string   `json:"turn_server"`        // TURN服务器地址 (格式: ip:port)
+	TurnUsername     string   `json:"turn_username"`      // TURN用户名
+	TurnCredential   string   `json:"turn_credential"`    // TURN密码
 }
 
 type CloudAccountDetail struct {
@@ -274,16 +276,6 @@ type AllPushConfig struct {
 type TrtcConfig struct {
 	AppId  int    `json:"app_id"`
 	AppKey string `json:"app_key"`
-}
-
-// 客户端包列表
-type Clients struct {
-	Id             int            `xorm:"not null pk autoincr INT"`
-	AppPackageName string         `xorm:"not null comment('安卓包名') VARCHAR(100)"`
-	AppName        string         `xorm:"not null comment('app名称') VARCHAR(100)"`
-	SmsConfig      *SmsConfig     `xorm:"comment('短信配置') JSON"`   // 短信配置
-	PushConfig     *AllPushConfig `xorm:"comment('推送配置') JSON"`   // 推送配置
-	TrtcConfig     *TrtcConfig    `xorm:"comment('TRTC配置') JSON"` // TRTC配置
 }
 
 // IP嵌入选择记录
@@ -752,4 +744,16 @@ type CloudInstanceBindings struct {
 	MerchantId int       `xorm:"not null INT"`
 	CreatedAt  time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 	UpdatedAt  time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+}
+
+// Clients 客户端管理
+type Clients struct {
+	Id          int       `xorm:"not null pk autoincr INT"`
+	Name        string    `xorm:"not null VARCHAR(128)"`
+	PackageName string    `xorm:"not null VARCHAR(128)"`
+	Platform    string    `xorm:"not null default 'android' VARCHAR(16)"`
+	MerchantId  int       `xorm:"not null INT"`
+	Status      int       `xorm:"not null default 1 TINYINT"`
+	CreatedAt   time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+	UpdatedAt   time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 }

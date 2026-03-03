@@ -409,7 +409,8 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 		MerchantNo  string   `json:"merchant_no"`
 		MerchantNos []string `json:"merchant_nos"`
 		Broadcast   bool     `json:"broadcast"`
-		LogoURL     string   `json:"logo_url"` // Control 资源路径，如 /assets/logo/xxx.png
+		LogoURL     string   `json:"logo_url"`     // Control 资源路径，如 /assets/logo/xxx.png
+		UseOwnLogo  bool     `json:"use_own_logo"` // 使用每个商户自己的 logo_url
 	}
 	group.POST("push_logo", func(c *gin.Context) {
 		var req pushLogoReq
@@ -417,15 +418,20 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 			result.GParamErr(c, err)
 			return
 		}
-		if req.LogoURL == "" {
+		if req.LogoURL == "" && !req.UseOwnLogo {
 			result.GResult(c, 601, nil, "logo_url不能为空")
 			return
 		}
 
 		// 解析 logo_url → 本地文件路径
-		// logo_url 格式: /assets/logo/xxx.png → {AssetsDir}/logo/xxx.png
-		logoRelPath := strings.TrimPrefix(req.LogoURL, "/assets/")
-		logoPath := filepath.Join(consts.AssetsDir, logoRelPath)
+		resolveLogoPath := func(logoURL string) string {
+			rel := strings.TrimPrefix(logoURL, "/assets/")
+			return filepath.Join(consts.AssetsDir, rel)
+		}
+		logoPath := ""
+		if req.LogoURL != "" {
+			logoPath = resolveLogoPath(req.LogoURL)
+		}
 
 		// 目标判断：三选一
 		targetCount := 0
@@ -443,11 +449,14 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 			return
 		}
 
-		// 辅助函数：获取商户 app_name
+		// 辅助函数：获取商户 app_name，空则 fallback 到商户名称
 		getAppName := func(merchantNo string) string {
 			m, err := dbhelper.GetMerchantByNo(merchantNo)
 			if err == nil && m != nil {
-				return m.AppName
+				if m.AppName != "" {
+					return m.AppName
+				}
+				return m.Name
 			}
 			return ""
 		}
@@ -459,16 +468,29 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 				return
 			}
 			successCount := 0
+			var skipped []gin.H
 			var failures []gin.H
 			for _, m := range merchants {
-				if err := merchantService.PushWebLogo(m.No, logoPath, m.AppName); err != nil {
+				appName := m.AppName
+				if appName == "" {
+					appName = m.Name
+				}
+				mLogoPath := logoPath
+				if req.UseOwnLogo {
+					if m.LogoUrl == "" {
+						skipped = append(skipped, gin.H{"merchant_no": m.No, "name": m.Name, "reason": "未上传Logo"})
+						continue
+					}
+					mLogoPath = resolveLogoPath(m.LogoUrl)
+				}
+				if err := merchantService.PushWebLogo(m.No, mLogoPath, appName); err != nil {
 					logx.Errorf("广播推送Logo失败: merchant=%s, err=%v", m.No, err)
 					failures = append(failures, gin.H{"merchant_no": m.No, "name": m.Name, "error": err.Error()})
 				} else {
 					successCount++
 				}
 			}
-			result.GOK(c, gin.H{"mode": "broadcast", "total": len(merchants), "success": successCount, "failures": failures})
+			result.GOK(c, gin.H{"mode": "broadcast", "total": len(merchants), "success": successCount, "failures": failures, "skipped": skipped})
 			return
 		}
 
@@ -485,20 +507,34 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 		// 批量
 		successCount := 0
 		var failures []gin.H
+		var skipped []gin.H
 		for _, no := range req.MerchantNos {
 			no = strings.TrimSpace(no)
 			if no == "" {
 				continue
 			}
+			mLogoPath := logoPath
 			appName := getAppName(no)
-			if err := merchantService.PushWebLogo(no, logoPath, appName); err != nil {
+			if req.UseOwnLogo {
+				m, err := dbhelper.GetMerchantByNo(no)
+				if err != nil || m == nil {
+					failures = append(failures, gin.H{"merchant_no": no, "error": "商户不存在"})
+					continue
+				}
+				if m.LogoUrl == "" {
+					skipped = append(skipped, gin.H{"merchant_no": no, "name": m.Name, "reason": "未上传Logo"})
+					continue
+				}
+				mLogoPath = resolveLogoPath(m.LogoUrl)
+			}
+			if err := merchantService.PushWebLogo(no, mLogoPath, appName); err != nil {
 				logx.Errorf("批量推送Logo失败: merchant=%s, err=%v", no, err)
 				failures = append(failures, gin.H{"merchant_no": no, "error": err.Error()})
 			} else {
 				successCount++
 			}
 		}
-		result.GOK(c, gin.H{"pushed": successCount, "total": len(req.MerchantNos), "failures": failures})
+		result.GOK(c, gin.H{"pushed": successCount, "total": len(req.MerchantNos), "failures": failures, "skipped": skipped})
 	})
 
 	// 导出商户数据库（mysqldump 流式下载）

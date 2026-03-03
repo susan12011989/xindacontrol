@@ -624,8 +624,8 @@ interface IPItem {
   merchantName: string
 }
 
-// IP 商户筛选
-const ipFilterMerchantId = ref<number | undefined>(undefined)
+// 商户筛选（IP选择 和 上传目标选择 共用）
+const filterMerchantId = ref<number | undefined>(undefined)
 
 const ipUploadTool = reactive({
   loading: false,
@@ -807,21 +807,29 @@ const flattenedIPList = computed<IPItem[]>(() => {
   return list
 })
 
-// IP 商户选项（从 systemIPs 中提取去重）
-const ipMerchantOptions = computed(() => {
+// 商户选项（从 systemIPs + targets 合并去重，两个区域共用）
+const merchantFilterOptions = computed(() => {
   const map = new Map<number, string>()
   for (const s of ipUploadTool.systemIPs) {
     if (s.merchant_id > 0 && s.merchant_name) {
       map.set(s.merchant_id, s.merchant_name)
     }
   }
-  return Array.from(map, ([id, name]) => ({ value: id, label: name }))
+  for (const t of ipUploadTool.targets) {
+    const mid = t.merchant_id || 0
+    if (mid > 0 && !map.has(mid)) {
+      map.set(mid, t.merchant_name || `商户#${mid}`)
+    }
+  }
+  return Array.from(map.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([id, name]) => ({ value: id, label: name }))
 })
 
 // 按商户筛选后的 IP 列表
 const filteredIPList = computed(() => {
-  if (!ipFilterMerchantId.value) return flattenedIPList.value
-  return flattenedIPList.value.filter(item => item.merchantId === ipFilterMerchantId.value)
+  if (!filterMerchantId.value) return flattenedIPList.value
+  return flattenedIPList.value.filter(item => item.merchantId === filterMerchantId.value)
 })
 
 // 检测失效的IP（选中的IP在当前系统中不存在）
@@ -1132,9 +1140,6 @@ const targetManagement = reactive({
   }
 })
 
-// 商户筛选
-const filterMerchantId = ref<number | undefined>(undefined)
-
 // 展开的商户组（两级导航：点击商户展开其 OSS 目标）
 const expandedGroupId = ref<number | null>(null)
 
@@ -1146,24 +1151,6 @@ function toggleExpandGroup(groupId: number) {
 function getGroupSelectedCount(group: TargetGroup): number {
   return group.allTargets.filter(t => ipUploadTool.selectedTargetIndexes.includes(t.index)).length
 }
-
-// 从已有目标中提取商户列表（去重）
-const targetMerchantOptions = computed(() => {
-  const map = new Map<number, string>()
-  for (const t of ipUploadTool.targets) {
-    const mid = t.merchant_id || 0
-    if (!map.has(mid)) {
-      map.set(mid, mid > 0 ? (t.merchant_name || `商户#${mid}`) : "系统")
-    }
-  }
-  return Array.from(map.entries())
-    .sort((a, b) => {
-      if (a[0] === 0) return 1
-      if (b[0] === 0) return -1
-      return a[0] - b[0]
-    })
-    .map(([id, name]) => ({ value: id, label: name }))
-})
 
 // 按商户→云账号两级分组的目标列表
 interface TargetSubGroup {
@@ -1639,15 +1626,15 @@ function handleDecryptFileChange(file: UploadFile) {
                 <div class="section-title" style="margin-bottom: 0;">IP选择</div>
                 <div style="display: flex; align-items: center; gap: 8px;">
                   <el-select
-                    v-model="ipFilterMerchantId"
+                    v-model="filterMerchantId"
                     placeholder="全部商户"
                     clearable
                     size="small"
                     style="width: 160px;"
-                    @clear="ipFilterMerchantId = undefined"
+                    @clear="filterMerchantId = undefined"
                   >
                     <el-option
-                      v-for="m in ipMerchantOptions"
+                      v-for="m in merchantFilterOptions"
                       :key="m.value"
                       :label="m.label"
                       :value="m.value"
@@ -1677,7 +1664,7 @@ function handleDecryptFileChange(file: UploadFile) {
               <el-empty v-if="filteredIPList.length === 0" description="暂无可用IP" :image-size="60" />
               <div v-else class="file-tip">
                 已选择 {{ ipUploadTool.selectedIPs.length }} / {{ flattenedIPList.length }} 个IP
-                <span v-if="ipFilterMerchantId">（当前显示 {{ filteredIPList.length }} 个）</span>
+                <span v-if="filterMerchantId">（当前显示 {{ filteredIPList.length }} 个）</span>
               </div>
             </div>
 
@@ -1697,7 +1684,7 @@ function handleDecryptFileChange(file: UploadFile) {
                     @clear="filterMerchantId = undefined"
                   >
                     <el-option
-                      v-for="m in targetMerchantOptions"
+                      v-for="m in merchantFilterOptions"
                       :key="m.value"
                       :label="m.label"
                       :value="m.value"

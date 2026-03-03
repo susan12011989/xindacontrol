@@ -4,7 +4,8 @@ import type { MerchantResp } from "@@/apis/merchant/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
 import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus, getProgramConfig, updateProgramConfig, getNginxCacheStatus, clearNginxCache, persistGostConfig, getGostConfigSyncStatus, setupGostDeploy, diagnoseGost, generateTlsCerts, getTlsCerts, disableTlsCerts, getTlsCertFingerprint, getTlsStatus, verifyTlsStatus, batchUpgradeTls, batchRollbackTls } from "@@/apis/deploy"
 import type { GostCheckResult } from "@@/apis/monitor/type"
-import { checkGostServers } from "@@/apis/monitor"
+import { checkGostServers, runBandwidthTest, getServerBandwidth, modifyServerBandwidth } from "@@/apis/monitor"
+import type { BandwidthTestResult, BandwidthInfoResp } from "@@/apis/monitor/type"
 import { getMerchantList, listMerchantGostServers } from "@@/apis/merchant"
 import type { MerchantGostServerResp } from "@@/apis/merchant/type"
 import { createStreamRequest } from "@/http/axios"
@@ -842,6 +843,104 @@ function startDiagnose() {
   )
 }
 
+// ========== 带宽测速 ==========
+const speedTestDialogVisible = ref(false)
+const isSpeedTesting = ref(false)
+const speedTestLogs = ref<string[]>([])
+const speedTestLogRef = ref<HTMLDivElement>()
+const speedTestResult = ref<BandwidthTestResult | null>(null)
+
+function startSpeedTest() {
+  if (!selectedServerId.value) {
+    ElMessage.warning("请先选择服务器")
+    return
+  }
+  isSpeedTesting.value = true
+  speedTestDialogVisible.value = true
+  speedTestLogs.value = ["开始测速..."]
+  speedTestResult.value = null
+
+  runBandwidthTest(
+    { server_id: selectedServerId.value },
+    (data: any, isComplete?: boolean) => {
+      if (data?.message) {
+        speedTestLogs.value.push(data.message)
+        nextTick(() => {
+          if (speedTestLogRef.value) {
+            speedTestLogRef.value.scrollTop = speedTestLogRef.value.scrollHeight
+          }
+        })
+      }
+      if (data?.result) {
+        speedTestResult.value = data.result
+      }
+      if (isComplete) {
+        isSpeedTesting.value = false
+        if (data?.success) {
+          ElMessage.success("测速完成!")
+        }
+      }
+    },
+    (error: any) => {
+      isSpeedTesting.value = false
+      speedTestLogs.value.push(`错误: ${error?.message || error}`)
+      ElMessage.error("测速失败")
+    }
+  )
+}
+
+// ========== 带宽管理 ==========
+const bandwidthDialogVisible = ref(false)
+const isBandwidthLoading = ref(false)
+const isBandwidthSaving = ref(false)
+const bandwidthInfo = ref<BandwidthInfoResp | null>(null)
+const newBandwidthOut = ref(1)
+
+async function openBandwidthDialog() {
+  if (!selectedServerId.value) {
+    ElMessage.warning("请先选择服务器")
+    return
+  }
+  // 检查服务器是否绑定了云账号
+  const server = allServerList.value.find(s => s.id === selectedServerId.value)
+  if (!server?.cloud_account_id || !server?.cloud_instance_id) {
+    ElMessage.warning("该服务器未绑定云账号/实例，请先在服务器编辑页面绑定 cloud_account_id / cloud_instance_id / cloud_region_id")
+    return
+  }
+
+  bandwidthDialogVisible.value = true
+  isBandwidthLoading.value = true
+  bandwidthInfo.value = null
+  try {
+    const res = await getServerBandwidth({ server_id: selectedServerId.value })
+    bandwidthInfo.value = res.data
+    newBandwidthOut.value = res.data.internet_max_bandwidth_out
+  } catch (e: any) {
+    ElMessage.error(e?.message || "查询带宽失败")
+  } finally {
+    isBandwidthLoading.value = false
+  }
+}
+
+async function saveBandwidth() {
+  if (!selectedServerId.value || !newBandwidthOut.value) return
+  isBandwidthSaving.value = true
+  try {
+    await modifyServerBandwidth({
+      server_id: selectedServerId.value,
+      internet_max_bandwidth_out: newBandwidthOut.value
+    })
+    ElMessage.success(`带宽已修改为 ${newBandwidthOut.value} Mbps`)
+    // 刷新显示
+    const res = await getServerBandwidth({ server_id: selectedServerId.value })
+    bandwidthInfo.value = res.data
+  } catch (e: any) {
+    ElMessage.error(e?.message || "修改带宽失败")
+  } finally {
+    isBandwidthSaving.value = false
+  }
+}
+
 // ========== Tab 切换 ==========
 const activeTab = ref("tunnel")
 
@@ -1065,6 +1164,8 @@ onMounted(() => {
         <el-button type="success" icon="Plus" @click="openSetupDialog">一键部署</el-button>
         <el-button type="primary" icon="Monitor" :loading="isChecking" @click="doHealthCheck" :disabled="!selectedServerId">健康检查</el-button>
         <el-button type="warning" icon="SetUp" :loading="isDiagnosing" @click="startDiagnose" :disabled="!selectedServerId">诊断修复</el-button>
+        <el-button type="info" icon="Odometer" :loading="isSpeedTesting" @click="startSpeedTest" :disabled="!selectedServerId">测速</el-button>
+        <el-button type="info" icon="Connection" @click="openBandwidthDialog" :disabled="!selectedServerId">带宽管理</el-button>
       </div>
     </el-card>
 
@@ -1581,6 +1682,92 @@ onMounted(() => {
         <el-button @click="diagnoseDialogVisible = false" :disabled="isDiagnosing">关闭</el-button>
         <el-button type="warning" @click="startDiagnose" :loading="isDiagnosing">
           {{ isDiagnosing ? '诊断中...' : '重新诊断' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 带宽测速弹窗 -->
+    <el-dialog v-model="speedTestDialogVisible" title="GOST 隧道测速" width="700px" :close-on-click-modal="false">
+      <el-alert type="info" :closable="false" style="margin-bottom: 12px">
+        通过 SSH 在中继服务器上测试公网带宽和到 App 节点的网络质量。
+      </el-alert>
+      <div class="deploy-log-container">
+        <div class="deploy-log-title">测速日志:</div>
+        <div ref="speedTestLogRef" class="deploy-log-content">
+          <div v-for="(log, idx) in speedTestLogs" :key="idx" class="deploy-log-line">{{ log }}</div>
+        </div>
+      </div>
+      <!-- 结果摘要 -->
+      <template v-if="speedTestResult && !isSpeedTesting">
+        <el-divider content-position="left">测速结果</el-divider>
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="公网下载">
+            {{ speedTestResult.public_download_kbps > 0 ? `${(speedTestResult.public_download_kbps / 1024 * 8).toFixed(1)} Mbps` : '-' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="公网上传">
+            {{ speedTestResult.public_upload_kbps > 0 ? `${(speedTestResult.public_upload_kbps / 1024 * 8).toFixed(1)} Mbps` : '-' }}
+          </el-descriptions-item>
+        </el-descriptions>
+        <el-table v-if="speedTestResult.latencies?.length" :data="speedTestResult.latencies" size="small" style="margin-top: 12px">
+          <el-table-column prop="target" label="目标节点" />
+          <el-table-column prop="avg_ms" label="平均延迟 (ms)">
+            <template #default="{ row }">{{ row.avg_ms.toFixed(1) }} ms</template>
+          </el-table-column>
+        </el-table>
+        <el-table v-if="speedTestResult.internal_speeds?.length" :data="speedTestResult.internal_speeds" size="small" style="margin-top: 12px">
+          <el-table-column prop="target" label="目标节点" />
+          <el-table-column prop="speed_mbs" label="下载吞吐量">
+            <template #default="{ row }">
+              {{ row.speed_mbs >= 1 ? row.speed_mbs.toFixed(2) + ' MB/s' : row.speed_mbs > 0 ? (row.speed_mbs * 1024).toFixed(0) + ' KB/s' : '-' }}
+              <span v-if="row.speed_mbs > 0" style="color: #909399; margin-left: 4px">({{ (row.speed_mbs * 8).toFixed(1) }} Mbps)</span>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-table v-if="speedTestResult.gost_upload_speeds?.length" :data="speedTestResult.gost_upload_speeds" size="small" style="margin-top: 12px">
+          <el-table-column prop="target" label="目标节点" />
+          <el-table-column prop="speed_mbs" label="上传吞吐量">
+            <template #default="{ row }">
+              {{ row.speed_mbs >= 1 ? row.speed_mbs.toFixed(2) + ' MB/s' : row.speed_mbs > 0 ? (row.speed_mbs * 1024).toFixed(0) + ' KB/s' : '-' }}
+              <span v-if="row.speed_mbs > 0" style="color: #909399; margin-left: 4px">({{ (row.speed_mbs * 8).toFixed(1) }} Mbps)</span>
+            </template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button @click="speedTestDialogVisible = false" :disabled="isSpeedTesting">关闭</el-button>
+        <el-button type="primary" @click="startSpeedTest" :loading="isSpeedTesting">
+          {{ isSpeedTesting ? '测速中...' : '重新测速' }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 带宽管理弹窗 -->
+    <el-dialog v-model="bandwidthDialogVisible" title="ECS 实例带宽管理" width="500px" :close-on-click-modal="false">
+      <div v-loading="isBandwidthLoading">
+        <template v-if="bandwidthInfo">
+          <el-descriptions :column="1" border size="small">
+            <el-descriptions-item label="服务器">{{ bandwidthInfo.server_name }}</el-descriptions-item>
+            <el-descriptions-item label="网络类型">
+              <el-tag v-if="bandwidthInfo.has_eip" type="warning" size="small">EIP 弹性公网IP</el-tag>
+              <el-tag v-else type="success" size="small">实例公网IP</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="计费方式">{{ bandwidthInfo.internet_charge_type === 'PayByTraffic' ? '按流量' : bandwidthInfo.eip_charge_type === 'PayByTraffic' ? '按流量' : '按带宽' }}</el-descriptions-item>
+            <el-descriptions-item label="入带宽">{{ bandwidthInfo.internet_max_bandwidth_in }} Mbps</el-descriptions-item>
+            <el-descriptions-item label="出带宽(当前)">{{ bandwidthInfo.internet_max_bandwidth_out }} Mbps</el-descriptions-item>
+          </el-descriptions>
+          <el-divider content-position="left">修改出带宽</el-divider>
+          <el-form label-width="120px">
+            <el-form-item label="出带宽 (Mbps)">
+              <el-input-number v-model="newBandwidthOut" :min="1" :max="200" :step="1" />
+            </el-form-item>
+          </el-form>
+        </template>
+        <el-empty v-else-if="!isBandwidthLoading" description="未能获取带宽信息" />
+      </div>
+      <template #footer>
+        <el-button @click="bandwidthDialogVisible = false">关闭</el-button>
+        <el-button type="primary" @click="saveBandwidth" :loading="isBandwidthSaving" :disabled="!bandwidthInfo">
+          保存修改
         </el-button>
       </template>
     </el-dialog>

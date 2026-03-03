@@ -37,8 +37,8 @@ $SUDO tee %s > /dev/null << 'NGINXEOF'
 # 端口配置在 /etc/nginx/conf.d/gost-port-*.conf
 proxy_cache_path %s
     levels=1:2
-    keys_zone=gost_media:10m
-    max_size=2g
+    keys_zone=gost_media:20m
+    max_size=5g
     inactive=7d
     use_temp_path=off;
 NGINXEOF
@@ -88,7 +88,7 @@ func InstallNginxToServer(serverId int, progressCallback func(string)) error {
 		checkOutput, _ := client.ExecuteCommand(fmt.Sprintf("cat %s 2>/dev/null", NginxBaseConfPath))
 		if !strings.Contains(checkOutput, "gost_media") {
 			progressCallback("更新基础缓存配置...")
-			baseConf := fmt.Sprintf(`proxy_cache_path %s levels=1:2 keys_zone=gost_media:10m max_size=2g inactive=7d use_temp_path=off;`, NginxCacheDir)
+			baseConf := fmt.Sprintf(`proxy_cache_path %s levels=1:2 keys_zone=gost_media:20m max_size=5g inactive=7d use_temp_path=off;`, NginxCacheDir)
 			_, err = client.ExecuteCommand(fmt.Sprintf("echo '%s' | sudo tee %s > /dev/null", baseConf, NginxBaseConfPath))
 			if err != nil {
 				progressCallback(fmt.Sprintf("警告: 写入基础配置失败: %s", err))
@@ -112,7 +112,7 @@ func InstallNginxToServer(serverId int, progressCallback func(string)) error {
 	_, _ = client.ExecuteCommand(fmt.Sprintf("sudo mkdir -p %s && sudo chown www-data:www-data %s", NginxCacheDir, NginxCacheDir))
 
 	progressCallback("写入基础配置...")
-	baseConf := fmt.Sprintf(`proxy_cache_path %s levels=1:2 keys_zone=gost_media:10m max_size=2g inactive=7d use_temp_path=off;`, NginxCacheDir)
+	baseConf := fmt.Sprintf(`proxy_cache_path %s levels=1:2 keys_zone=gost_media:20m max_size=5g inactive=7d use_temp_path=off;`, NginxCacheDir)
 	_, err = client.ExecuteCommand(fmt.Sprintf("echo '%s' | sudo tee %s > /dev/null", baseConf, NginxBaseConfPath))
 	if err != nil {
 		return fmt.Errorf("写入基础配置失败: %w", err)
@@ -133,12 +133,28 @@ func InstallNginxToServer(serverId int, progressCallback func(string)) error {
 }
 
 // generateNginxPortConfig 生成指定端口的 Nginx 配置内容
-func generateNginxPortConfig(httpPort int) string {
+// sslEnabled: 是否启用 SSL（TLS 终结），certPath/keyPath: TLS 证书路径
+func generateNginxPortConfig(httpPort int, sslEnabled bool, certPath, keyPath string) string {
+	// SSL 配置块
+	sslDirective := ""
+	sslBlock := ""
+	if sslEnabled && certPath != "" && keyPath != "" {
+		sslDirective = " ssl"
+		sslBlock = fmt.Sprintf(`
+    ssl_certificate %s;
+    ssl_certificate_key %s;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_session_cache shared:SSL:5m;
+    ssl_session_timeout 1h;
+`, certPath, keyPath)
+	}
+
 	return fmt.Sprintf(`# GOST 缓存代理 - 端口 %d（自动生成，请勿手动修改）
 server {
-    listen %d;
-    listen [::]:%d;
-
+    listen %d%s;
+    listen [::]:%d%s;
+%s
     # 媒体文件 → 缓存（图片/视频/音频/文档）
     location ~* \.(jpg|jpeg|png|gif|webp|bmp|ico|svg|mp4|avi|mkv|mov|webm|mp3|wav|ogg|aac|flac|amr|pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar|7z)$ {
         proxy_pass http://127.0.0.1:%d;
@@ -165,19 +181,26 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 }
-`, httpPort, httpPort, httpPort, httpPort, httpPort)
+`, httpPort, httpPort, sslDirective, httpPort, sslDirective, sslBlock, httpPort, httpPort)
 }
 
 // ConfigureNginxCacheForPort 为指定 HTTP 端口配置 Nginx 缓存
-func ConfigureNginxCacheForPort(serverId int, httpPort int) error {
+// sslEnabled: 是否启用 TLS 终结（Nginx 接管 TLS，GOST 退回 TCP）
+func ConfigureNginxCacheForPort(serverId int, httpPort int, sslEnabled bool) error {
 	client, err := GetSSHClient(serverId)
 	if err != nil {
 		return fmt.Errorf("获取 SSH 连接失败: %w", err)
 	}
 	defer client.Close()
 
+	certPath, keyPath := "", ""
+	if sslEnabled {
+		certPath = gostapi.TlsCertPath // /etc/gost/certs/server.crt
+		keyPath = gostapi.TlsKeyPath   // /etc/gost/certs/server.key
+	}
+
 	confPath := fmt.Sprintf("/etc/nginx/conf.d/gost-port-%d.conf", httpPort)
-	confContent := generateNginxPortConfig(httpPort)
+	confContent := generateNginxPortConfig(httpPort, sslEnabled, certPath, keyPath)
 
 	// 写入 Nginx 配置（用 heredoc 避免特殊字符问题）
 	cmd := fmt.Sprintf("cat << 'CONFEOF' | sudo tee %s > /dev/null\n%sCONFEOF", confPath, confContent)
@@ -199,7 +222,8 @@ func ConfigureNginxCacheForPort(serverId int, httpPort int) error {
 }
 
 // UpdateGostServiceToLoopback 修改 GOST HTTP 服务地址为 127.0.0.1（仅本地监听）
-func UpdateGostServiceToLoopback(serverId int, httpPort int) error {
+// sslEnabled=true 时，同时将 listener 从 tls 切换为 tcp（Nginx 已接管 TLS 终结）
+func UpdateGostServiceToLoopback(serverId int, httpPort int, sslEnabled bool) error {
 	host, err := getServerHostById(serverId)
 	if err != nil {
 		return err
@@ -219,14 +243,16 @@ func UpdateGostServiceToLoopback(serverId int, httpPort int) error {
 			continue // 服务不存在，尝试下一个名称
 		}
 
-		// 已经是 loopback 地址，跳过
+		// 更新为 loopback 地址
 		newAddr := fmt.Sprintf("127.0.0.1:%d", httpPort)
-		if svc.Addr == newAddr {
-			return nil
+		svc.Addr = newAddr
+
+		// Nginx 接管 TLS 后，GOST 不再需要 TLS listener，切换为 TCP
+		if sslEnabled && svc.Listener != nil && svc.Listener.Type == "tls" {
+			svc.Listener.Type = "tcp"
+			svc.Listener.TLS = nil
 		}
 
-		// 更新为 loopback 地址
-		svc.Addr = newAddr
 		_, err = gostapi.UpdateService(host, name, svc)
 		if err != nil {
 			return fmt.Errorf("更新 GOST 服务地址失败: %w", err)
@@ -238,7 +264,7 @@ func UpdateGostServiceToLoopback(serverId int, httpPort int) error {
 			logx.Errorf("GOST 配置保存失败: %v", err)
 		}
 
-		logx.Infof("GOST HTTP 服务已切换为 loopback: %s → %s", name, newAddr)
+		logx.Infof("GOST HTTP 服务已切换为 loopback: %s → %s (ssl=%v)", name, newAddr, sslEnabled)
 		return nil
 	}
 
@@ -246,6 +272,7 @@ func UpdateGostServiceToLoopback(serverId int, httpPort int) error {
 }
 
 // RestoreGostServiceToPublic 恢复 GOST HTTP 服务地址为公网监听
+// 同时恢复 TLS listener（如果服务器启用了 TLS）
 func RestoreGostServiceToPublic(serverId int, httpPort int) error {
 	host, err := getServerHostById(serverId)
 	if err != nil {
@@ -265,11 +292,17 @@ func RestoreGostServiceToPublic(serverId int, httpPort int) error {
 		}
 
 		publicAddr := fmt.Sprintf(":%d", httpPort)
-		if svc.Addr == publicAddr {
-			return nil // 已经是公网地址
+		svc.Addr = publicAddr
+
+		// 恢复 TLS listener（Nginx 移除后，GOST 需要重新处理 TLS）
+		if svc.Listener != nil && svc.Listener.Type == "tcp" {
+			svc.Listener.Type = "tls"
+			svc.Listener.TLS = &gostapi.TLSConfig{
+				CertFile: gostapi.TlsCertPath,
+				KeyFile:  gostapi.TlsKeyPath,
+			}
 		}
 
-		svc.Addr = publicAddr
 		_, err = gostapi.UpdateService(host, name, svc)
 		if err != nil {
 			return fmt.Errorf("恢复 GOST 服务地址失败: %w", err)

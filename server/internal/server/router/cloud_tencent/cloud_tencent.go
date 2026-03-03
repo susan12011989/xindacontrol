@@ -28,6 +28,7 @@ func Routes(ge gin.IRouter) {
 	cloudGroup.POST("/cvm/instances/operate", batchOperateCvmInstances)
 	cloudGroup.POST("/cvm/instance/modify", modifyCvmInstance)
 	cloudGroup.POST("/cvm/instance/reset-password", resetCvmPassword)
+	cloudGroup.POST("/cvm/instances/modify-renew-flag", modifyRenewFlag)
 	cloudGroup.GET("/cvm/images", listCvmImages)
 	cloudGroup.GET("/cvm/instance-types", listCvmInstanceTypes)
 
@@ -635,10 +636,23 @@ func createCvmInstances(c *gin.Context) {
 
 		result.GStreamData(c, gin.H{"message": fmt.Sprintf("%s [%d] 创建实例中 %s %s %s...", time.Now().Format(time.DateTime), i+1, item.RegionId, item.Zone, item.InstanceType)})
 
+		// 未指定镜像时自动查找默认 Ubuntu 公共镜像
+		imageId := item.ImageId
+		if imageId == "" {
+			result.GStreamData(c, gin.H{"message": fmt.Sprintf("%s [%d] 未指定镜像，自动查找 Ubuntu 公共镜像...", time.Now().Format(time.DateTime), i+1)})
+			defaultImageId, err := tencent.GetDefaultUbuntuImageId(cred, item.RegionId)
+			if err != nil {
+				result.GStreamData(c, gin.H{"message": fmt.Sprintf("%s [%d] 获取默认镜像失败: %v", time.Now().Format(time.DateTime), i+1, err)})
+				continue
+			}
+			imageId = defaultImageId
+			result.GStreamData(c, gin.H{"message": fmt.Sprintf("%s [%d] 使用默认镜像: %s", time.Now().Format(time.DateTime), i+1, imageId)})
+		}
+
 		input := &tencent.RunInstancesInput{
 			RegionId:                item.RegionId,
 			Zone:                    item.Zone,
-			ImageId:                 item.ImageId,
+			ImageId:                 imageId,
 			InstanceType:            item.InstanceType,
 			InstanceChargeType:      item.InstanceChargeType,
 			SystemDiskType:          item.SystemDiskType,
@@ -818,4 +832,29 @@ func getAccountBalance(c *gin.Context) {
 		return
 	}
 	result.GOK(c, data)
+}
+
+// modifyRenewFlag 修改实例续费标识
+func modifyRenewFlag(c *gin.Context) {
+	var req model.TencentModifyRenewFlagReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+	if req.MerchantId == 0 && req.CloudAccountId == 0 {
+		result.GErr(c, fmt.Errorf("merchant_id或cloud_account_id必须提供一个"))
+		return
+	}
+
+	cred, err := tencent.GetCloudCredentials(req.MerchantId, req.CloudAccountId)
+	if err != nil {
+		result.GErr(c, err)
+		return
+	}
+
+	if err := tencent.ModifyInstancesRenewFlag(cred, req.RegionId, req.InstanceIds, req.RenewFlag); err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, nil)
 }

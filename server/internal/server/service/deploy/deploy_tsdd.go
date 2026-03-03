@@ -60,6 +60,14 @@ func DeployTSDD(req model.DeployTSDDReq, operator string) (model.DeployTSDDResp,
 			Port:      config.APIPort,
 			UpdatedAt: time.Now(),
 		})
+
+		// 部署成功后，重新应用 Web 品牌配置（logo/应用名称）
+		if AfterAppDeployHook != nil && req.MerchantId > 0 {
+			go func() {
+				logx.Infof("[DeployTSDD] 重新应用 Web 品牌配置: merchantId=%d", req.MerchantId)
+				AfterAppDeployHook(req.MerchantId)
+			}()
+		}
 	}
 
 	// 记录部署历史

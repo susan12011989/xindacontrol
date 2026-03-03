@@ -65,6 +65,15 @@ export function testConnection(data: Deploy.TestConnectionReq) {
   })
 }
 
+/** 测试已有服务器的SSH连接（使用存储的凭证，可选覆盖Host） */
+export function testServerConnection(id: number, data?: { host?: string }) {
+  return request({
+    url: `deploy/servers/${id}/test-connection`,
+    method: "post",
+    data
+  })
+}
+
 // ========== 服务操作（systemctl） ==========
 
 /** 服务操作（start/stop/restart） */
@@ -512,6 +521,44 @@ export function getNginxCacheStatus(server_id: number) {
 export function clearNginxCache(data: Deploy.ClearNginxCacheReq) {
   return request<{ code: number; data: { message: string }; message: string }>({
     url: "deploy/nginx/cache/clear",
+    method: "post",
+    data
+  })
+}
+
+// ========== 限流管理 ==========
+
+/** 获取限流状态 */
+export function getRateLimitStatus(merchant_id: number) {
+  return request<{ code: number; data: { enabled: boolean; whitelist: string[] }; message: string }>({
+    url: "deploy/ratelimit/status",
+    method: "get",
+    params: { merchant_id }
+  })
+}
+
+/** 切换限流开关 */
+export function toggleRateLimit(data: { merchant_id: number; enabled: boolean }) {
+  return request({
+    url: "deploy/ratelimit/toggle",
+    method: "post",
+    data
+  })
+}
+
+/** 添加白名单IP */
+export function addWhitelistIP(data: { merchant_id: number; ip: string }) {
+  return request({
+    url: "deploy/ratelimit/whitelist/add",
+    method: "post",
+    data
+  })
+}
+
+/** 移除白名单IP */
+export function removeWhitelistIP(data: { merchant_id: number; ip: string }) {
+  return request({
+    url: "deploy/ratelimit/whitelist/remove",
     method: "post",
     data
   })

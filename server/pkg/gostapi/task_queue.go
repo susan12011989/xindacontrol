@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"server/internal/server/utils"
 	"server/pkg/dbs"
 	"server/pkg/entity"
+	"strings"
 	"sync"
 	"time"
 
@@ -352,6 +354,9 @@ func (tq *TaskQueue) processTask(task *GostTask) {
 		}()
 	} else {
 		logx.Infof("GOST task completed: type=%s, server=%s, port=%d", task.Type, task.ServerIP, task.BasePort)
+		// 异步健康检查：确认 GOST 热重载后所有端口正常监听
+		serverIP := task.ServerIP
+		go tq.healthCheckAndRecover(serverIP)
 	}
 }
 
@@ -540,5 +545,138 @@ func (tq *TaskQueue) checkServerIPExists(task *GostTask) bool {
 			return true // 查询失败时默认允许执行
 		}
 		return exists
+	}
+}
+
+// ========== GOST 健康检查与自动恢复 ==========
+
+// healthCheckAndRecover 在 GOST 任务完成后检查所有服务端口是否正常监听
+// 如果发现端口异常，自动通过 SSH 执行 systemctl restart gost 恢复
+func (tq *TaskQueue) healthCheckAndRecover(serverIP string) {
+	// 等待 GOST 热重载生效
+	time.Sleep(3 * time.Second)
+
+	// 从 GOST API 获取所有已配置服务的监听端口
+	expectedPorts, err := GetExpectedPorts(serverIP)
+	if err != nil {
+		logx.Errorf("GOST health check: 获取期望端口失败 server=%s: %v", serverIP, err)
+		// API 不可达时，尝试直接通过 SSH 检查并重启
+		tq.forceRestartGost(serverIP, "GOST API 不可达")
+		return
+	}
+	if len(expectedPorts) == 0 {
+		return
+	}
+
+	// 查询服务器 SSH 信息
+	sshClient, err := tq.getSSHClientByIP(serverIP)
+	if err != nil {
+		logx.Errorf("GOST health check: 获取SSH连接失败 server=%s: %v", serverIP, err)
+		return
+	}
+
+	// 检查端口
+	missingPorts := checkGostPorts(sshClient, expectedPorts)
+	if len(missingPorts) == 0 {
+		logx.Infof("GOST health check passed: server=%s, all %d ports healthy", serverIP, len(expectedPorts))
+		return
+	}
+
+	// 有端口缺失，尝试重启 GOST
+	logx.Errorf("GOST health check FAILED: server=%s, missing ports=%v, attempting restart", serverIP, missingPorts)
+	restartAndVerify(sshClient, serverIP, expectedPorts)
+}
+
+// forceRestartGost 当 GOST API 不可达时，强制通过 SSH 重启
+func (tq *TaskQueue) forceRestartGost(serverIP string, reason string) {
+	sshClient, err := tq.getSSHClientByIP(serverIP)
+	if err != nil {
+		logx.Errorf("GOST force restart: SSH连接失败 server=%s: %v", serverIP, err)
+		return
+	}
+
+	logx.Errorf("GOST force restart: server=%s, reason=%s", serverIP, reason)
+	output, err := sshClient.ExecuteCommandWithTimeout("sudo systemctl restart gost", 30*time.Second)
+	if err != nil {
+		logx.Errorf("GOST force restart failed: server=%s, output=%s, error=%v", serverIP, output, err)
+	} else {
+		logx.Infof("GOST force restart completed: server=%s", serverIP)
+	}
+}
+
+// getSSHClientByIP 根据服务器 IP 查询数据库并获取 SSH 连接
+func (tq *TaskQueue) getSSHClientByIP(serverIP string) (*utils.PooledSSHClient, error) {
+	if dbs.DBAdmin == nil {
+		return nil, fmt.Errorf("数据库未初始化")
+	}
+
+	var server entity.Servers
+	has, err := dbs.DBAdmin.Where("host = ? AND status = 1", serverIP).Get(&server)
+	if err != nil {
+		return nil, fmt.Errorf("查询服务器失败: %w", err)
+	}
+	if !has {
+		return nil, fmt.Errorf("服务器不存在或已禁用: %s", serverIP)
+	}
+
+	pool := utils.GetSSHPool()
+	key := fmt.Sprintf("server_%d", server.Id)
+	return pool.GetOrCreateConnection(key, server.Host, server.Port, server.Username, server.Password, server.PrivateKey)
+}
+
+// checkGostPorts 通过 SSH 检查 GOST 进程实际监听的端口，返回缺失端口列表
+func checkGostPorts(sshClient *utils.PooledSSHClient, expectedPorts []int) []int {
+	// 使用 || true 确保 grep 无匹配时不报错
+	output, _ := sshClient.ExecuteCommandWithTimeout("ss -tlnp 2>/dev/null | grep gost || true", 10*time.Second)
+
+	// 解析实际监听端口
+	listeningPorts := make(map[int]bool)
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, "gost") {
+			continue
+		}
+		// ss -tlnp 输出格式:
+		// LISTEN  0  4096  *:10000  *:*  users:(("gost",pid=...,fd=...))
+		// 第4列(index 3)为 Local Address:Port
+		fields := strings.Fields(line)
+		if len(fields) >= 4 {
+			localAddr := fields[3]
+			if idx := strings.LastIndex(localAddr, ":"); idx >= 0 {
+				var port int
+				if _, err := fmt.Sscanf(localAddr[idx+1:], "%d", &port); err == nil && port > 0 {
+					listeningPorts[port] = true
+				}
+			}
+		}
+	}
+
+	// 找出缺失端口
+	var missing []int
+	for _, port := range expectedPorts {
+		if !listeningPorts[port] {
+			missing = append(missing, port)
+		}
+	}
+	return missing
+}
+
+// restartAndVerify 重启 GOST 并验证端口恢复
+func restartAndVerify(sshClient *utils.PooledSSHClient, serverIP string, expectedPorts []int) {
+	output, err := sshClient.ExecuteCommandWithTimeout("sudo systemctl restart gost", 30*time.Second)
+	if err != nil {
+		logx.Errorf("GOST restart failed: server=%s, output=%s, error=%v", serverIP, output, err)
+		return
+	}
+
+	// 等待 GOST 重启完成
+	time.Sleep(5 * time.Second)
+
+	// 验证端口恢复
+	missingPorts := checkGostPorts(sshClient, expectedPorts)
+	if len(missingPorts) == 0 {
+		logx.Infof("GOST recovery SUCCESS: server=%s, all ports restored after restart", serverIP)
+	} else {
+		logx.Errorf("GOST recovery FAILED: server=%s, still missing ports=%v after restart", serverIP, missingPorts)
 	}
 }

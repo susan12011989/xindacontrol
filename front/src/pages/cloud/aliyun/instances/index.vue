@@ -4,7 +4,7 @@ import type { Instance, InstanceBindingResp, InstanceItem } from "@/pages/cloud/
 import type { Merchant, MerchantRegions } from "@/pages/dashboard/apis/type"
 import type { CloudAccountOption } from "@@/apis/cloud_account/type"
 import { regionListApi } from "@/pages/cloud/aliyun/apis"
-import { bindInstanceMerchant, createSecondaryNic, getInstanceList, modifyInstanceAttribute, modifyInstanceChargeTypePostPaid, operateInstance, registerInstanceWithSSHKey, unbindInstanceMerchant } from "@/pages/cloud/aliyun/instances/apis"
+import { bindInstanceMerchant, createSecondaryNic, getInstanceList, modifyAutoRenew, modifyInstanceAttribute, modifyInstanceChargeTypePostPaid, operateInstance, registerInstanceWithSSHKey, unbindInstanceMerchant } from "@/pages/cloud/aliyun/instances/apis"
 import { getSecurityGroupList } from "@/pages/cloud/aliyun/securitygroup/apis"
 import { merchantQueryApi } from "@/pages/dashboard/apis"
 import { getCloudAccountOptions } from "@@/apis/cloud_account"
@@ -889,6 +889,53 @@ async function handleCreateServer(instance: Instance) {
     })
 }
 
+// ========== 自动续费操作 ==========
+const autoRenewDialogVisible = ref(false)
+const autoRenewLoading = ref(false)
+const autoRenewForm = reactive({
+  instance_id: "",
+  region_id: "",
+  auto_renew: true,
+  duration: 1
+})
+
+function openAutoRenewDialog(instance: Instance) {
+  autoRenewForm.instance_id = instance.InstanceId
+  autoRenewForm.region_id = instance.RegionId
+  autoRenewForm.auto_renew = true
+  autoRenewForm.duration = 1
+  autoRenewDialogVisible.value = true
+}
+
+async function handleAutoRenew() {
+  const hasAccount = accountType.value === "merchant" ? selectedMerchant.value : selectedCloudAccount.value
+  if (!hasAccount) return
+
+  autoRenewLoading.value = true
+  try {
+    const params: any = {
+      region_id: autoRenewForm.region_id,
+      instance_id: autoRenewForm.instance_id,
+      auto_renew: autoRenewForm.auto_renew,
+      duration: autoRenewForm.auto_renew ? autoRenewForm.duration : 0
+    }
+
+    if (accountType.value === "merchant") {
+      params.merchant_id = selectedMerchant.value
+    } else {
+      params.cloud_account_id = selectedCloudAccount.value
+    }
+
+    await modifyAutoRenew(params)
+    ElMessage.success(autoRenewForm.auto_renew ? "已开启自动续费" : "已关闭自动续费")
+    autoRenewDialogVisible.value = false
+  } catch (error: any) {
+    ElMessage.error(error.message || "修改自动续费失败")
+  } finally {
+    autoRenewLoading.value = false
+  }
+}
+
 // ========== 商户绑定操作 ==========
 
 // 加载全部商户列表（用于绑定对话框）
@@ -1192,6 +1239,9 @@ onMounted(() => {
                     <el-dropdown-item @click="handleToPostPaid(scope.row)">
                       <el-icon><Edit /></el-icon> 转为按量付费
                     </el-dropdown-item>
+                    <el-dropdown-item v-if="scope.row.InstanceChargeType === 'PrePaid'" @click="openAutoRenewDialog(scope.row)">
+                      <el-icon><RefreshRight /></el-icon> 自动续费
+                    </el-dropdown-item>
                     <el-dropdown-item @click="handleCreateServer(scope.row)">
                       <el-icon><Location /></el-icon> 创建服务器
                     </el-dropdown-item>
@@ -1489,6 +1539,36 @@ onMounted(() => {
         <el-button :disabled="createNicLoading" @click="createNicDialogVisible = false">
           关闭
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 自动续费对话框 -->
+    <el-dialog
+      v-model="autoRenewDialogVisible"
+      title="自动续费设置"
+      width="450px"
+      destroy-on-close
+    >
+      <el-form label-width="100px">
+        <el-form-item label="实例ID">
+          <span>{{ autoRenewForm.instance_id }}</span>
+        </el-form-item>
+        <el-form-item label="自动续费">
+          <el-switch v-model="autoRenewForm.auto_renew" active-text="开启" inactive-text="关闭" />
+        </el-form-item>
+        <el-form-item v-if="autoRenewForm.auto_renew" label="续费周期">
+          <el-select v-model="autoRenewForm.duration" style="width: 200px">
+            <el-option :label="'1 个月'" :value="1" />
+            <el-option :label="'2 个月'" :value="2" />
+            <el-option :label="'3 个月'" :value="3" />
+            <el-option :label="'6 个月'" :value="6" />
+            <el-option :label="'12 个月'" :value="12" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="autoRenewDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="autoRenewLoading" @click="handleAutoRenew">确定</el-button>
       </template>
     </el-dialog>
   </div>

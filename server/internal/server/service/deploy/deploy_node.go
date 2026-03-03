@@ -13,6 +13,10 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
+// AfterAppDeployHook 部署完成后重新应用 Web 品牌配置（logo/应用名称）的钩子
+// 由 merchant 服务在启动时注册，参数为商户 ID
+var AfterAppDeployHook func(merchantId int)
+
 // DeployNodeByServerId 通过已注册的服务器 ID 部署集群节点
 // 当 ServerId == 0 且 AmiId 不为空时，先创建 EC2 实例并注册服务器
 func DeployNodeByServerId(req model.DeployNodeReq, operator string) (model.DeployTSDDResp, error) {
@@ -111,6 +115,14 @@ func DeployNodeByServerId(req model.DeployNodeReq, operator string) (model.Deplo
 					}
 				}
 			}()
+
+			// App 节点部署成功后，重新应用 Web 品牌配置（logo/应用名称）
+			if AfterAppDeployHook != nil && req.MerchantId > 0 {
+				go func() {
+					logx.Infof("[DeployNode] 重新应用 Web 品牌配置: merchantId=%d", req.MerchantId)
+					AfterAppDeployHook(req.MerchantId)
+				}()
+			}
 		}
 	}
 

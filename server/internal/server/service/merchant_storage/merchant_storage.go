@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"server/internal/dbhelper"
+	"server/internal/server/cfg"
 	"server/internal/server/model"
 	"server/internal/server/service/auth"
 	"server/pkg/dbs"
@@ -363,8 +364,11 @@ func callMerchantStorageAPI(merchant *entity.Merchants, payload map[string]inter
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// 添加 Basic Auth (使用商户 no 作为用户名，control 作为密码)
-	req.SetBasicAuth("control", merchant.No)
+	// 添加 Basic Auth（使用 MerchantAPI 配置的凭据，与 NotifyConfigUpdate 一致）
+	if cfg.C.MerchantAPI == nil {
+		return fmt.Errorf("MerchantAPI 配置未设置，无法推送存储配置")
+	}
+	req.SetBasicAuth(cfg.C.MerchantAPI.Username, cfg.C.MerchantAPI.Password)
 
 	// 发送请求
 	client := &http.Client{Timeout: 30 * time.Second}

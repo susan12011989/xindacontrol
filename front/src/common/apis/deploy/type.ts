@@ -73,6 +73,10 @@ export interface ServerResp {
   merchant_no: string // 商户号
   group_id: number // 分组ID
   group_name: string // 分组名称
+  cloud_account_id: number
+  cloud_type: string
+  cloud_instance_id: string
+  cloud_region_id: string
   created_at: string
   updated_at: string
 }

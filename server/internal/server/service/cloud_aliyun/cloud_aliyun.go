@@ -1008,3 +1008,77 @@ func BatchReplaceEipAddress(req *model.BatchReplaceEipReq, progressCallback func
 	}
 	return nil
 }
+
+// ========== ECS 实例带宽管理 ==========
+
+// GetServerBandwidth 通过 server_id 查询服务器的 ECS 公网带宽
+func GetServerBandwidth(serverId int) (*model.BandwidthInfoResp, error) {
+	var server entity.Servers
+	has, err := dbs.DBAdmin.Where("id = ?", serverId).Get(&server)
+	if err != nil {
+		return nil, fmt.Errorf("查询服务器失败: %v", err)
+	}
+	if !has {
+		return nil, fmt.Errorf("服务器不存在: %d", serverId)
+	}
+	if server.CloudAccountId == 0 || server.CloudInstanceId == "" || server.CloudRegionId == "" {
+		return nil, fmt.Errorf("服务器未绑定云账号/实例，请先在服务器编辑页面绑定")
+	}
+
+	info, err := aliyun.GetInstanceBandwidth(server.CloudAccountId, server.CloudRegionId, server.CloudInstanceId)
+	if err != nil {
+		return nil, err
+	}
+
+	return &model.BandwidthInfoResp{
+		ServerId:                serverId,
+		ServerName:              server.Name,
+		InternetMaxBandwidthIn:  info.InternetMaxBandwidthIn,
+		InternetMaxBandwidthOut: info.InternetMaxBandwidthOut,
+		InternetChargeType:      info.InternetChargeType,
+		HasEip:                  info.HasEip,
+		EipAllocationId:         info.EipAllocationId,
+		EipBandwidth:            info.EipBandwidth,
+		EipChargeType:           info.EipChargeType,
+	}, nil
+}
+
+// ModifyServerBandwidth 通过 server_id 修改服务器的公网带宽
+// 自动检测 EIP：有 EIP 则修改 EIP 带宽，否则修改实例带宽
+func ModifyServerBandwidth(req model.ModifyServerBandwidthReq) error {
+	var server entity.Servers
+	has, err := dbs.DBAdmin.Where("id = ?", req.ServerId).Get(&server)
+	if err != nil {
+		return fmt.Errorf("查询服务器失败: %v", err)
+	}
+	if !has {
+		return fmt.Errorf("服务器不存在: %d", req.ServerId)
+	}
+	if server.CloudAccountId == 0 || server.CloudInstanceId == "" || server.CloudRegionId == "" {
+		return fmt.Errorf("服务器未绑定云账号/实例，请先在服务器编辑页面绑定")
+	}
+
+	// 先查询实例带宽信息，判断是否有 EIP
+	info, err := aliyun.GetInstanceBandwidth(server.CloudAccountId, server.CloudRegionId, server.CloudInstanceId)
+	if err != nil {
+		return fmt.Errorf("查询实例带宽信息失败: %v", err)
+	}
+
+	if info.HasEip && info.EipAllocationId != "" {
+		// 有 EIP，修改 EIP 带宽
+		return aliyun.ModifyEipAddressAttribute(&aliyun.ModifyEipAddressAttributeRequest{
+			CloudAccountId: server.CloudAccountId,
+			Region:         server.CloudRegionId,
+			AllocationId:   info.EipAllocationId,
+			Bandwidth:      fmt.Sprintf("%d", req.InternetMaxBandwidthOut),
+		})
+	}
+
+	// 无 EIP，修改实例带宽
+	return aliyun.ModifyInstanceNetworkSpec(&aliyun.ModifyInstanceNetworkSpecRequest{
+		CloudAccountId:          server.CloudAccountId,
+		RegionId:                server.CloudRegionId,
+		InstanceId:              server.CloudInstanceId,
+		InternetMaxBandwidthOut: req.InternetMaxBandwidthOut,
+	})
+}

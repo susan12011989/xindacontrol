@@ -46,6 +46,11 @@ type UpdateServerReq struct {
 	GroupId     *int    `json:"group_id"`     // 分组ID（指针区分未传和清零）
 	Status      *int    `json:"status"`
 	Description string  `json:"description"`
+	// 云绑定字段
+	CloudAccountId  *int64  `json:"cloud_account_id"`  // 云账号ID
+	CloudType       *string `json:"cloud_type"`        // 云类型: aws, aliyun
+	CloudInstanceId *string `json:"cloud_instance_id"` // 云实例ID
+	CloudRegionId   *string `json:"cloud_region_id"`   // 云区域ID
 }
 
 // 服务器响应
@@ -68,6 +73,11 @@ type ServerResp struct {
 	MerchantNo   string `json:"merchant_no"`   // 商户号
 	GroupId      int    `json:"group_id"`      // 分组ID
 	GroupName    string `json:"group_name"`    // 分组名称
+	// 云绑定字段
+	CloudAccountId  int64  `json:"cloud_account_id"`
+	CloudType       string `json:"cloud_type"`
+	CloudInstanceId string `json:"cloud_instance_id"`
+	CloudRegionId   string `json:"cloud_region_id"`
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
 }
@@ -88,6 +98,11 @@ type TestConnectionReq struct {
 	PrivateKey string `json:"private_key"`
 }
 
+// 已有服务器测试连接请求（编辑模式，凭证从数据库读取）
+type TestServerConnectionReq struct {
+	Host string `json:"host"` // 可选，覆盖存储的 Host（用于测试新IP）
+}
+
 // ========== 服务操作（systemctl） ==========
 
 // 支持的服务列表：server, wukongim, gost
@@ -95,7 +110,7 @@ var SupportedServices = []string{"server", "wukongim", "gost"}
 
 // 服务上传路径映射（Docker 部署：宿主机上的二进制所在目录）
 var ServiceUploadPaths = map[string]string{
-	"server":   "/opt/tsdd/",
+	"server":   "/opt/tsdd/TangSengDaoDaoServer/",
 	"wukongim": "/root/wukongim/",
 }
 
@@ -103,6 +118,12 @@ var ServiceUploadPaths = map[string]string{
 var ServiceBinaryNames = map[string]string{
 	"server":   "TangSengDaoDaoServer", // 挂载到容器 /home/app
 	"wukongim": "WuKongIM",
+}
+
+// 服务 docker-compose.yml 所在目录（用于重启时 cd 到正确位置）
+var ServiceComposePaths = map[string]string{
+	"server":   "/opt/tsdd/",
+	"wukongim": "/opt/tsdd/",
 }
 
 // 服务 Docker 容器名映射
@@ -326,6 +347,11 @@ type DiagnoseGostReq struct {
 	ServerId int `json:"server_id" binding:"required"` // 系统服务器ID
 }
 
+// GOST 带宽测速请求
+type BandwidthTestReq struct {
+	ServerId int `json:"server_id" binding:"required"` // 系统服务器ID
+}
+
 // ========== GOST 转发配置（一键部署） ==========
 
 // 配置 GOST 转发请求
@@ -417,4 +443,29 @@ type BatchSyncConfigResp struct {
 	SuccessCount int                `json:"success_count"`
 	FailCount    int                `json:"fail_count"`
 	Results      []SyncConfigResult `json:"results"`
+}
+
+// ========== 限流管理 ==========
+
+// RateLimitStatusReq 获取限流状态请求
+type RateLimitStatusReq struct {
+	MerchantId int `json:"merchant_id" form:"merchant_id" binding:"required"`
+}
+
+// RateLimitStatusResp 限流状态响应
+type RateLimitStatusResp struct {
+	Enabled   bool     `json:"enabled"`   // 限流是否启用
+	Whitelist []string `json:"whitelist"` // 白名单IP列表
+}
+
+// RateLimitToggleReq 切换限流开关请求
+type RateLimitToggleReq struct {
+	MerchantId int  `json:"merchant_id" binding:"required"`
+	Enabled    bool `json:"enabled"` // true=开启限流 false=关闭限流
+}
+
+// RateLimitWhitelistReq 限流白名单操作请求
+type RateLimitWhitelistReq struct {
+	MerchantId int    `json:"merchant_id" binding:"required"`
+	IP         string `json:"ip" binding:"required"`
 }

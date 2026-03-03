@@ -121,16 +121,35 @@ func GetMerchantByNo(merchantNo string) (*entity.Merchants, error) {
 }
 
 // GetMerchantByServerIP 根据服务器IP获取商户信息
+// 支持集群模式：先查 merchants.server_ip，再查 servers 表（商户服务器的 host 字段）
 func GetMerchantByServerIP(serverIP string) (*entity.Merchants, error) {
+	// 1. 直接匹配 merchants.server_ip
 	var merchant entity.Merchants
 	ok, err := dbs.DBAdmin.Where("server_ip = ?", serverIP).Get(&merchant)
 	if err != nil {
 		return nil, err
 	}
-	if !ok {
-		return nil, fmt.Errorf("未找到IP对应的商户: %s", serverIP)
+	if ok {
+		return &merchant, nil
 	}
-	return &merchant, nil
+
+	// 2. 集群模式：通过 servers 表查找（商户服务器 host 匹配）
+	var server entity.Servers
+	ok, err = dbs.DBAdmin.Where("host = ? AND merchant_id > 0 AND server_type = 1", serverIP).Get(&server)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		ok, err = dbs.DBAdmin.Where("id = ?", server.MerchantId).Get(&merchant)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return &merchant, nil
+		}
+	}
+
+	return nil, fmt.Errorf("未找到IP对应的商户: %s", serverIP)
 }
 
 // CreateMerchant 创建商户

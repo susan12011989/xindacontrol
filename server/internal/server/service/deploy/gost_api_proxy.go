@@ -340,16 +340,15 @@ func SetupGostForward(req model.SetupGostForwardReq) error {
 
 	// 自动为 HTTP 端口配置 Nginx 缓存（如果 Nginx 已安装）
 	httpPort := identifyHttpPort(req.Ports)
+	sslEnabled := server.TlsEnabled == 1
 	if httpPort > 0 && isNginxInstalled(req.ServerId) {
-		// 1. 修改 GOST HTTP 服务为仅监听 loopback
-		if err := UpdateGostServiceToLoopback(req.ServerId, httpPort); err != nil {
+		// 1. 修改 GOST HTTP 服务为仅监听 loopback（SSL 时同时切换 listener tls→tcp）
+		if err := UpdateGostServiceToLoopback(req.ServerId, httpPort, sslEnabled); err != nil {
 			logx.Errorf("设置 GOST loopback 失败 (端口 %d): %v", httpPort, err)
-			// 不影响转发配置，仅记录日志
 		} else {
-			// 2. 配置 Nginx 缓存代理
-			if err := ConfigureNginxCacheForPort(req.ServerId, httpPort); err != nil {
+			// 2. 配置 Nginx 缓存代理（SSL 时生成 TLS 终结配置）
+			if err := ConfigureNginxCacheForPort(req.ServerId, httpPort, sslEnabled); err != nil {
 				logx.Errorf("配置 Nginx 缓存失败 (端口 %d): %v", httpPort, err)
-				// 回滚 GOST 地址
 				_ = RestoreGostServiceToPublic(req.ServerId, httpPort)
 			}
 		}

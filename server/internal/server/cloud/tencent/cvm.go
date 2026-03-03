@@ -2,6 +2,7 @@ package tencent
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
@@ -176,6 +177,45 @@ func DescribeImages(cred *CloudAccountInfo, regionId string) ([]*cvm.Image, int6
 	return response.Response.ImageSet, int64(*response.Response.TotalCount), nil
 }
 
+// GetDefaultUbuntuImageId 获取默认 Ubuntu 公共镜像 ID
+func GetDefaultUbuntuImageId(cred *CloudAccountInfo, regionId string) (string, error) {
+	client, err := NewCvmClient(cred.AccessKey, cred.AccessSecret, regionId)
+	if err != nil {
+		return "", fmt.Errorf("创建 CVM 客户端失败: %v", err)
+	}
+
+	request := cvm.NewDescribeImagesRequest()
+	request.Filters = []*cvm.Filter{
+		{
+			Name:   common.StringPtr("image-type"),
+			Values: common.StringPtrs([]string{"PUBLIC_IMAGE"}),
+		},
+		{
+			Name:   common.StringPtr("platform"),
+			Values: common.StringPtrs([]string{"Ubuntu"}),
+		},
+	}
+	request.Limit = common.Uint64Ptr(50)
+
+	response, err := client.DescribeImages(request)
+	if err != nil {
+		return "", fmt.Errorf("查询公共镜像失败: %v", err)
+	}
+
+	if len(response.Response.ImageSet) == 0 {
+		return "", fmt.Errorf("未找到 Ubuntu 公共镜像")
+	}
+
+	// 优先选择 Ubuntu 22.04，否则取第一个
+	for _, img := range response.Response.ImageSet {
+		if img.ImageName != nil && (strings.Contains(*img.ImageName, "22.04") || strings.Contains(*img.ImageName, "2204")) {
+			return *img.ImageId, nil
+		}
+	}
+
+	return *response.Response.ImageSet[0].ImageId, nil
+}
+
 // RunInstancesInput 创建实例输入参数
 type RunInstancesInput struct {
 	RegionId                string
@@ -297,4 +337,25 @@ func DescribeInstanceTypeConfigs(cred *CloudAccountInfo, regionId string) ([]*cv
 	}
 
 	return response.Response.InstanceTypeConfigSet, nil
+}
+
+// ModifyInstancesRenewFlag 修改实例续费标识
+// renewFlag: NOTIFY_AND_AUTO_RENEW / NOTIFY_AND_MANUAL_RENEW / DISABLE_NOTIFY_AND_MANUAL_RENEW
+func ModifyInstancesRenewFlag(cred *CloudAccountInfo, regionId string, instanceIds []string, renewFlag string) error {
+	client, err := NewCvmClient(cred.AccessKey, cred.AccessSecret, regionId)
+	if err != nil {
+		return fmt.Errorf("创建CVM客户端失败: %v", err)
+	}
+
+	request := cvm.NewModifyInstancesRenewFlagRequest()
+	for _, id := range instanceIds {
+		request.InstanceIds = append(request.InstanceIds, common.StringPtr(id))
+	}
+	request.RenewFlag = common.StringPtr(renewFlag)
+
+	_, err = client.ModifyInstancesRenewFlag(request)
+	if err != nil {
+		return fmt.Errorf("修改续费标识失败: %v", err)
+	}
+	return nil
 }

@@ -101,3 +101,18 @@ export function getSubnetList(params: { merchant_id?: number; cloud_account_id?:
     params
   })
 }
+
+/** 修改实例续费标识 */
+export function modifyRenewFlag(data: {
+  merchant_id?: number
+  cloud_account_id?: number
+  region_id: string
+  instance_ids: string[]
+  renew_flag: string
+}) {
+  return request<ApiResponseData<null>>({
+    url: "/cloud/tencent/cvm/instances/modify-renew-flag",
+    method: "post",
+    data
+  })
+}

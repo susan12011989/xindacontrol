@@ -11,7 +11,6 @@ import (
 	"server/internal/server/router/announcements"
 	"server/internal/server/router/audit"
 	"server/internal/server/router/auth"
-	"server/internal/server/router/clients"
 	"server/internal/server/router/cloud_account"
 	"server/internal/server/router/cloud_aliyun"
 	"server/internal/server/router/cloud_aws"
@@ -19,6 +18,8 @@ import (
 	"server/internal/server/router/cloud_tencent"
 	"server/internal/server/router/deploy"
 	"server/internal/server/router/docker"
+	deploySvc "server/internal/server/service/deploy"
+	merchantSvc "server/internal/server/service/merchant"
 	"server/internal/server/router/feature"
 	"server/internal/server/router/global"
 	"server/internal/server/router/health"
@@ -52,6 +53,9 @@ func Serve(ctx context.Context) {
 	dbs.InitRedis(cfg.C.Redis)
 	token_manager.Init()
 	gostapi.InitTaskQueue(dbs.Rds()) // 初始化 GOST 任务队列
+
+	// 注册部署后自动恢复 Web 品牌配置的钩子
+	deploySvc.AfterAppDeployHook = merchantSvc.ReapplyWebBranding
 
 	// 自动创建表：公告发送日志
 	_ = dbs.DBAdmin.Sync2(new(entity.AnnouncementLogs))
@@ -129,7 +133,6 @@ func Serve(ctx context.Context) {
 	merchant_storage.Routes(group)  // 商户存储配置管理
 	resource_group.Routes(group)    // 资源分组管理
 	resource_overview.Routes(group) // 资源总览
-	clients.Routes(group)           // 客户端管理
 	monitorRouter.Routes(group)        // GOST 监控
 	cloudMonitorRouter.Routes(group)   // 统一云监控 (AWS/阿里云/腾讯云)
 

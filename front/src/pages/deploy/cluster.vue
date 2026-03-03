@@ -2,7 +2,7 @@
 import type { ClusterNodeInfo, DeployStep, DeployTSDDResp, GostSyncResult, NodeRole, ServerResp } from "@@/apis/deploy/type"
 import type { MerchantGostServerResp, MerchantOssConfigResp } from "@@/apis/merchant/type"
 import type { TargetItem } from "@@/apis/ip_embed/type"
-import { deployNode, getServerList, batchHealthCheck, getClusterNodes, syncClusterGost } from "@@/apis/deploy"
+import { deployNode, getServerList, batchHealthCheck, getClusterNodes, syncClusterGost, batchServiceAction } from "@@/apis/deploy"
 import { getMerchantList, listMerchantGostServers, createMerchantGostServer, deleteMerchantGostServer, listMerchantOssConfigs, createMerchantOssConfig, deleteMerchantOssConfig } from "@@/apis/merchant"
 import { getTargets } from "@@/apis/ip_embed"
 import { getCloudAccountList } from "@@/apis/cloud_account"
@@ -232,7 +232,7 @@ async function doSyncGost() {
     const ok = gostResults.value.filter(r => r.success).length
     const fail = gostResults.value.filter(r => !r.success).length
     if (fail === 0) {
-      ElMessage.success(`GOST 同步完成：${ok} 台成功`)
+      ElMessage.success(`GOST 同步完成：${ok} 台成功，配置已自动持久化`)
     } else {
       ElMessage.warning(`GOST 同步完成：${ok} 成功 / ${fail} 失败`)
     }
@@ -240,6 +240,36 @@ async function doSyncGost() {
     ElMessage.error(e.message || "GOST 同步失败")
   } finally {
     gostSyncing.value = false
+  }
+}
+
+// ========== 重启 GOST ==========
+const gostRestarting = ref(false)
+
+async function doRestartGost() {
+  if (gostRelations.value.length === 0) {
+    ElMessage.warning("当前商户无关联的 GOST 服务器")
+    return
+  }
+  try {
+    await ElMessageBox.confirm("确认重启所有关联的 GOST 服务器？", "重启 GOST", { type: "warning" })
+  } catch {
+    return
+  }
+  gostRestarting.value = true
+  try {
+    const serverIds = gostRelations.value.map(r => r.server_id)
+    const res = await batchServiceAction({ server_ids: serverIds, service_name: "gost", action: "restart" })
+    const data = res.data
+    if (data.fail_count === 0) {
+      ElMessage.success(`GOST 重启完成：${data.success_count} 台成功`)
+    } else {
+      ElMessage.warning(`GOST 重启完成：${data.success_count} 成功 / ${data.fail_count} 失败`)
+    }
+  } catch (e: any) {
+    ElMessage.error(e.message || "GOST 重启失败")
+  } finally {
+    gostRestarting.value = false
   }
 }
 
@@ -603,6 +633,9 @@ onMounted(() => {
           </el-button>
           <el-button type="warning" :loading="gostSyncing" @click="doSyncGost" :disabled="appNodes.length === 0">
             同步 GOST
+          </el-button>
+          <el-button type="danger" :loading="gostRestarting" @click="doRestartGost" :disabled="gostRelations.length === 0">
+            重启 GOST
           </el-button>
           <el-button type="primary" @click="openDeployDialog" :disabled="!selectedMerchantId">
             部署节点

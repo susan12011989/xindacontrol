@@ -99,7 +99,6 @@ const ossGridOpt: VxeGridProps = reactive({
     { field: "bucket", title: "Bucket", width: 140, showOverflow: true },
     { field: "region", title: "区域", width: 100 },
     { field: "download_url", title: "下载地址", minWidth: 240, showOverflow: true, slots: { default: "download-url-slot" } },
-    { field: "is_default", title: "默认", width: 60, slots: { default: "default-slot" } },
     { field: "status", title: "状态", width: 60, slots: { default: "status-slot" } },
     { field: "tags", title: "标签", width: 140, slots: { default: "tags-slot" } },
     { title: "操作", width: "80px", fixed: "right", slots: { default: "oss-row-operate" } }
@@ -411,11 +410,6 @@ async function handleBatchSyncIP() {
             <a v-if="row.download_url" :href="row.download_url" target="_blank" class="download-url-link">
               {{ row.download_url }}
             </a>
-            <span v-else>-</span>
-          </template>
-
-          <template #default-slot="{ row }">
-            <el-tag v-if="row.is_default === 1" type="success" size="small">默认</el-tag>
             <span v-else>-</span>
           </template>
 

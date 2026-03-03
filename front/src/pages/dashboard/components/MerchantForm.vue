@@ -267,6 +267,40 @@ function updateTurnServer(val: string) {
   }
 }
 
+// 更新套餐配置 - TURN用户名
+function updateTurnUsername(val: string) {
+  if (localFormData.value) {
+    if (!localFormData.value.package_configuration) {
+      localFormData.value.package_configuration = {
+        dau_limit: 0,
+        register_limit: 0,
+        group_member_limit: 0,
+        turn_username: val
+      }
+    } else {
+      localFormData.value.package_configuration.turn_username = val
+    }
+    emit("update:formData", localFormData.value)
+  }
+}
+
+// 更新套餐配置 - TURN密码
+function updateTurnCredential(val: string) {
+  if (localFormData.value) {
+    if (!localFormData.value.package_configuration) {
+      localFormData.value.package_configuration = {
+        dau_limit: 0,
+        register_limit: 0,
+        group_member_limit: 0,
+        turn_credential: val
+      }
+    } else {
+      localFormData.value.package_configuration.turn_credential = val
+    }
+    emit("update:formData", localFormData.value)
+  }
+}
+
 // eslint-disable-next-line unused-imports/no-unused-vars
 function updateStatus(val: string | number | boolean | undefined) {
   if (localFormData.value && typeof val === "number") {
@@ -424,6 +458,22 @@ function updatePort(val: number | undefined) {
         <div class="text-gray-500" style="font-size: 12px; margin-top: 4px;">
           用于音视频通话的TURN服务器，格式如：192.168.1.100:3478
         </div>
+      </el-form-item>
+      <el-form-item label="TURN用户名">
+        <el-input
+          :model-value="localFormData.package_configuration?.turn_username || ''"
+          placeholder="TURN认证用户名"
+          @update:model-value="updateTurnUsername"
+        />
+      </el-form-item>
+      <el-form-item label="TURN密码">
+        <el-input
+          :model-value="localFormData.package_configuration?.turn_credential || ''"
+          placeholder="TURN认证密码"
+          type="password"
+          show-password
+          @update:model-value="updateTurnCredential"
+        />
       </el-form-item>
 
       <el-divider content-position="left">

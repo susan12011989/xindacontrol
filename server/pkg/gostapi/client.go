@@ -467,7 +467,8 @@ func (c *Client) CreateRelayTLSForward(gostServerIP string, listenPort int, targ
 							Type: "relay",
 						},
 						Dialer: &DialerConfig{
-							Type: "tls",
+							Type:     "mtls",
+							Metadata: MuxPerformanceMetadata,
 						},
 					},
 				},
@@ -561,6 +562,19 @@ const (
 	TlsKeyPath  = "/etc/gost/certs/server.key"
 )
 
+// 商户服务器 TLS 证书路径（GOST 部署时写入）
+const (
+	MerchantTlsCertPath = "/etc/gost/tls/cert.pem"
+	MerchantTlsKeyPath  = "/etc/gost/tls/key.pem"
+)
+
+// MuxPerformanceMetadata smux 多路复用性能参数（relay+mtls 使用）
+// 注意：maxFrameSize 不能超过 65535（smux 限制），已移除
+var MuxPerformanceMetadata = map[string]any{
+	"mux.maxStreamBuffer":  1048576, // 1MB
+	"mux.maxReceiveBuffer": 8388608, // 8MB
+}
+
 // ========== 幂等性辅助函数 ==========
 
 // isAlreadyExistsError 检查是否是 "already exists" 错误（创建时已存在）
@@ -607,7 +621,8 @@ func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 							Type: "relay",
 						},
 						Dialer: &DialerConfig{
-							Type: "tls",
+							Type:     "mtls",
+							Metadata: MuxPerformanceMetadata,
 						},
 					},
 				},
@@ -883,7 +898,7 @@ func (c *Client) createMerchantLocalForward(merchantServerIP string, listenPort 
 	targetAddr := fmt.Sprintf("127.0.0.1:%d", appPort)
 	listenAddr := fmt.Sprintf(":%d", listenPort)
 
-	// 创建 Service（监听 relay+tls，使用 forwarder 直接转发到本地业务端口）
+	// 创建 Service（监听 relay+mtls，使用 forwarder 直接转发到本地业务端口）
 	service := &ServiceConfig{
 		Name: serviceName,
 		Addr: listenAddr,
@@ -891,7 +906,12 @@ func (c *Client) createMerchantLocalForward(merchantServerIP string, listenPort 
 			Type: "relay",
 		},
 		Listener: &ListenerConfig{
-			Type: "tls",
+			Type: "mtls",
+			TLS: &TLSConfig{
+				CertFile: MerchantTlsCertPath,
+				KeyFile:  MerchantTlsKeyPath,
+			},
+			Metadata: MuxPerformanceMetadata,
 		},
 		Forwarder: &ForwarderConfig{
 			Nodes: []ForwardNodeConfig{
@@ -958,7 +978,12 @@ func (c *Client) CreateMinioLocalForward(merchantServerIP string, minioAddr stri
 			Type: "relay",
 		},
 		Listener: &ListenerConfig{
-			Type: "tls",
+			Type: "mtls",
+			TLS: &TLSConfig{
+				CertFile: MerchantTlsCertPath,
+				KeyFile:  MerchantTlsKeyPath,
+			},
+			Metadata: MuxPerformanceMetadata,
 		},
 		Forwarder: &ForwarderConfig{
 			Nodes: []ForwardNodeConfig{
@@ -1480,7 +1505,8 @@ func (c *Client) CreateRelayTLSForwardMultiTarget(gostServerIP string, listenPor
 				Type: "relay",
 			},
 			Dialer: &DialerConfig{
-				Type: "tls",
+				Type:     "mtls",
+				Metadata: MuxPerformanceMetadata,
 			},
 		})
 	}
@@ -1570,7 +1596,8 @@ func (c *Client) CreateRelayTLSForwardMultiTargetWithTlsListener(gostServerIP st
 				Type: "relay",
 			},
 			Dialer: &DialerConfig{
-				Type: "tls",
+				Type:     "mtls",
+				Metadata: MuxPerformanceMetadata,
 			},
 		})
 	}
@@ -1820,4 +1847,29 @@ func (c *Client) GetForwardStatus(gostServerIP string) (map[int]string, error) {
 	}
 
 	return result, nil
+}
+
+// GetExpectedPorts 从 GOST API 获取所有已配置服务的监听端口列表
+func GetExpectedPorts(ip string) ([]int, error) {
+	serviceList, err := GetServiceList(ip)
+	if err != nil {
+		return nil, err
+	}
+	var ports []int
+	for _, svc := range serviceList.List {
+		addr := svc.Addr
+		if addr == "" {
+			continue
+		}
+		// addr 格式为 ":10000" 或 "0.0.0.0:10000"
+		idx := strings.LastIndex(addr, ":")
+		if idx < 0 {
+			continue
+		}
+		var port int
+		if _, err := fmt.Sscanf(addr[idx+1:], "%d", &port); err == nil && port > 0 {
+			ports = append(ports, port)
+		}
+	}
+	return ports, nil
 }

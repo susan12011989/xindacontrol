@@ -35,6 +35,9 @@ func Routes(ge gin.IRouter) {
 	cloudGroup.POST("/ecs/instance/bind-merchant", bindInstanceMerchant)                   // 绑定商户
 	cloudGroup.POST("/ecs/instance/unbind-merchant", unbindInstanceMerchant)               // 解绑商户
 	cloudGroup.POST("/ecs/instance/bindings", getInstanceBindings)                         // 批量查询绑定
+	cloudGroup.POST("/ecs/instance/modify-auto-renew", modifyAutoRenew)                    // 修改自动续费
+	cloudGroup.GET("/ecs/instance/bandwidth", getInstanceBandwidth)                        // 查询实例带宽
+	cloudGroup.POST("/ecs/instance/bandwidth", modifyInstanceBandwidth)                    // 修改实例带宽
 
 	// 镜像管理
 	cloudGroup.GET("/ecs/image", listImage)
@@ -1551,6 +1554,51 @@ func modifyImageSharePermission(c *gin.Context) {
 
 	err := aliyun.ModifyImageSharePermission(&req)
 	if err != nil {
+		result.GErr(c, err)
+		return
+	}
+
+	result.GOK(c, nil)
+}
+
+// getInstanceBandwidth 查询服务器的ECS实例带宽
+func getInstanceBandwidth(c *gin.Context) {
+	var req model.GetServerBandwidthReq
+	if err := c.ShouldBindQuery(&req); err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+	info, err := cloud_aliyun.GetServerBandwidth(req.ServerId)
+	if err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, info)
+}
+
+// modifyInstanceBandwidth 修改服务器的ECS实例带宽
+func modifyInstanceBandwidth(c *gin.Context) {
+	var req model.ModifyServerBandwidthReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+	if err := cloud_aliyun.ModifyServerBandwidth(req); err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, nil)
+}
+
+// modifyAutoRenew 修改实例自动续费
+func modifyAutoRenew(c *gin.Context) {
+	var req model.ModifyAutoRenewReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+
+	if err := aliyun.ModifyAutoRenewAttribute(req.MerchantId, req.CloudAccountId, req.RegionId, req.InstanceId, req.AutoRenew, req.Duration); err != nil {
 		result.GErr(c, err)
 		return
 	}
