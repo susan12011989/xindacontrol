@@ -280,15 +280,15 @@ func enqueueGostServicesForMerchants(serverHost string, forwardType int) {
 		var err error
 		if forwardType == entity.ForwardTypeDirect {
 			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(serverHost, m.Port, m.ServerIP)
+				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(serverHost, m.Port, m.ServerIP, m.TunnelIP)
 			} else {
-				err = gostapi.EnqueueCreateMerchantDirectForwards(serverHost, m.Port, m.ServerIP)
+				err = gostapi.EnqueueCreateMerchantDirectForwards(serverHost, m.Port, m.ServerIP, m.TunnelIP)
 			}
 		} else {
 			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantForwardsWithTls(serverHost, m.Port, m.ServerIP)
+				err = gostapi.EnqueueCreateMerchantForwardsWithTls(serverHost, m.Port, m.ServerIP, m.TunnelIP)
 			} else {
-				err = gostapi.EnqueueCreateMerchantForwards(serverHost, m.Port, m.ServerIP)
+				err = gostapi.EnqueueCreateMerchantForwards(serverHost, m.Port, m.ServerIP, m.TunnelIP)
 			}
 		}
 		if err != nil {
@@ -461,10 +461,10 @@ func enqueueDeleteGostServicesForMerchants(serverHost string, forwardType int) {
 		var err error
 		if forwardType == entity.ForwardTypeDirect {
 			// 直连转发
-			err = gostapi.EnqueueDeleteMerchantDirectForwards(serverHost, m.Port)
+			err = gostapi.EnqueueDeleteMerchantDirectForwards(serverHost, m.Port, m.TunnelIP)
 		} else {
 			// 加密转发
-			err = gostapi.EnqueueDeleteMerchantForwards(serverHost, m.Port)
+			err = gostapi.EnqueueDeleteMerchantForwards(serverHost, m.Port, m.TunnelIP)
 		}
 		if err != nil {
 			logx.Errorf("enqueue delete merchant %s forwards task for merchant %d (port %d) on server %s failed: %+v",

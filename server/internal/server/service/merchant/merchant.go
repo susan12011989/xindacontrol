@@ -282,14 +282,15 @@ func CreateMerchant(req *model.CreateOrEditMerchantReq) (int, error) {
 	}
 
 	// 为系统服务器创建 Gost 服务（通过任务队列，支持重试）
-	enqueueGostServicesForServers(req.Port, req.ServerIP)
+	enqueueGostServicesForServers(req.Port, req.ServerIP, merchant.TunnelIP)
 
 	return merchant.Id, nil
 }
 
 // enqueueGostServicesForServers 为所有系统服务器入队创建商户转发任务
 // 根据每个系统服务器的 forward_type 选择加密或直连转发
-func enqueueGostServicesForServers(listenPort int, forwardHost string) {
+// tunnelIP 为系统服务器上分配给此商户的隧道 IP
+func enqueueGostServicesForServers(listenPort int, forwardHost string, tunnelIP string) {
 	var servers []entity.Servers
 	if err := dbs.DBAdmin.Where("server_type = ? AND status = 1", 2).Find(&servers); err != nil {
 		logx.Errorf("query selected servers err: %+v", err)
@@ -309,17 +310,17 @@ func enqueueGostServicesForServers(listenPort int, forwardHost string) {
 		if s.ForwardType == entity.ForwardTypeDirect {
 			// 直连转发：直接转发到商户业务程序 10000/10001/10002
 			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(s.Host, listenPort, forwardHost)
+				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(s.Host, listenPort, forwardHost, tunnelIP)
 			} else {
-				err = gostapi.EnqueueCreateMerchantDirectForwards(s.Host, listenPort, forwardHost)
+				err = gostapi.EnqueueCreateMerchantDirectForwards(s.Host, listenPort, forwardHost, tunnelIP)
 			}
 			directCount++
 		} else {
 			// 加密转发（默认）：通过 relay+tls 转发到商户 GOST 10010/10011/10012
 			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantForwardsWithTls(s.Host, listenPort, forwardHost)
+				err = gostapi.EnqueueCreateMerchantForwardsWithTls(s.Host, listenPort, forwardHost, tunnelIP)
 			} else {
-				err = gostapi.EnqueueCreateMerchantForwards(s.Host, listenPort, forwardHost)
+				err = gostapi.EnqueueCreateMerchantForwards(s.Host, listenPort, forwardHost, tunnelIP)
 			}
 			encryptedCount++
 		}
@@ -467,13 +468,13 @@ func DeleteMerchant(idStr string) (string, error) {
 	}
 
 	// 删除所有系统服务器上的 gost 转发服务（通过任务队列）
-	enqueueDeleteGostServicesOnAllSystemServers(merchant.Port)
+	enqueueDeleteGostServicesOnAllSystemServers(merchant.Port, merchant.TunnelIP)
 	return merchant.Name, nil
 }
 
 // enqueueDeleteGostServicesOnAllSystemServers 入队删除系统服务器上的商户转发任务
 // 根据每个系统服务器的 forward_type 选择删除加密或直连转发
-func enqueueDeleteGostServicesOnAllSystemServers(port int) {
+func enqueueDeleteGostServicesOnAllSystemServers(port int, tunnelIP string) {
 	var sysServers []entity.Servers
 	if err := dbs.DBAdmin.Where("server_type = ? AND status = 1", 2).Find(&sysServers); err != nil {
 		logx.Errorf("list system servers err: %+v", err)
@@ -486,11 +487,11 @@ func enqueueDeleteGostServicesOnAllSystemServers(port int) {
 		var err error
 		if s.ForwardType == entity.ForwardTypeDirect {
 			// 直连转发
-			err = gostapi.EnqueueDeleteMerchantDirectForwards(s.Host, port)
+			err = gostapi.EnqueueDeleteMerchantDirectForwards(s.Host, port, tunnelIP)
 			directCount++
 		} else {
 			// 加密转发（默认）
-			err = gostapi.EnqueueDeleteMerchantForwards(s.Host, port)
+			err = gostapi.EnqueueDeleteMerchantForwards(s.Host, port, tunnelIP)
 			encryptedCount++
 		}
 		if err != nil {
@@ -517,8 +518,15 @@ func onMerchantServerIPChanged(merchantId int, port int, newServerIP string) {
 		logx.Errorf("sync servers host failed for merchant %d: %+v", merchantId, err)
 	}
 
+	// 查询商户 TunnelIP
+	var merchant entity.Merchants
+	if _, err := dbs.DBAdmin.ID(merchantId).Get(&merchant); err != nil {
+		logx.Errorf("查询商户 %d 失败: %+v", merchantId, err)
+		return
+	}
+
 	// 2) 更新所有系统服务器上的 GOST 转发配置（使用默认目标端口 10000/10001/10002）
-	updateGostServicesOnSystemServers(merchantId, port, newServerIP, 0)
+	updateGostServicesOnSystemServers(merchantId, port, newServerIP, merchant.TunnelIP, 0)
 }
 
 // GetMerchantByID 通过ID获取商户信息

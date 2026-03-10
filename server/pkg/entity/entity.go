@@ -58,6 +58,7 @@ type Merchants struct {
 	No                   string                `xorm:"not null unique VARCHAR(16)"`
 	ServerIP             string                `xorm:"server_ip not null comment('服务器IP') VARCHAR(128)"`
 	Port                 int                   `xorm:"not null default 0 comment('商户端口') INT"` // 商户端口
+	TunnelIP             string                `xorm:"tunnel_ip default '' comment('隧道IP-系统服务器分配') VARCHAR(128)"` // 系统服务器上分配给此商户的 IP
 	Name                 string                `xorm:"not null comment('商户名') VARCHAR(64)"`
 	AppName              string                `xorm:"comment('应用名称') VARCHAR(64)"`  // 应用显示名称，用于打包
 	LogoUrl              string                `xorm:"comment('Logo地址') VARCHAR(512)"` // Logo URL，用于打包
