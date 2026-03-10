@@ -11,6 +11,7 @@ import { aliyunListBuckets, awsListBuckets, tencentListBuckets } from "@@/apis/c
 import type { CloudBucketItem } from "@@/apis/cloud_storage/type"
 import { decryptVersion, embedIPs, embedIPsBatch, embedURLs, embedURLsBatch, enterprise2Port, extractIPs, extractURLs, generateVersion, port2Enterprise } from "@@/apis/utils"
 import {
+  ArrowRight,
   Connection,
   Delete,
   DocumentCopy,
@@ -619,7 +620,12 @@ interface IPItem {
   serverId: number
   isAuxiliary: boolean
   status: number
+  merchantId: number
+  merchantName: string
 }
+
+// 商户筛选（IP选择 和 上传目标选择 共用）
+const filterMerchantId = ref<number | undefined>(undefined)
 
 const ipUploadTool = reactive({
   loading: false,
@@ -778,7 +784,9 @@ const flattenedIPList = computed<IPItem[]>(() => {
       serverName: s.server_name,
       serverId: s.server_id,
       isAuxiliary: false,
-      status: s.status
+      status: s.status,
+      merchantId: s.merchant_id,
+      merchantName: s.merchant_name
     })
     // 辅助IP（支持逗号分隔的多个IP）
     if (s.auxiliary_ip) {
@@ -789,12 +797,39 @@ const flattenedIPList = computed<IPItem[]>(() => {
           serverName: s.server_name,
           serverId: s.server_id,
           isAuxiliary: true,
-          status: s.status
+          status: s.status,
+          merchantId: s.merchant_id,
+          merchantName: s.merchant_name
         })
       }
     }
   }
   return list
+})
+
+// 商户选项（从 systemIPs + targets 合并去重，两个区域共用）
+const merchantFilterOptions = computed(() => {
+  const map = new Map<number, string>()
+  for (const s of ipUploadTool.systemIPs) {
+    if (s.merchant_id > 0 && s.merchant_name) {
+      map.set(s.merchant_id, s.merchant_name)
+    }
+  }
+  for (const t of ipUploadTool.targets) {
+    const mid = t.merchant_id || 0
+    if (mid > 0 && !map.has(mid)) {
+      map.set(mid, t.merchant_name || `商户#${mid}`)
+    }
+  }
+  return Array.from(map.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([id, name]) => ({ value: id, label: name }))
+})
+
+// 按商户筛选后的 IP 列表
+const filteredIPList = computed(() => {
+  if (!filterMerchantId.value) return flattenedIPList.value
+  return flattenedIPList.value.filter(item => item.merchantId === filterMerchantId.value)
 })
 
 // 检测失效的IP（选中的IP在当前系统中不存在）
@@ -1105,26 +1140,17 @@ const targetManagement = reactive({
   }
 })
 
-// 商户筛选
-const filterMerchantId = ref<number | undefined>(undefined)
+// 展开的商户组（两级导航：点击商户展开其 OSS 目标）
+const expandedGroupId = ref<number | null>(null)
 
-// 从已有目标中提取商户列表（去重）
-const targetMerchantOptions = computed(() => {
-  const map = new Map<number, string>()
-  for (const t of ipUploadTool.targets) {
-    const mid = t.merchant_id || 0
-    if (!map.has(mid)) {
-      map.set(mid, mid > 0 ? (t.merchant_name || `商户#${mid}`) : "系统")
-    }
-  }
-  return Array.from(map.entries())
-    .sort((a, b) => {
-      if (a[0] === 0) return 1
-      if (b[0] === 0) return -1
-      return a[0] - b[0]
-    })
-    .map(([id, name]) => ({ value: id, label: name }))
-})
+function toggleExpandGroup(groupId: number) {
+  expandedGroupId.value = expandedGroupId.value === groupId ? null : groupId
+}
+
+// 获取某组已选中的目标数量
+function getGroupSelectedCount(group: TargetGroup): number {
+  return group.allTargets.filter(t => ipUploadTool.selectedTargetIndexes.includes(t.index)).length
+}
 
 // 按商户→云账号两级分组的目标列表
 interface TargetSubGroup {
@@ -1228,6 +1254,16 @@ function isSubGroupIndeterminate(sub: TargetSubGroup): boolean {
   const some = sub.targets.some(t => ipUploadTool.selectedTargetIndexes.includes(t.index))
   const all = sub.targets.every(t => ipUploadTool.selectedTargetIndexes.includes(t.index))
   return some && !all
+}
+
+// 切换单个目标选中状态
+function toggleTargetIndex(index: number) {
+  const pos = ipUploadTool.selectedTargetIndexes.indexOf(index)
+  if (pos >= 0) {
+    ipUploadTool.selectedTargetIndexes.splice(pos, 1)
+  } else {
+    ipUploadTool.selectedTargetIndexes.push(index)
+  }
 }
 
 // 商户变化时加载该商户的云账号
@@ -1588,12 +1624,29 @@ function handleDecryptFileChange(file: UploadFile) {
             <div class="tool-section">
               <div class="section-header">
                 <div class="section-title" style="margin-bottom: 0;">IP选择</div>
-                <el-button size="small" @click="ipUploadTool.toggleAllIPs">
-                  {{ ipUploadTool.selectedIPs.length === flattenedIPList.length ? '取消全选' : '全选' }}
-                </el-button>
+                <div style="display: flex; align-items: center; gap: 8px;">
+                  <el-select
+                    v-model="filterMerchantId"
+                    placeholder="全部商户"
+                    clearable
+                    size="small"
+                    style="width: 160px;"
+                    @clear="filterMerchantId = undefined"
+                  >
+                    <el-option
+                      v-for="m in merchantFilterOptions"
+                      :key="m.value"
+                      :label="m.label"
+                      :value="m.value"
+                    />
+                  </el-select>
+                  <el-button size="small" @click="ipUploadTool.toggleAllIPs">
+                    {{ ipUploadTool.selectedIPs.length === flattenedIPList.length ? '取消全选' : '全选' }}
+                  </el-button>
+                </div>
               </div>
               <el-checkbox-group v-model="ipUploadTool.selectedIPs" class="ip-select-list">
-                <div v-for="item in flattenedIPList" :key="item.ip" class="ip-select-item">
+                <div v-for="item in filteredIPList" :key="item.ip" class="ip-select-item">
                   <el-checkbox :value="item.ip">
                     <div class="ip-select-info">
                       <el-tag :type="item.status === 1 ? 'success' : 'info'" size="small">
@@ -1603,13 +1656,15 @@ function handleDecryptFileChange(file: UploadFile) {
                       <el-tag v-else type="primary" size="small">主IP</el-tag>
                       <span class="ip-address">{{ item.ip }}</span>
                       <span class="ip-server-name">{{ item.serverName }}</span>
+                      <el-tag v-if="item.merchantName" size="small" type="danger" style="margin-left: 4px;">{{ item.merchantName }}</el-tag>
                     </div>
                   </el-checkbox>
                 </div>
               </el-checkbox-group>
-              <el-empty v-if="flattenedIPList.length === 0" description="暂无可用IP" :image-size="60" />
+              <el-empty v-if="filteredIPList.length === 0" description="暂无可用IP" :image-size="60" />
               <div v-else class="file-tip">
                 已选择 {{ ipUploadTool.selectedIPs.length }} / {{ flattenedIPList.length }} 个IP
+                <span v-if="filterMerchantId">（当前显示 {{ filteredIPList.length }} 个）</span>
               </div>
             </div>
 
@@ -1629,7 +1684,7 @@ function handleDecryptFileChange(file: UploadFile) {
                     @clear="filterMerchantId = undefined"
                   >
                     <el-option
-                      v-for="m in targetMerchantOptions"
+                      v-for="m in merchantFilterOptions"
                       :key="m.value"
                       :label="m.label"
                       :value="m.value"
@@ -1643,63 +1698,77 @@ function handleDecryptFileChange(file: UploadFile) {
                   </el-button>
                 </div>
               </div>
-              <el-checkbox-group v-model="ipUploadTool.selectedTargetIndexes" class="target-list">
+              <div class="target-list">
                 <div v-for="group in groupedTargets" :key="group.groupId" class="target-group">
-                  <!-- 商户级别 -->
-                  <div class="target-group-header">
-                    <el-checkbox
-                      :model-value="isGroupAllSelected(group)"
-                      :indeterminate="isGroupIndeterminate(group)"
-                      @change="toggleGroupTargets(group)"
-                    >
-                      <div class="target-group-title">
-                        <span>{{ group.groupName }}</span>
-                        <span class="target-group-count">({{ group.allTargets.length }})</span>
-                      </div>
-                    </el-checkbox>
-                  </div>
-                  <!-- 云账号子级 -->
-                  <div v-for="sub in group.subGroups" :key="sub.accountId" class="target-sub-group">
-                    <div class="target-sub-group-header">
+                  <!-- 商户级别（可折叠） -->
+                  <div class="target-group-header target-group-header-clickable" :class="{ 'is-expanded': expandedGroupId === group.groupId }" @click="toggleExpandGroup(group.groupId)">
+                    <div class="target-group-left">
+                      <el-icon class="expand-arrow" :class="{ 'is-expanded': expandedGroupId === group.groupId }">
+                        <ArrowRight />
+                      </el-icon>
                       <el-checkbox
-                        :model-value="isSubGroupAllSelected(sub)"
-                        :indeterminate="isSubGroupIndeterminate(sub)"
-                        @change="toggleSubGroupTargets(sub)"
+                        :model-value="isGroupAllSelected(group)"
+                        :indeterminate="isGroupIndeterminate(group)"
+                        @change="toggleGroupTargets(group)"
+                        @click.stop
                       >
-                        <div class="target-sub-group-title">
-                          <el-tag :type="cloudTypeColors[sub.cloudType]" size="small">
-                            {{ sub.cloudType.toUpperCase() }}
-                          </el-tag>
-                          <span>{{ sub.accountName }}</span>
-                          <span class="target-group-count">({{ sub.targets.length }})</span>
+                        <div class="target-group-title">
+                          <span>{{ group.groupName }}</span>
+                          <span class="target-group-count">({{ group.allTargets.length }}个目标)</span>
                         </div>
                       </el-checkbox>
                     </div>
-                    <div v-for="target in sub.targets" :key="target.index" class="target-item target-item-grouped">
-                      <el-checkbox :value="target.index">
-                        <div class="target-info">
-                          <span class="target-name">{{ target.name }}</span>
-                          <span class="target-detail">
-                            {{ target.bucket }} / {{ target.object_prefix || '(根目录)' }}
-                          </span>
-                          <el-tag v-if="!target.enabled" type="info" size="small">已禁用</el-tag>
-                        </div>
-                      </el-checkbox>
-                      <div class="target-actions" @click.stop>
-                        <el-button size="small" link type="primary" @click="targetManagement.openEdit(target)">
-                          编辑
-                        </el-button>
-                        <el-button size="small" link :type="target.enabled ? 'warning' : 'success'" @click="targetManagement.handleToggle(target)">
-                          {{ target.enabled ? '禁用' : '启用' }}
-                        </el-button>
-                        <el-button size="small" link type="danger" @click="targetManagement.handleDelete(target)">
-                          删除
-                        </el-button>
+                    <div class="target-group-summary">
+                      <el-tag v-if="getGroupSelectedCount(group) > 0" type="success" size="small">
+                        已选 {{ getGroupSelectedCount(group) }}
+                      </el-tag>
+                    </div>
+                  </div>
+                  <!-- 展开后显示云账号子级和目标 -->
+                  <template v-if="expandedGroupId === group.groupId">
+                    <div v-for="sub in group.subGroups" :key="sub.accountId" class="target-sub-group">
+                      <div class="target-sub-group-header">
+                        <el-checkbox
+                          :model-value="isSubGroupAllSelected(sub)"
+                          :indeterminate="isSubGroupIndeterminate(sub)"
+                          @change="toggleSubGroupTargets(sub)"
+                        >
+                          <div class="target-sub-group-title">
+                            <el-tag :type="cloudTypeColors[sub.cloudType]" size="small">
+                              {{ sub.cloudType.toUpperCase() }}
+                            </el-tag>
+                            <span>{{ sub.accountName }}</span>
+                            <span class="target-group-count">({{ sub.targets.length }})</span>
+                          </div>
+                        </el-checkbox>
+                      </div>
+                      <div v-for="target in sub.targets" :key="target.index" class="target-item target-item-grouped">
+                        <el-checkbox :model-value="ipUploadTool.selectedTargetIndexes.includes(target.index)"
+                          @change="toggleTargetIndex(target.index)">
+                          <div class="target-info">
+                            <span class="target-name">{{ target.name }}</span>
+                            <span class="target-detail">
+                              {{ target.bucket }} / {{ target.object_prefix || '(根目录)' }}
+                            </span>
+                            <el-tag v-if="!target.enabled" type="info" size="small">已禁用</el-tag>
+                          </div>
+                        </el-checkbox>
+                        <div class="target-actions" @click.stop>
+                          <el-button size="small" link type="primary" @click="targetManagement.openEdit(target)">
+                            编辑
+                          </el-button>
+                          <el-button size="small" link :type="target.enabled ? 'warning' : 'success'" @click="targetManagement.handleToggle(target)">
+                            {{ target.enabled ? '禁用' : '启用' }}
+                          </el-button>
+                          <el-button size="small" link type="danger" @click="targetManagement.handleDelete(target)">
+                            删除
+                          </el-button>
                       </div>
                     </div>
                   </div>
+                  </template>
                 </div>
-              </el-checkbox-group>
+              </div>
               <el-empty v-if="ipUploadTool.targets.length === 0" description="暂无配置的上传目标，请点击上方「新增目标」按钮添加" :image-size="60" />
             </div>
 
@@ -2192,9 +2261,44 @@ function handleDecryptFileChange(file: UploadFile) {
 .target-group-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 10px 16px;
   background: #eef1f6;
-  border-bottom: 1px solid #e4e7ed;
+
+  &.is-expanded {
+    border-bottom: 1px solid #e4e7ed;
+  }
+}
+
+.target-group-header-clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s;
+
+  &:hover {
+    background: #e4e8ef;
+  }
+}
+
+.target-group-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.expand-arrow {
+  font-size: 14px;
+  color: #606266;
+  transition: transform 0.2s;
+  flex-shrink: 0;
+
+  &.is-expanded {
+    transform: rotate(90deg);
+  }
+}
+
+.target-group-summary {
+  flex-shrink: 0;
 }
 
 .target-sub-group {

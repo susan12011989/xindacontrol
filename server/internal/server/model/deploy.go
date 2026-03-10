@@ -10,6 +10,7 @@ type QueryServersReq struct {
 	Status     *int   `json:"status" form:"status"`
 	ServerType *int   `json:"server_type" form:"server_type"` // 1-商户服务器 2-系统服务器
 	MerchantId *int   `json:"merchant_id" form:"merchant_id"` // 按商户ID筛选
+	GroupId    *int   `json:"group_id" form:"group_id"`       // 按分组ID筛选
 }
 
 // 创建服务器请求
@@ -25,6 +26,7 @@ type CreateServerReq struct {
 	ServerType  int    `json:"server_type"`  // 1-商户服务器 2-系统服务器
 	ForwardType int    `json:"forward_type"` // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
 	MerchantId  int    `json:"merchant_id"`  // 关联的商户ID
+	GroupId     int    `json:"group_id"`     // 分组ID
 	Description string `json:"description"`
 }
 
@@ -41,6 +43,7 @@ type UpdateServerReq struct {
 	ServerType  *int    `json:"server_type"`  // 1-商户服务器 2-系统服务器
 	ForwardType *int    `json:"forward_type"` // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
 	MerchantId  *int    `json:"merchant_id"`  // 关联的商户ID（指针区分未传和清零）
+	GroupId     *int    `json:"group_id"`     // 分组ID（指针区分未传和清零）
 	Status      *int    `json:"status"`
 	Description string  `json:"description"`
 }
@@ -63,6 +66,8 @@ type ServerResp struct {
 	MerchantId    int    `json:"merchant_id"`   // 关联的商户ID
 	MerchantName string `json:"merchant_name"` // 关联的商户名称
 	MerchantNo   string `json:"merchant_no"`   // 商户号
+	GroupId      int    `json:"group_id"`      // 分组ID
+	GroupName    string `json:"group_name"`    // 分组名称
 	CreatedAt    string `json:"created_at"`
 	UpdatedAt    string `json:"updated_at"`
 }

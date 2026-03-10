@@ -14,7 +14,7 @@ import {
   Search,
   Shop
 } from "@element-plus/icons-vue"
-import { changeMerchantGostPortApi, changeMerchantIPApi, clearMerchantDataApi, exportMerchantDatabaseApi, getAdminmSmsConfigApi, getTunnelStatsApi, merchantQueryApi, saveAdminmNicknameApi, saveAdminmSensitiveContentsApi, saveAdminmSmsConfigApi, tunnelCheckApi, updateMerchantApi } from "./apis/index"
+import { changeMerchantGostPortApi, changeMerchantIPApi, clearMerchantDataApi, exportMerchantDatabaseApi, getAdminmSmsConfigApi, getTunnelStatsApi, merchantQueryApi, pushWebLogoApi, saveAdminmNicknameApi, saveAdminmSensitiveContentsApi, saveAdminmSmsConfigApi, tunnelCheckApi, updateMerchantApi } from "./apis/index"
 import { getTwoFAStatusApi } from "@/common/apis/twofa"
 import ImageUploader from "@/common/components/ImageUploader.vue"
 import AdminmUsersDialog from "./components/AdminmUsersDialog.vue"
@@ -293,9 +293,66 @@ async function handleExportDatabase(row: any) {
     URL.revokeObjectURL(url)
     ElMessage.success("数据库导出完成")
   } catch (err: any) {
-    ElMessage.error(err?.message || "导出失败")
+    if (err?.response?.data instanceof Blob) {
+      const text = await err.response.data.text()
+      try {
+        const json = JSON.parse(text)
+        ElMessage.error(json.message || "导出失败")
+      } catch {
+        ElMessage.error("导出失败")
+      }
+    } else {
+      ElMessage.error(err?.message || "导出失败")
+    }
   } finally {
     exportDbLoading.value = false
+  }
+}
+
+// 推送 Logo 到 Web
+const pushLogoLoading = ref(false)
+async function handlePushLogo(row: any) {
+  if (!row?.no) return
+  const name = row.app_name || row.name || row.no
+  try {
+    await ElMessageBox.confirm(
+      `确定推送 "${name}" 的 Logo 和应用名称到 Web 端吗？`,
+      "推送Logo到Web",
+      { confirmButtonText: "确定推送", cancelButtonText: "取消", type: "info" }
+    )
+  } catch {
+    return
+  }
+  pushLogoLoading.value = true
+  try {
+    await pushWebLogoApi({ merchant_no: row.no })
+    ElMessage.success("Logo推送成功")
+  } catch (err: any) {
+    ElMessage.error(err?.message || "推送失败")
+  } finally {
+    pushLogoLoading.value = false
+  }
+}
+
+async function handleBatchPushLogo() {
+  try {
+    await ElMessageBox.confirm(
+      "确定推送所有商户的 Logo 和应用名称到 Web 端吗？\n\n每个商户将使用自己的 Logo 和应用名称。",
+      "批量推送Logo",
+      { confirmButtonText: "全部推送", cancelButtonText: "取消", type: "warning" }
+    )
+  } catch {
+    return
+  }
+  pushLogoLoading.value = true
+  ElMessage.info("正在批量推送Logo，请稍候...")
+  try {
+    const res = await pushWebLogoApi({ broadcast: true, use_own_logo: true })
+    ElMessage.success(`推送完成：成功 ${res.data.success}，失败 ${res.data.failed}，共 ${res.data.total}`)
+  } catch (err: any) {
+    ElMessage.error(err?.message || "批量推送失败")
+  } finally {
+    pushLogoLoading.value = false
   }
 }
 
@@ -995,6 +1052,9 @@ async function handlePush() {
           <el-button type="primary" plain style="margin-left: 8px;" @click="openBatchSensitiveDialog">
             批量修改敏感词
           </el-button>
+          <el-button type="primary" plain style="margin-left: 8px;" :loading="pushLogoLoading" @click="handleBatchPushLogo">
+            批量推送Logo
+          </el-button>
         </div>
         <div>
           <el-button type="primary" :icon="Refresh" circle @click="refreshList" />
@@ -1108,6 +1168,7 @@ async function handlePush() {
                       <el-dropdown-item @click="handleChangeGostPort(row)" :disabled="changeGostPortLoading">更换隧道端口</el-dropdown-item>
                       <el-dropdown-item @click="$router.push({ name: 'MerchantEdit', params: { id: row.id }, query: { data: JSON.stringify(row) } })">编辑</el-dropdown-item>
                       <el-dropdown-item @click="handleQuickBuild(row)">一键打包</el-dropdown-item>
+                      <el-dropdown-item :disabled="pushLogoLoading" @click="handlePushLogo(row)">推送Logo到Web</el-dropdown-item>
                       <el-dropdown-item :disabled="exportDbLoading" @click="handleExportDatabase(row)">导出数据库</el-dropdown-item>
                       <el-dropdown-item divided class="danger-item" :disabled="clearDataLoading" @click="handleClearData(row)">清除数据</el-dropdown-item>
                       <el-dropdown-item class="danger-item" :disabled="changeIpLoading" @click="handleChangeIP(row)">更换IP</el-dropdown-item>
@@ -1172,19 +1233,47 @@ async function handlePush() {
     </el-dialog>
 
     <!-- 隧道连接检测弹窗 -->
-    <el-dialog v-model="tunnelDialogVisible" :title="tunnelTarget.title" width="600px">
+    <el-dialog v-model="tunnelDialogVisible" :title="tunnelTarget.title" width="960px">
       <el-table :data="tunnelResults" v-loading="tunnelLoading" border style="width: 100%">
-        <el-table-column prop="server_name" label="系统服务器" min-width="180" />
-        <el-table-column prop="server_ip" label="服务器IP" min-width="160" />
-        <el-table-column label="结果" width="120">
+        <el-table-column prop="server_name" label="系统服务器" min-width="130" />
+        <el-table-column prop="server_ip" label="IP" min-width="110" />
+        <el-table-column label="端口探测" width="85" align="center">
           <template #default="{ row }">
-            <el-tag :type="row.success ? 'success' : 'danger'" effect="dark">
+            <el-tag :type="row.success ? 'success' : 'danger'" size="small" effect="dark">
               {{ row.success ? '连通' : '失败' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="message" label="详情" min-width="180" show-overflow-tooltip />
+        <el-table-column label="HTTP隧道" width="85" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.e2e_success ? 'success' : 'danger'" size="small" effect="dark">
+              {{ row.e2e_success ? '正常' : '异常' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="MinIO隧道" width="85" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.minio_e2e_success ? 'success' : 'danger'" size="small" effect="dark">
+              {{ row.minio_e2e_success ? '正常' : '异常' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="详情" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <div>
+              <span :style="{ color: row.e2e_success ? '' : 'var(--el-color-danger)' }">HTTP: {{ row.e2e_message }}</span>
+            </div>
+            <div>
+              <span :style="{ color: row.minio_e2e_success ? '' : 'var(--el-color-danger)' }">MinIO: {{ row.minio_e2e_message }}</span>
+            </div>
+          </template>
+        </el-table-column>
       </el-table>
+      <div v-if="tunnelResults.length > 0 && tunnelResults.some(r => r.success && (!r.e2e_success || !r.minio_e2e_success))" class="tunnel-tip">
+        <el-alert type="warning" :closable="false" show-icon>
+          <template #title>端口连通但隧道握手异常，可能原因：TLS证书不匹配、GOST未启动、relay配置错误、或MinIO节点不可达</template>
+        </el-alert>
+      </div>
       <template #footer>
         <el-button @click="tunnelDialogVisible = false">关闭</el-button>
       </template>
@@ -1502,6 +1591,10 @@ async function handlePush() {
 </template>
 
 <style lang="scss" scoped>
+.tunnel-tip {
+  margin-top: 12px;
+}
+
 .stats-row {
   margin-bottom: 20px;
 }

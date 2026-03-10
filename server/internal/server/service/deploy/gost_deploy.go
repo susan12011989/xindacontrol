@@ -545,9 +545,10 @@ func InstallGostToExistingServer(req *model.InstallGostReq, progressCallback fun
 
 	// 配置商户本地转发规则（relay+tls 监听 → 本地业务端口）
 	progressCallback("配置商户本地转发规则...")
-	progressCallback(fmt.Sprintf("  10010(TCP) → 127.0.0.1:10000"))
-	progressCallback(fmt.Sprintf("  10011(WS)  → 127.0.0.1:10001"))
-	progressCallback(fmt.Sprintf("  10012(HTTP) → 127.0.0.1:10002"))
+	progressCallback(fmt.Sprintf("  10010(TCP)  → 127.0.0.1:%d (WuKongIM TCP)", gostapi.MerchantAppPortTCP))
+	progressCallback(fmt.Sprintf("  10011(WS)   → 127.0.0.1:%d (WuKongIM WS)", gostapi.MerchantAppPortWS))
+	progressCallback(fmt.Sprintf("  10012(HTTP)  → 127.0.0.1:%d (tsdd-server)", gostapi.MerchantAppPortHTTP))
+	progressCallback(fmt.Sprintf("  10014(WSS)  → 127.0.0.1:%d (WuKongIM WS)", gostapi.MerchantWSSProxyAppPort))
 
 	err = gostapi.CreateMerchantLocalForwards(host)
 	if err != nil {
@@ -555,6 +556,26 @@ func InstallGostToExistingServer(req *model.InstallGostReq, progressCallback fun
 		progressCallback("请稍后手动配置或重试安装")
 	} else {
 		progressCallback("商户本地转发配置成功")
+	}
+
+	// 配置 PC 直连端口（普通 TCP 转发，非 relay）
+	progressCallback("配置 PC 直连端口...")
+	progressCallback(fmt.Sprintf("  %d(TCP)  → 127.0.0.1:%d (PC 直连 WuKongIM)", gostapi.MerchantDirectPortTCP, gostapi.MerchantAppPortTCP))
+	progressCallback(fmt.Sprintf("  %d(HTTP) → 127.0.0.1:%d (PC 直连 tsdd-server)", gostapi.MerchantDirectPortHTTP, gostapi.MerchantAppPortHTTP))
+
+	if pcErr := gostapi.CreateMerchantPCDirectForwards(host); pcErr != nil {
+		progressCallback(fmt.Sprintf("警告: 配置 PC 直连端口失败: %s", pcErr))
+	} else {
+		progressCallback("PC 直连端口配置成功")
+	}
+
+	// 部署 nginx WSS 代理容器（用于 WSS → WuKongIM WS 路径转换）
+	progressCallback("部署 nginx WSS 代理容器...")
+	if wsErr := deployNginxWSSProxy(host, username, password, privateKey, port); wsErr != nil {
+		progressCallback(fmt.Sprintf("警告: nginx WSS 代理部署失败: %s", wsErr))
+		progressCallback("  手机 WSS 连接可能不可用，请手动部署")
+	} else {
+		progressCallback("nginx WSS 代理部署成功")
 	}
 
 	// 如果是已注册的系统服务器，自动部署 TLS 证书
@@ -566,8 +587,127 @@ func InstallGostToExistingServer(req *model.InstallGostReq, progressCallback fun
 	}
 
 	progressCallback(fmt.Sprintf("✓ GOST 安装完成! API: http://%s:%d", host, DefaultGostAPIPort))
-	progressCallback("  监听端口: 10010(TCP), 10011(WS), 10012(HTTP) - relay+tls")
-	progressCallback("  转发到: 127.0.0.1:10000, 10001, 10002")
+	progressCallback("  隧道端口: 10010(TCP→5002), 10011(WS→5200), 10012(HTTP→5003), 10014(WSS→5210) - relay+tls")
+	progressCallback("  直连端口: 10000(TCP→5002), 10002(HTTP→5003) - PC 直连")
+
+	return nil
+}
+
+// deployNginxWSSProxy 在商户服务器上部署 nginx WSS 代理容器（tsdd-ws-proxy）
+// 监听 5210 端口，将 WSS 请求（/ 和 /im-ws）代理到 WuKongIM:5200
+func deployNginxWSSProxy(host, username, password, privateKey string, port int) error {
+	// 配置 SSH 认证
+	var authMethods []ssh.AuthMethod
+	if password != "" {
+		authMethods = append(authMethods, ssh.Password(password))
+	}
+	if privateKey != "" {
+		signer, err := ssh.ParsePrivateKey([]byte(privateKey))
+		if err != nil {
+			return fmt.Errorf("解析私钥失败: %w", err)
+		}
+		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	}
+	if len(authMethods) == 0 {
+		return fmt.Errorf("必须提供密码或私钥")
+	}
+
+	config := &ssh.ClientConfig{
+		User:            username,
+		Auth:            authMethods,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         30 * time.Second,
+	}
+
+	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, port), config)
+	if err != nil {
+		return fmt.Errorf("SSH 连接失败: %w", err)
+	}
+	defer client.Close()
+
+	return deployNginxWSSProxyViaSSH(client)
+}
+
+// deployNginxWSSProxyViaSSH 通过 SSH 客户端部署 nginx WSS 代理容器
+func deployNginxWSSProxyViaSSH(client *ssh.Client) error {
+	// nginx 配置：将 / 和 /im-ws 都代理到 WuKongIM WebSocket 端口
+	// 支持新旧 App 两种 webSocketPath
+	deployScript := `#!/bin/bash
+set -e
+
+if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+
+# 检查 Docker 是否安装
+if ! command -v docker &> /dev/null; then
+    echo "Docker 未安装，跳过 nginx WSS 代理部署"
+    exit 1
+fi
+
+echo ">>> 创建 nginx WSS 代理配置..."
+$SUDO mkdir -p /opt/tsdd/nginx-ws-proxy
+
+$SUDO tee /opt/tsdd/nginx-ws-proxy/default.conf > /dev/null << 'NGINXEOF'
+server {
+    listen 5210;
+
+    # 新 App: webSocketPath = /
+    location = / {
+        proxy_pass http://tsdd-wukongim:5200/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+    }
+
+    # 旧 App: webSocketPath = /im-ws
+    location /im-ws {
+        proxy_pass http://tsdd-wukongim:5200/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+    }
+}
+NGINXEOF
+
+echo ">>> 部署 nginx WSS 代理容器..."
+# 停止并移除旧容器（如果存在）
+$SUDO docker rm -f tsdd-ws-proxy 2>/dev/null || true
+
+# 获取 tsdd-wukongim 所在的 Docker 网络
+NETWORK=$($SUDO docker inspect tsdd-wukongim --format '{{range $key, $val := .NetworkSettings.Networks}}{{$key}}{{end}}' 2>/dev/null | head -1)
+if [ -z "$NETWORK" ]; then
+    NETWORK="tsdd_default"
+fi
+
+# 启动 nginx 容器
+$SUDO docker run -d \
+    --name tsdd-ws-proxy \
+    --restart always \
+    --network "$NETWORK" \
+    -p 5210:5210 \
+    -v /opt/tsdd/nginx-ws-proxy/default.conf:/etc/nginx/conf.d/default.conf:ro \
+    nginx:alpine
+
+echo ">>> nginx WSS 代理部署完成! 监听端口 5210"
+`
+
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("创建 SSH 会话失败: %w", err)
+	}
+	defer session.Close()
+
+	output, err := session.CombinedOutput(deployScript)
+	if err != nil {
+		return fmt.Errorf("部署失败: %s, output: %s", err, string(output))
+	}
 
 	return nil
 }

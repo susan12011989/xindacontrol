@@ -26,14 +26,15 @@ require (
 require github.com/creack/pty v1.1.24
 
 require (
+	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.54.0
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.66.4
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/billing v1.0.1095
 	github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.0.1095
 	github.com/tencentyun/cos-go-sdk-v5 v0.7.72
+	golang.org/x/image v0.36.0
 )
 
 require (
-	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.54.0 // indirect
 	github.com/clbanning/mxj v1.8.4 // indirect
 	github.com/google/go-querystring v1.0.0 // indirect
 	github.com/mitchellh/mapstructure v1.4.3 // indirect
@@ -128,7 +129,7 @@ require (
 	golang.org/x/arch v0.18.0 // indirect
 	golang.org/x/net v0.41.0 // indirect
 	golang.org/x/sys v0.33.0 // indirect
-	golang.org/x/text v0.26.0 // indirect
+	golang.org/x/text v0.34.0 // indirect
 	golang.org/x/time v0.10.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20240711142825-46eb208f015d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20240701130421-f6361c86f094 // indirect
@@ -136,7 +137,7 @@ require (
 	google.golang.org/protobuf v1.36.6 // indirect
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gopkg.in/yaml.v3 v3.0.1
 	xorm.io/builder v0.3.11-0.20220531020008-1bd24a7dc978 // indirect
 )
 

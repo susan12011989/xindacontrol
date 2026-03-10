@@ -24,6 +24,9 @@ func ListGroups(resourceType string) ([]model.ResourceGroupResp, error) {
 		case entity.ResourceGroupTypeIpEmbedTarget:
 			cnt, _ := dbs.DBAdmin.Where("group_id = ?", g.Id).Count(&entity.IpEmbedTargets{})
 			count = int(cnt)
+		case entity.ResourceGroupTypeServer:
+			cnt, _ := dbs.DBAdmin.Where("group_id = ?", g.Id).Count(&entity.Servers{})
+			count = int(cnt)
 		}
 
 		result[i] = model.ResourceGroupResp{
@@ -69,6 +72,9 @@ func DeleteGroup(id int, resourceType string) error {
 	switch resourceType {
 	case entity.ResourceGroupTypeIpEmbedTarget:
 		_, _ = dbs.DBAdmin.Table("ip_embed_targets").Where("group_id = ?", id).
+			Update(map[string]interface{}{"group_id": 0})
+	case entity.ResourceGroupTypeServer:
+		_, _ = dbs.DBAdmin.Table("servers").Where("group_id = ?", id).
 			Update(map[string]interface{}{"group_id": 0})
 	}
 	_, err := dbs.DBAdmin.ID(id).Delete(&entity.ResourceGroups{})

@@ -126,6 +126,16 @@ export function exportMerchantDatabaseApi(merchant_no: string) {
   })
 }
 
+/** 推送 Logo + 应用名称到商户 Web */
+export function pushWebLogoApi(data: Types.PushLogoReq) {
+  return request<Types.PushLogoResponseData>({
+    url: "merchant/adminm_config/push_logo",
+    method: "post",
+    data,
+    timeout: 120000
+  })
+}
+
 /** 清除商户数据（需要密码或2FA验证） */
 export function clearMerchantDataApi(merchant_no: string, password?: string, totp_code?: string) {
   return request<Types.AdminmSaveResponseData>({

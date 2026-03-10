@@ -15,6 +15,7 @@ export interface QueryServersReq extends Pagination {
   status?: number
   server_type?: number // 1-商户服务器 2-系统服务器
   merchant_id?: number // 按商户ID筛选
+  group_id?: number    // 按分组ID筛选
 }
 
 // 创建服务器请求
@@ -29,6 +30,7 @@ export interface CreateServerReq {
   private_key?: string
   server_type?: number // 1-商户服务器 2-系统服务器
   forward_type?: number // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
+  group_id?: number     // 分组ID
   description?: string
 }
 
@@ -44,6 +46,7 @@ export interface UpdateServerReq {
   private_key?: string
   server_type?: number // 1-商户服务器 2-系统服务器
   forward_type?: number // 转发类型：1-加密(relay+tls) 2-直连(tcp)，仅系统服务器有效
+  group_id?: number     // 分组ID
   status?: number
   description?: string
 }
@@ -66,6 +69,8 @@ export interface ServerResp {
   merchant_id: number // 关联的商户ID
   merchant_name: string // 关联的商户名称
   merchant_no: string // 商户号
+  group_id: number // 分组ID
+  group_name: string // 分组名称
   created_at: string
   updated_at: string
 }

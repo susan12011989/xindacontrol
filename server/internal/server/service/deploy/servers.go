@@ -37,6 +37,9 @@ func QueryServers(req model.QueryServersReq) (model.QueryServersResponse, error)
 	if req.MerchantId != nil && *req.MerchantId > 0 {
 		session = session.Where("merchant_id = ?", *req.MerchantId)
 	}
+	if req.GroupId != nil {
+		session = session.Where("group_id = ?", *req.GroupId)
+	}
 
 	offset := (req.Page - 1) * req.Size
 	var servers []entity.Servers
@@ -70,6 +73,23 @@ func QueryServers(req model.QueryServersReq) (model.QueryServersResponse, error)
 		}
 	}
 
+	// 收集所有分组ID，批量查询分组信息
+	groupIds := make([]int, 0)
+	for _, s := range servers {
+		if s.GroupId > 0 {
+			groupIds = append(groupIds, s.GroupId)
+		}
+	}
+	groupMap := make(map[int]string)
+	if len(groupIds) > 0 {
+		var groups []entity.ResourceGroups
+		if err := dbs.DBAdmin.In("id", groupIds).Find(&groups); err == nil {
+			for _, g := range groups {
+				groupMap[g.Id] = g.Name
+			}
+		}
+	}
+
 	for _, s := range servers {
 		item := model.ServerResp{
 			Id:          s.Id,
@@ -85,6 +105,7 @@ func QueryServers(req model.QueryServersReq) (model.QueryServersResponse, error)
 			TlsEnabled:  s.TlsEnabled,
 			Description: s.Description,
 			MerchantId:  s.MerchantId,
+			GroupId:     s.GroupId,
 			CreatedAt:   s.CreatedAt.Format("2006-01-02 15:04:05"),
 			UpdatedAt:   s.UpdatedAt.Format("2006-01-02 15:04:05"),
 		}
@@ -95,6 +116,10 @@ func QueryServers(req model.QueryServersReq) (model.QueryServersResponse, error)
 		if merchant, ok := merchantMap[s.MerchantId]; ok {
 			item.MerchantName = merchant.Name
 			item.MerchantNo = merchant.No
+		}
+		// 填充分组信息
+		if name, ok := groupMap[s.GroupId]; ok {
+			item.GroupName = name
 		}
 		resp.List = append(resp.List, item)
 	}
@@ -130,6 +155,7 @@ func GetServerDetail(id int) (model.ServerResp, error) {
 		TlsEnabled:  server.TlsEnabled,
 		Description: server.Description,
 		MerchantId:  server.MerchantId,
+		GroupId:     server.GroupId,
 		CreatedAt:   server.CreatedAt.Format("2006-01-02 15:04:05"),
 		UpdatedAt:   server.UpdatedAt.Format("2006-01-02 15:04:05"),
 	}
@@ -143,6 +169,14 @@ func GetServerDetail(id int) (model.ServerResp, error) {
 		if has, err := dbs.DBAdmin.Where("id = ?", server.MerchantId).Get(&merchant); err == nil && has {
 			resp.MerchantName = merchant.Name
 			resp.MerchantNo = merchant.No
+		}
+	}
+
+	// 获取分组信息
+	if server.GroupId > 0 {
+		var group entity.ResourceGroups
+		if has, err := dbs.DBAdmin.Where("id = ?", server.GroupId).Get(&group); err == nil && has {
+			resp.GroupName = group.Name
 		}
 	}
 
@@ -182,6 +216,7 @@ func CreateServer(req model.CreateServerReq) (int, error) {
 		ServerType:  serverType,
 		ForwardType: forwardType,
 		MerchantId:  req.MerchantId,
+		GroupId:     req.GroupId,
 		Status:      1,
 		Description: req.Description,
 		CreatedAt:   now,
@@ -240,15 +275,15 @@ func enqueueGostServicesForMerchants(serverHost string, forwardType int) {
 		var err error
 		if forwardType == entity.ForwardTypeDirect {
 			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(serverHost, m.Port, m.ServerIP)
+				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(serverHost, m.Port, m.ServerIP, m.TunnelIP)
 			} else {
-				err = gostapi.EnqueueCreateMerchantDirectForwards(serverHost, m.Port, m.ServerIP)
+				err = gostapi.EnqueueCreateMerchantDirectForwards(serverHost, m.Port, m.ServerIP, m.TunnelIP)
 			}
 		} else {
 			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantForwardsWithTls(serverHost, m.Port, m.ServerIP)
+				err = gostapi.EnqueueCreateMerchantForwardsWithTls(serverHost, m.Port, m.ServerIP, m.TunnelIP)
 			} else {
-				err = gostapi.EnqueueCreateMerchantForwards(serverHost, m.Port, m.ServerIP)
+				err = gostapi.EnqueueCreateMerchantForwards(serverHost, m.Port, m.ServerIP, m.TunnelIP)
 			}
 		}
 		if err != nil {
@@ -309,6 +344,9 @@ func UpdateServer(id int, req model.UpdateServerReq) error {
 	}
 	if req.MerchantId != nil {
 		updates["merchant_id"] = *req.MerchantId
+	}
+	if req.GroupId != nil {
+		updates["group_id"] = *req.GroupId
 	}
 	if req.Description != "" {
 		updates["description"] = req.Description

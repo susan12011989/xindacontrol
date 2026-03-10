@@ -282,14 +282,15 @@ func CreateMerchant(req *model.CreateOrEditMerchantReq) (int, error) {
 	}
 
 	// 为系统服务器创建 Gost 服务（通过任务队列，支持重试）
-	enqueueGostServicesForServers(req.Port, req.ServerIP)
+	enqueueGostServicesForServers(req.Port, req.ServerIP, merchant.TunnelIP)
 
 	return merchant.Id, nil
 }
 
 // enqueueGostServicesForServers 为所有系统服务器入队创建商户转发任务
 // 根据每个系统服务器的 forward_type 选择加密或直连转发
-func enqueueGostServicesForServers(listenPort int, forwardHost string) {
+// tunnelIP: 商户在系统服务器上分配的隧道 IP（多商户隔离）
+func enqueueGostServicesForServers(listenPort int, forwardHost string, tunnelIP string) {
 	var servers []entity.Servers
 	if err := dbs.DBAdmin.Where("server_type = ? AND status = 1", 2).Find(&servers); err != nil {
 		logx.Errorf("query selected servers err: %+v", err)
@@ -309,17 +310,17 @@ func enqueueGostServicesForServers(listenPort int, forwardHost string) {
 		if s.ForwardType == entity.ForwardTypeDirect {
 			// 直连转发：直接转发到商户业务程序 10000/10001/10002
 			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(s.Host, listenPort, forwardHost)
+				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(s.Host, listenPort, forwardHost, tunnelIP)
 			} else {
-				err = gostapi.EnqueueCreateMerchantDirectForwards(s.Host, listenPort, forwardHost)
+				err = gostapi.EnqueueCreateMerchantDirectForwards(s.Host, listenPort, forwardHost, tunnelIP)
 			}
 			directCount++
 		} else {
 			// 加密转发（默认）：通过 relay+tls 转发到商户 GOST 10010/10011/10012
 			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantForwardsWithTls(s.Host, listenPort, forwardHost)
+				err = gostapi.EnqueueCreateMerchantForwardsWithTls(s.Host, listenPort, forwardHost, tunnelIP)
 			} else {
-				err = gostapi.EnqueueCreateMerchantForwards(s.Host, listenPort, forwardHost)
+				err = gostapi.EnqueueCreateMerchantForwards(s.Host, listenPort, forwardHost, tunnelIP)
 			}
 			encryptedCount++
 		}
@@ -517,8 +518,30 @@ func onMerchantServerIPChanged(merchantId int, port int, newServerIP string) {
 		logx.Errorf("sync servers host failed for merchant %d: %+v", merchantId, err)
 	}
 
-	// 2) 更新所有系统服务器上的 GOST 转发配置（使用默认目标端口 10000/10001/10002）
-	updateGostServicesOnSystemServers(merchantId, port, newServerIP, 0)
+	// 2) 查询商户 tunnelIP 并更新所有系统服务器上的 GOST 转发配置
+	var merchant entity.Merchants
+	tunnelIP := ""
+	if has, err := dbs.DBAdmin.Where("id = ?", merchantId).Get(&merchant); err == nil && has {
+		tunnelIP = merchant.TunnelIP
+	}
+	updateGostServicesOnSystemServers(merchantId, port, newServerIP, tunnelIP, 0)
+}
+
+// RefreshGostForwards 手动刷新商户的 GOST 转发配置（用于修复转发异常）
+func RefreshGostForwards(merchantId int) error {
+	var m entity.Merchants
+	has, err := dbs.DBAdmin.Where("id = ?", merchantId).Get(&m)
+	if err != nil {
+		return fmt.Errorf("查询商户失败: %v", err)
+	}
+	if !has {
+		return fmt.Errorf("商户不存在: %d", merchantId)
+	}
+	if m.ServerIP == "" || m.Port <= 0 {
+		return fmt.Errorf("商户 server_ip 或 port 未配置")
+	}
+	onMerchantServerIPChanged(m.Id, m.Port, m.ServerIP)
+	return nil
 }
 
 // GetMerchantByID 通过ID获取商户信息

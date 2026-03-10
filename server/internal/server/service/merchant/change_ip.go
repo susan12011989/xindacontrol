@@ -343,7 +343,7 @@ func ChangeMerchantGostPort(merchantId int, newPort int) (model.ChangeGostPortRe
 	}
 
 	// 第三步：更新所有系统服务器上的 GOST 转发配置（监听端口=商户端口；转发目标改为新端口）
-	updateGostServicesOnSystemServers(m.Id, m.Port, m.ServerIP, newPort)
+	updateGostServicesOnSystemServers(m.Id, m.Port, m.ServerIP, m.TunnelIP, newPort)
 
 	resp = model.ChangeGostPortResp{
 		MerchantId: m.Id,

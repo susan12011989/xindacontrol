@@ -5,6 +5,8 @@ import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeM
 import { createServer, deleteServer, distributeFile, getServerList, getServerStatsBatch, testConnection, toggleServerStatus, updateServer, uploadToLocal, batchUpgradeTls, batchRollbackTls, getTlsStatus, verifyTlsStatus } from "@@/apis/deploy"
 import type { TlsServerResult, TlsStatusResp } from "@@/apis/deploy/type"
 import { getMerchantList } from "@@/apis/merchant"
+import { getResourceGroups, createResourceGroup, updateResourceGroup, deleteResourceGroup } from "@@/apis/ip_embed"
+import type { ResourceGroupItem } from "@@/apis/ip_embed/type"
 
 defineOptions({
   name: "DeployServers"
@@ -17,6 +19,18 @@ const serverType = ref(1) // 1-商户服务器 2-系统服务器
 const merchantOptions: { label: string; value: number }[] = reactive([])
 // 商户完整列表（编辑表单用）
 const merchantList = ref<MerchantResp[]>([])
+
+// 分组选项（VXE表单筛选用）
+const groupOptions: { label: string; value: number }[] = reactive([])
+// 分组完整列表（编辑表单+管理弹窗用）
+const groupList = ref<ResourceGroupItem[]>([])
+
+// 分组管理弹窗
+const groupDialogVisible = ref(false)
+const groupDialogLoading = ref(false)
+const newGroupName = ref("")
+const editingGroupId = ref<number | null>(null)
+const editingGroupName = ref("")
 
 // 加载商户列表
 async function loadMerchantList() {
@@ -34,6 +48,84 @@ async function loadMerchantList() {
   }
 }
 
+// 加载服务器分组列表
+async function loadGroupList() {
+  try {
+    const res = await getResourceGroups("server")
+    const list = Array.isArray(res.data) ? res.data : []
+    groupList.value = list
+    groupOptions.length = 0
+    groupOptions.push(...list.map((g: ResourceGroupItem) => ({
+      label: `${g.name} (${g.count})`,
+      value: g.id
+    })))
+  } catch (e) {
+    console.error("加载分组列表失败:", e)
+  }
+}
+
+// 分组管理操作
+async function handleCreateGroup() {
+  if (!newGroupName.value.trim()) return
+  groupDialogLoading.value = true
+  try {
+    await createResourceGroup({ name: newGroupName.value.trim(), sort_order: 0 }, "server")
+    newGroupName.value = ""
+    ElMessage.success("分组创建成功")
+    await loadGroupList()
+  } catch (e: any) {
+    ElMessage.error(e.message || "创建分组失败")
+  } finally {
+    groupDialogLoading.value = false
+  }
+}
+
+function startEditGroup(group: ResourceGroupItem) {
+  editingGroupId.value = group.id
+  editingGroupName.value = group.name
+}
+
+function cancelEditGroup() {
+  editingGroupId.value = null
+  editingGroupName.value = ""
+}
+
+async function handleUpdateGroup(id: number) {
+  if (!editingGroupName.value.trim()) return
+  groupDialogLoading.value = true
+  try {
+    await updateResourceGroup(id, { name: editingGroupName.value.trim(), sort_order: 0 })
+    editingGroupId.value = null
+    editingGroupName.value = ""
+    ElMessage.success("分组更新成功")
+    await loadGroupList()
+    crudStore.commitQuery()
+  } catch (e: any) {
+    ElMessage.error(e.message || "更新分组失败")
+  } finally {
+    groupDialogLoading.value = false
+  }
+}
+
+async function handleDeleteGroup(group: ResourceGroupItem) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除分组"${group.name}"吗？该分组下的 ${group.count} 个服务器将变为未分组。`,
+      "删除分组",
+      { type: "warning" }
+    )
+    groupDialogLoading.value = true
+    await deleteResourceGroup(group.id, "server")
+    ElMessage.success("分组删除成功")
+    await loadGroupList()
+    crudStore.commitQuery()
+  } catch (e: any) {
+    if (e !== "cancel") ElMessage.error(e.message || "删除分组失败")
+  } finally {
+    groupDialogLoading.value = false
+  }
+}
+
 // 根据服务器类型生成表格列
 function getColumns() {
   const baseColumns: Record<string, any>[] = [
@@ -43,8 +135,9 @@ function getColumns() {
     { field: "host", title: "主机地址", width: "140px" }
   ]
 
-  // 两种类型都显示商户名称
+  // 两种类型都显示商户名称和分组
   baseColumns.push({ title: "商户", width: "140px", slots: { default: "merchant-slot" } })
+  baseColumns.push({ title: "分组", width: "120px", slots: { default: "group-slot" } })
 
   // 系统服务器显示辅助IP和TLS状态，商户服务器显示SSH端口、用户名
   if (serverType.value === 2) {
@@ -109,6 +202,14 @@ const xGridOpt: VxeGridProps = reactive({
         }
       },
       {
+        field: "group_id",
+        itemRender: {
+          name: "$select",
+          options: groupOptions,
+          props: { placeholder: "选择分组", clearable: true }
+        }
+      },
+      {
         itemRender: {
           name: "$buttons",
           children: [
@@ -134,6 +235,7 @@ const xGridOpt: VxeGridProps = reactive({
             name: form.name || "",
             host: form.host || "",
             merchant_id: form.merchant_id || undefined,
+            group_id: form.group_id || undefined,
             size: page.pageSize,
             page: page.currentPage
           }
@@ -185,6 +287,7 @@ const xFormOpt: VxeFormProps = reactive({
     server_type: 1,
     forward_type: 1,
     merchant_id: 0,
+    group_id: 0,
     name: "",
     host: "",
     auxiliary_ip: "",
@@ -223,6 +326,11 @@ const xFormOpt: VxeFormProps = reactive({
       field: "merchant_id",
       title: "所属商户",
       slots: { default: "merchant-form-slot" }
+    },
+    {
+      field: "group_id",
+      title: "分组",
+      slots: { default: "group-form-slot" }
     },
     {
       field: "name",
@@ -551,6 +659,7 @@ const crudStore = reactive({
         server_type: row.server_type,
         forward_type: row.forward_type || 1,
         merchant_id: row.merchant_id || 0,
+        group_id: row.group_id || 0,
         name: row.name,
         host: row.host,
         auxiliary_ip: row.auxiliary_ip || "",
@@ -611,6 +720,7 @@ const crudStore = reactive({
         server_type: Number(xFormOpt.data.server_type),
         forward_type: Number(xFormOpt.data.forward_type),
         merchant_id: Number(xFormOpt.data.merchant_id) || 0,
+        group_id: Number(xFormOpt.data.group_id) || 0,
         port: Number(xFormOpt.data.port),
         auth_type: Number(xFormOpt.data.auth_type)
       }
@@ -682,9 +792,10 @@ const crudStore = reactive({
   }
 })
 
-// 初始化加载商户列表
+// 初始化加载商户列表和分组列表
 onMounted(() => {
   loadMerchantList()
+  loadGroupList()
 })
 </script>
 
@@ -717,6 +828,9 @@ onMounted(() => {
           <el-button v-if="serverType === 2" type="success" @click="openTlsDialog()">
             TLS 管理
           </el-button>
+          <el-button type="info" @click="groupDialogVisible = true">
+            管理分组
+          </el-button>
         </div>
       </div>
 
@@ -735,6 +849,12 @@ onMounted(() => {
           <!-- 商户列 -->
           <template #merchant-slot="{ row }">
             <span v-if="row.merchant_name" class="text-primary">{{ row.merchant_name }}</span>
+            <span v-else class="text-gray-400">-</span>
+          </template>
+
+          <!-- 分组列 -->
+          <template #group-slot="{ row }">
+            <el-tag v-if="row.group_name" size="small">{{ row.group_name }}</el-tag>
             <span v-else class="text-gray-400">-</span>
           </template>
 
@@ -804,6 +924,22 @@ onMounted(() => {
               :key="m.id"
               :label="`${m.name} (${m.no})`"
               :value="m.id"
+            />
+          </el-select>
+        </template>
+        <template #group-form-slot>
+          <el-select
+            v-model="xFormOpt.data.group_id"
+            placeholder="不选择分组"
+            style="width: 100%"
+            clearable
+            @clear="xFormOpt.data.group_id = 0"
+          >
+            <el-option
+              v-for="g in groupList"
+              :key="g.id"
+              :label="g.name"
+              :value="g.id"
             />
           </el-select>
         </template>
@@ -993,6 +1129,72 @@ onMounted(() => {
         </div>
       </template>
     </el-dialog>
+
+    <!-- 分组管理弹窗 -->
+    <el-dialog
+      v-model="groupDialogVisible"
+      title="服务器分组管理"
+      width="500px"
+      :close-on-click-modal="false"
+    >
+      <div v-loading="groupDialogLoading">
+        <!-- 新建分组 -->
+        <div class="group-add-row">
+          <el-input
+            v-model="newGroupName"
+            placeholder="输入新分组名称"
+            style="flex: 1"
+            @keyup.enter="handleCreateGroup"
+          />
+          <el-button type="primary" :disabled="!newGroupName.trim()" @click="handleCreateGroup">
+            新建
+          </el-button>
+        </div>
+
+        <!-- 分组列表 -->
+        <el-table :data="groupList" max-height="400" style="margin-top: 16px">
+          <el-table-column label="分组名称" min-width="150">
+            <template #default="{ row }">
+              <template v-if="editingGroupId === row.id">
+                <el-input
+                  v-model="editingGroupName"
+                  size="small"
+                  @keyup.enter="handleUpdateGroup(row.id)"
+                />
+              </template>
+              <span v-else>{{ row.name }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="count" label="服务器数" width="90" align="center" />
+          <el-table-column label="操作" width="160" align="center">
+            <template #default="{ row }">
+              <template v-if="editingGroupId === row.id">
+                <el-button link type="primary" size="small" @click="handleUpdateGroup(row.id)">
+                  保存
+                </el-button>
+                <el-button link size="small" @click="cancelEditGroup">
+                  取消
+                </el-button>
+              </template>
+              <template v-else>
+                <el-button link type="primary" size="small" @click="startEditGroup(row)">
+                  重命名
+                </el-button>
+                <el-button link type="danger" size="small" @click="handleDeleteGroup(row)">
+                  删除
+                </el-button>
+              </template>
+            </template>
+          </el-table-column>
+        </el-table>
+
+        <el-empty v-if="groupList.length === 0" description="暂无分组" :image-size="60" />
+      </div>
+
+      <template #footer>
+        <el-button @click="groupDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -1075,5 +1277,11 @@ onMounted(() => {
   :deep(.el-descriptions) {
     margin-bottom: 0;
   }
+}
+
+.group-add-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
 }
 </style>

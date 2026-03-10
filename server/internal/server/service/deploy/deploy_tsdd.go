@@ -10,6 +10,7 @@ import (
 	"server/pkg/consts"
 	"server/pkg/dbs"
 	"server/pkg/entity"
+	"server/pkg/gostapi"
 	"strings"
 	"time"
 
@@ -902,10 +903,32 @@ updateServerRecord:
 		}
 	}
 
-	// 同步更新商户的 server_ip
+	// 同步更新商户的 server_ip，并刷新系统服务器 GOST 转发
 	if req.MerchantId > 0 && publicIP != "" {
 		if _, err := dbs.DBAdmin.Where("id = ?", req.MerchantId).Cols("server_ip").Update(&entity.Merchants{ServerIP: publicIP}); err != nil {
 			logx.Errorf("更新商户 server_ip 失败: %v", err)
+		} else {
+			// 同步 servers.host
+			dbs.DBAdmin.Table("servers").
+				Where("server_type = ? AND merchant_id = ?", 1, req.MerchantId).
+				Update(map[string]any{"host": publicIP, "updated_at": time.Now()})
+
+			// 触发 GOST 转发更新
+			var m entity.Merchants
+			if has, _ := dbs.DBAdmin.Where("id = ?", req.MerchantId).Get(&m); has && m.Port > 0 {
+				var sysServers []entity.Servers
+				if err := dbs.DBAdmin.Where("server_type = ?", 2).Find(&sysServers); err == nil {
+					for _, s := range sysServers {
+						tlsEnabled := s.TlsEnabled == 1
+						if s.ForwardType == entity.ForwardTypeDirect {
+							gostapi.EnqueueUpdateMerchantDirectForwards(s.Host, m.Port, publicIP)
+						} else {
+							gostapi.EnqueueUpdateMerchantForwards(s.Host, m.Port, publicIP, tlsEnabled)
+						}
+					}
+					logx.Infof("AMI 部署完成，已触发 GOST 转发更新: merchant=%d, ip=%s, port=%d, servers=%d", m.Id, publicIP, m.Port, len(sysServers))
+				}
+			}
 		}
 	}
 

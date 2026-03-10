@@ -7,6 +7,8 @@ export interface SystemIPItem {
   ip: string
   auxiliary_ip: string // 辅助IP
   status: number
+  merchant_id: number   // 关联商户ID
+  merchant_name: string // 商户名称
 }
 
 /** 获取系统IP响应 */

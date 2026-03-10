@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"server/internal/dbhelper"
 	"server/internal/server/middleware"
 	"server/internal/server/service/auth"
 	merchantService "server/internal/server/service/merchant"
+	"server/pkg/consts"
 	"server/pkg/entity"
 	"server/pkg/result"
 	"strconv"
@@ -376,6 +378,116 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 		} else {
 			logx.Infof("商户数据库导出完成: merchant=%s, size=%d", req.MerchantNo, fileSize)
 		}
+	})
+
+	// 推送 Logo + 应用名称到商户 Web
+	type pushLogoReq struct {
+		MerchantNo  string   `json:"merchant_no"`
+		MerchantNos []string `json:"merchant_nos"`
+		Broadcast   bool     `json:"broadcast"`
+		UseOwnLogo  bool     `json:"use_own_logo"` // true: 使用每个商户自己的 logo_url
+	}
+	group.POST("push_logo", func(c *gin.Context) {
+		var req pushLogoReq
+		if err := c.ShouldBindJSON(&req); err != nil {
+			result.GParamErr(c, err)
+			return
+		}
+
+		// 目标判断：三选一
+		targetCount := 0
+		if req.Broadcast {
+			targetCount++
+		}
+		if req.MerchantNo != "" {
+			targetCount++
+		}
+		if len(req.MerchantNos) > 0 {
+			targetCount++
+		}
+		if targetCount != 1 {
+			result.GResult(c, 601, nil, "必须且只能指定一种目标：broadcast 或 merchant_no 或 merchant_nos")
+			return
+		}
+
+		// 解析 logo 路径的辅助函数
+		resolveLogoPath := func(logoUrl string) string {
+			if logoUrl == "" {
+				return ""
+			}
+			rel := strings.TrimPrefix(logoUrl, "/assets/")
+			return filepath.Join(consts.AssetsDir, rel)
+		}
+
+		// 获取应用名称的辅助函数
+		resolveAppName := func(appName, name string) string {
+			if appName != "" {
+				return appName
+			}
+			return name
+		}
+
+		// 单个推送
+		if req.MerchantNo != "" {
+			m, err := dbhelper.GetMerchantByNo(req.MerchantNo)
+			if err != nil {
+				result.GErr(c, err)
+				return
+			}
+			logoPath := resolveLogoPath(m.LogoUrl)
+			appName := resolveAppName(m.AppName, m.Name)
+			if err := merchantService.PushWebLogo(m.No, logoPath, appName); err != nil {
+				result.GResult(c, 500, nil, err.Error())
+				return
+			}
+			result.GOK(c, gin.H{"pushed": 1})
+			return
+		}
+
+		// 批量/广播
+		var merchants []entity.Merchants
+		if req.Broadcast {
+			var err error
+			merchants, err = dbhelper.FindAllMerchants()
+			if err != nil {
+				result.GErr(c, err)
+				return
+			}
+		} else {
+			for _, no := range req.MerchantNos {
+				no = strings.TrimSpace(no)
+				if no == "" {
+					continue
+				}
+				m, err := dbhelper.GetMerchantByNo(no)
+				if err != nil {
+					logx.Errorf("获取商户失败: no=%s, err=%v", no, err)
+					continue
+				}
+				merchants = append(merchants, *m)
+			}
+		}
+
+		successCount := 0
+		failCount := 0
+		for _, m := range merchants {
+			logoPath := ""
+			if req.UseOwnLogo {
+				logoPath = resolveLogoPath(m.LogoUrl)
+			}
+			appName := resolveAppName(m.AppName, m.Name)
+			if err := merchantService.PushWebLogo(m.No, logoPath, appName); err != nil {
+				logx.Errorf("推送Logo失败: merchant=%s, err=%v", m.No, err)
+				failCount++
+			} else {
+				successCount++
+			}
+		}
+		result.GOK(c, gin.H{
+			"total":   len(merchants),
+			"success": successCount,
+			"failed":  failCount,
+		})
 	})
 
 	// 清除商户数据（需要密码或2FA验证）

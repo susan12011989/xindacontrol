@@ -130,7 +130,7 @@ func Serve(ctx context.Context) {
 	spa := static.NewSPAHandler(fsys, "index.html")
 
 	// 前端 publicPath 前缀（对应 VITE_PUBLIC_PATH）
-	const spaPrefix = "/jdt-admin"
+	const spaPrefix = "/hxdadmin"
 
 	// 上传资源的静态文件服务（Logo等）- 支持环境变量 ASSETS_DIR 覆盖
 	ge.Static("/assets", consts.AssetsDir)

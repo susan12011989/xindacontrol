@@ -91,8 +91,13 @@ export interface TunnelCheckReq {
 export interface TunnelCheckItem {
   server_name: string
   server_ip: string
-  success: boolean
-  message: string
+  success: boolean // 直连探测结果
+  message: string // 直连探测详情
+  e2e_success: boolean // 端到端探测-HTTP（验证TLS握手+完整链路）
+  e2e_message: string // 端到端探测-HTTP详情
+  minio_e2e_success: boolean // 端到端探测-MinIO
+  minio_e2e_message: string // 端到端探测-MinIO详情
+  forward_type: string // encrypted / direct
 }
 
 export type TunnelCheckResponseData = ApiResponseData<TunnelCheckItem[]>
@@ -177,3 +182,18 @@ export interface TunnelStats {
 }
 
 export type TunnelStatsResponseData = ApiResponseData<TunnelStats>
+
+// ========== 推送 Logo 到 Web ==========
+export interface PushLogoReq {
+  merchant_no?: string
+  merchant_nos?: string[]
+  broadcast?: boolean
+  use_own_logo?: boolean // true: 批量时使用每个商户自己的 logo
+}
+
+export type PushLogoResponseData = ApiResponseData<{
+  total?: number
+  success?: number
+  failed?: number
+  pushed?: number
+}>

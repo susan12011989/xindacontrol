@@ -98,10 +98,15 @@ type TunnelCheckReq struct {
 
 // TunnelCheckItem 单台系统服务器的检测结果
 type TunnelCheckItem struct {
-	ServerName string `json:"server_name"`
-	ServerIP   string `json:"server_ip"`
-	Success    bool   `json:"success"`
-	Message    string `json:"message"`
+	ServerName       string `json:"server_name"`
+	ServerIP         string `json:"server_ip"`
+	Success          bool   `json:"success"`           // 直连探测（系统服务器→商户GOST端口）
+	Message          string `json:"message"`            // 直连探测详情
+	E2eSuccess       bool   `json:"e2e_success"`        // 端到端探测-HTTP（经隧道到商户业务端口）
+	E2eMessage       string `json:"e2e_message"`        // 端到端探测-HTTP详情
+	MinioE2eSuccess  bool   `json:"minio_e2e_success"`  // 端到端探测-MinIO（经隧道到MinIO）
+	MinioE2eMessage  string `json:"minio_e2e_message"`  // 端到端探测-MinIO详情
+	ForwardType      string `json:"forward_type"`       // 转发类型: encrypted/direct
 }
 
 // 更换商户IP响应

@@ -34,6 +34,7 @@ func Routes(ge gin.IRouter) {
 	merchantGroup.GET("tunnel-stats", getTunnelStats)            // 隧道统计
 	merchantGroup.POST("/:id/change-ip", changeMerchantIP)      // 更换IP（AWS）
 	merchantGroup.POST("/:id/change-gost-port", changeGostPort) // 更换 GOST 转发端口
+	merchantGroup.POST("/:id/refresh-gost-forwards", refreshGostForwards) // 手动刷新 GOST 转发
 
 	// 商户 OSS 配置管理
 	merchantGroup.GET("/:id/oss-configs", listMerchantOssConfigs)
@@ -288,6 +289,29 @@ func changeGostPort(c *gin.Context) {
 	result.GOK(c, data)
 }
 
+
+
+// 手动刷新商户 GOST 转发配置
+func refreshGostForwards(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+
+	key := "refreshgost:" + idStr
+	if !allowAndMark(key, 10*time.Second) {
+		result.GResult(c, 429, nil, "操作过于频繁，请稍后再试")
+		return
+	}
+
+	if err := merchant.RefreshGostForwards(id); err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, nil)
+}
 // ========== 商户 OSS 配置管理 ==========
 
 // 获取商户 OSS 配置列表

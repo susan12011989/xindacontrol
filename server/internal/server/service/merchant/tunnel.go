@@ -9,6 +9,7 @@ import (
 
 	"server/internal/server/model"
 	deploySvc "server/internal/server/service/deploy"
+	"server/internal/server/utils"
 	"server/pkg/dbs"
 	"server/pkg/entity"
 	"server/pkg/gostapi"
@@ -16,11 +17,33 @@ import (
 	"github.com/zeromicro/go-zero/core/logx"
 )
 
-// TunnelCheck 遍历所有系统服务器，通过 SSH 在远端发起对 targetIP:gostPort 的 TCP 探测
+// probeE2e 通过 SSH 在系统服务器上 curl 本地隧道端口，验证端到端链路
+func probeE2e(client *utils.PooledSSHClient, port int, path string, timeoutSec int) (success bool, message string) {
+	cmd := fmt.Sprintf(
+		`curl -s -o /dev/null -w '%%{http_code}' --connect-timeout %d --max-time %d http://127.0.0.1:%d%s 2>/dev/null || echo '000'`,
+		timeoutSec, timeoutSec+3, port, path,
+	)
+	output, err := client.ExecuteCommandWithTimeout(cmd, time.Duration(timeoutSec+5)*time.Second)
+	code := strings.TrimSpace(output)
+
+	switch {
+	case err != nil && code == "":
+		return false, fmt.Sprintf("探测失败: %v", err)
+	case code == "000" || code == "":
+		return false, fmt.Sprintf("隧道不通(端口%d无响应)", port)
+	default:
+		return true, fmt.Sprintf("OK (HTTP %s)", code)
+	}
+}
+
+// TunnelCheck 遍历所有系统服务器，执行两层检测：
+// 1. 直连探测：系统服务器 → 商户GOST端口（验证端口可达）
+// 2. 端到端探测：通过本地隧道端口 → TLS握手 → 商户业务端口（验证完整链路含握手）
 func TunnelCheck(req model.TunnelCheckReq) ([]model.TunnelCheckItem, error) {
-	// 1) 解析目标 IP
+	// 1) 解析目标 IP 和商户端口
 	targetIP := strings.TrimSpace(req.ServerIP)
-	if targetIP == "" && req.MerchantId > 0 {
+	merchantPort := 0
+	if req.MerchantId > 0 {
 		var m entity.Merchants
 		has, err := dbs.DBAdmin.Where("id = ?", req.MerchantId).Get(&m)
 		if err != nil {
@@ -29,7 +52,18 @@ func TunnelCheck(req model.TunnelCheckReq) ([]model.TunnelCheckItem, error) {
 		if !has {
 			return nil, fmt.Errorf("商户不存在")
 		}
-		targetIP = strings.TrimSpace(m.ServerIP)
+		if targetIP == "" {
+			targetIP = strings.TrimSpace(m.ServerIP)
+		}
+		merchantPort = m.Port
+	}
+	// 如果只传了 server_ip，尝试通过 IP 反查商户端口
+	if merchantPort == 0 && targetIP != "" {
+		var m entity.Merchants
+		has, _ := dbs.DBAdmin.Where("server_ip = ?", targetIP).Get(&m)
+		if has {
+			merchantPort = m.Port
+		}
 	}
 	if targetIP == "" {
 		return nil, fmt.Errorf("目标IP不能为空")
@@ -44,12 +78,10 @@ func TunnelCheck(req model.TunnelCheckReq) ([]model.TunnelCheckItem, error) {
 		return []model.TunnelCheckItem{}, nil
 	}
 
-	// 3) 构造远端检测命令（带超时与多工具降级）
-	// 退出码 0=成功，非0=失败；stdout 会输出 OK/FAIL
-	// 商户服务器 GOST 固定监听端口为 10000（TCP）
+	// 3) 构造直连检测命令
 	port := gostapi.TargetPortTCP
 	const timeoutSec = 5
-	cmd := fmt.Sprintf(`IP="%s"; PORT=%d; TIMEOUT=%d
+	directCmd := fmt.Sprintf(`IP="%s"; PORT=%d; TIMEOUT=%d
 sh -c '
 if command -v nc >/dev/null 2>&1; then
   nc -z -w '"$TIMEOUT"' '"$IP"' '"$PORT"' && echo OK || (echo FAIL; exit 1)
@@ -80,41 +112,56 @@ fi'`, targetIP, port, timeoutSec)
 		go func() {
 			defer wg.Done()
 
+			forwardType := "encrypted"
+			if server.ForwardType == entity.ForwardTypeDirect {
+				forwardType = "direct"
+			}
+
 			item := model.TunnelCheckItem{
-				ServerName: server.Name,
-				ServerIP:   server.Host,
-				Success:    false,
-				Message:    "",
+				ServerName:  server.Name,
+				ServerIP:    server.Host,
+				ForwardType: forwardType,
 			}
 
 			client, err := deploySvc.GetSSHClient(server.Id)
 			if err != nil {
-				item.Success = false
 				item.Message = fmt.Sprintf("获取SSH失败: %v", err)
+				item.E2eMessage = "跳过（SSH不可用）"
 				mu.Lock()
 				results = append(results, item)
 				mu.Unlock()
 				return
 			}
 
-			// 执行命令（再加一层超时保护）
-			output, execErr := client.ExecuteCommandWithTimeout(cmd, (timeoutSec+3)*time.Second)
+			// === 直连探测 ===
+			output, execErr := client.ExecuteCommandWithTimeout(directCmd, (timeoutSec+3)*time.Second)
 			out := strings.TrimSpace(output)
 			if execErr == nil {
 				item.Success = true
-				if out == "" {
-					item.Message = "OK"
-				} else {
+				item.Message = "OK"
+				if out != "" && out != "OK" {
 					item.Message = out
 				}
 			} else {
-				// 远端命令返回非0或其他错误
-				item.Success = false
 				if out != "" {
 					item.Message = fmt.Sprintf("%s | %v", out, execErr)
 				} else {
 					item.Message = execErr.Error()
 				}
+			}
+
+			// === 端到端探测 ===
+			if merchantPort > 0 {
+				// HTTP 端到端：127.0.0.1:{port+2} → TLS → 商户GOST:10012 → 商户:10002
+				e2ePort := merchantPort + gostapi.PortOffsetHTTP
+				item.E2eSuccess, item.E2eMessage = probeE2e(client, e2ePort, "/", timeoutSec)
+
+				// MinIO 端到端：127.0.0.1:{port+3} → TLS → 商户GOST:10013 → MinIO:9000
+				minioPort := merchantPort + gostapi.PortOffsetMinIO
+				item.MinioE2eSuccess, item.MinioE2eMessage = probeE2e(client, minioPort, "/minio/health/live", timeoutSec)
+			} else {
+				item.E2eMessage = "跳过（未找到商户端口）"
+				item.MinioE2eMessage = "跳过（未找到商户端口）"
 			}
 
 			mu.Lock()
@@ -124,16 +171,20 @@ fi'`, targetIP, port, timeoutSec)
 	}
 	wg.Wait()
 
-	// 5) 统一返回（失败置顶）
+	// 5) 排序：e2e失败优先 > 直连失败优先 > 按名称
 	sort.Slice(results, func(i, j int) bool {
-		if results[i].Success == results[j].Success {
-			return results[i].ServerName < results[j].ServerName
+		// 先按 e2e 失败排序
+		if results[i].E2eSuccess != results[j].E2eSuccess {
+			return !results[i].E2eSuccess && results[j].E2eSuccess
 		}
-		return !results[i].Success && results[j].Success
+		// 再按直连失败排序
+		if results[i].Success != results[j].Success {
+			return !results[i].Success && results[j].Success
+		}
+		return results[i].ServerName < results[j].ServerName
 	})
 
-	// 失败项将由前端高亮，这里保持结构清晰
-	logx.Infof("tunnel check to %s:%d on %d servers finished", targetIP, port, len(servers))
+	logx.Infof("tunnel check to %s (port %d) on %d servers finished", targetIP, merchantPort, len(servers))
 	return results, nil
 }
 

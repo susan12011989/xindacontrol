@@ -19,19 +19,33 @@ const (
 	GostAPIPort = "9394"
 
 	// 商户端口偏移
-	PortOffsetTCP  = 0
-	PortOffsetWS   = 1
-	PortOffsetHTTP = 2
+	PortOffsetTCP   = 0
+	PortOffsetWS    = 1
+	PortOffsetHTTP  = 2
+	PortOffsetMinIO = 3
 
 	// 商户服务器 GOST 监听端口（接收系统服务器转发）
-	MerchantGostPortTCP  = 10010
-	MerchantGostPortWS   = 10011
-	MerchantGostPortHTTP = 10012
+	MerchantGostPortTCP   = 10010
+	MerchantGostPortWS    = 10011
+	MerchantGostPortHTTP  = 10012
+	MerchantGostPortMinIO = 10013
 
-	// 商户服务器业务程序端口（GOST 转发到本地业务）
-	MerchantAppPortTCP  = 10000
-	MerchantAppPortWS   = 10001
-	MerchantAppPortHTTP = 10002
+	// 商户服务器业务程序端口（GOST relay 转发到本地业务）
+	MerchantAppPortTCP   = 5002 // WuKongIM TCP
+	MerchantAppPortWS    = 5200 // WuKongIM WebSocket
+	MerchantAppPortHTTP  = 5003 // tsdd-server HTTP API
+	MerchantAppPortMinIO = 9000 // MinIO S3 API
+
+	// 商户服务器 PC 直连端口（普通 TCP 转发，非 relay）
+	MerchantDirectPortTCP  = 10000 // PC 直连 TCP → 5002
+	MerchantDirectPortHTTP = 10002 // PC 直连 HTTP → 5003
+
+	// 商户服务器 WSS 代理端口
+	MerchantWSSProxyPort    = 10014 // relay+tls → WuKongIM WS
+	MerchantWSSProxyAppPort = 5200  // 直连 WuKongIM WebSocket 端口
+
+	// 系统服务器 WSS 监听端口（手机 App WSS 连接）
+	SystemWSSListenPort = 443 // :443 (TLS) → relay+tls → 商户:10014
 
 	// 兼容旧代码的别名
 	TargetPortTCP  = MerchantGostPortTCP
@@ -66,11 +80,18 @@ type MerchantLocalForwardConfig struct {
 	Name     string // 协议名称
 }
 
-// MerchantLocalForwardConfigs 商户服务器本地转发配置列表
+// MerchantLocalForwardConfigs 商户服务器本地转发配置列表（relay+tls → 本地业务）
 var MerchantLocalForwardConfigs = []MerchantLocalForwardConfig{
-	{MerchantGostPortTCP, MerchantAppPortTCP, "tcp"},
-	{MerchantGostPortWS, MerchantAppPortWS, "ws"},
-	{MerchantGostPortHTTP, MerchantAppPortHTTP, "http"},
+	{MerchantGostPortTCP, MerchantAppPortTCP, "tcp"},           // 10010 → 5002
+	{MerchantGostPortWS, MerchantAppPortWS, "ws"},              // 10011 → 5200
+	{MerchantGostPortHTTP, MerchantAppPortHTTP, "http"},         // 10012 → 5003
+	{MerchantWSSProxyPort, MerchantWSSProxyAppPort, "wss"},       // 10014 → 5200 (WuKongIM WS)
+}
+
+// MerchantPCDirectConfigs PC 直连端口配置（普通 TCP 转发，非 relay）
+var MerchantPCDirectConfigs = []MerchantLocalForwardConfig{
+	{MerchantDirectPortTCP, MerchantAppPortTCP, "tcp"},   // 10000 → 5002
+	{MerchantDirectPortHTTP, MerchantAppPortHTTP, "http"}, // 10002 → 5003
 }
 
 // Client GOST API 客户端
@@ -575,17 +596,52 @@ func isNotFoundError(err error) bool {
 	return strings.Contains(errStr, "not found") || strings.Contains(errStr, "40004")
 }
 
+// ========== 多 IP 绑定支持 ==========
+
+// sanitizeIP 将 IP 中的点号替换为横线，用于 GOST 服务命名
+func sanitizeIP(ip string) string {
+	return strings.ReplaceAll(ip, ".", "-")
+}
+
+// buildServiceName 根据是否有 bindIP 生成服务名
+// 有 bindIP: "tcp-relay-47-242-71-251-10000"（多商户隔离）
+// 无 bindIP: "tcp-relay-10000"（兼容旧格式）
+func buildServiceName(protocolName string, suffix string, listenPort int, bindIP string) string {
+	if bindIP != "" {
+		return fmt.Sprintf("%s-%s-%s-%d", protocolName, suffix, sanitizeIP(bindIP), listenPort)
+	}
+	return fmt.Sprintf("%s-%s-%d", protocolName, suffix, listenPort)
+}
+
+// buildListenAddr 根据是否有 bindIP 生成监听地址
+// 有 bindIP: "47.242.71.251:10000"（只监听指定 IP）
+// 无 bindIP: ":10000"（监听所有接口）
+func buildListenAddr(listenPort int, bindIP string) string {
+	if bindIP != "" {
+		return fmt.Sprintf("%s:%d", bindIP, listenPort)
+	}
+	return fmt.Sprintf(":%d", listenPort)
+}
+
 // ========== 商户批量操作函数 ==========
 
 // createRelayTLSForwardWithProtocol 创建带协议名的 Relay+TLS 转发服务（内部方法）
 // protocolName 用于区分服务名，如 "tcp", "ws", "http"
 // tlsListener: 是否在监听端启用 TLS（客户端加密）
-func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPort int, targetIP string, targetPort int, protocolName string, tlsListener bool) (serviceName string, err error) {
-	// 生成唯一的名称（根据协议类型区分）
-	chainName := fmt.Sprintf("chain-%s-relay-%d", protocolName, listenPort)
-	serviceName = fmt.Sprintf("%s-relay-%d", protocolName, listenPort)
+// bindIP: 监听绑定 IP（为空则监听所有接口）
+func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPort int, targetIP string, targetPort int, protocolName string, tlsListener bool, bindIP ...string) (serviceName string, err error) {
+	// 提取 bindIP
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
+
+	// 生成唯一的名称（根据协议类型和绑定 IP 区分）
+	chainName := buildServiceName(protocolName, "relay", listenPort, ip)
+	chainName = "chain-" + chainName
+	serviceName = buildServiceName(protocolName, "relay", listenPort, ip)
 	targetAddr := fmt.Sprintf("%s:%d", targetIP, targetPort)
-	listenAddr := fmt.Sprintf(":%d", listenPort)
+	listenAddr := buildListenAddr(listenPort, ip)
 
 	// 1. 创建 Chain
 	chain := &ChainConfig{
@@ -661,9 +717,23 @@ func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 
 // deleteRelayTLSForwardWithProtocol 删除带协议名的 Relay+TLS 转发服务（内部方法）
 // 幂等操作：如果服务/链不存在，视为删除成功
-func (c *Client) deleteRelayTLSForwardWithProtocol(gostServerIP string, listenPort int, protocolName string) error {
-	chainName := fmt.Sprintf("chain-%s-relay-%d", protocolName, listenPort)
-	serviceName := fmt.Sprintf("%s-relay-%d", protocolName, listenPort)
+// bindIP: 监听绑定 IP（为空则使用旧命名格式）
+func (c *Client) deleteRelayTLSForwardWithProtocol(gostServerIP string, listenPort int, protocolName string, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
+
+	chainName := "chain-" + buildServiceName(protocolName, "relay", listenPort, ip)
+	serviceName := buildServiceName(protocolName, "relay", listenPort, ip)
+
+	// 如果使用了新命名（带 IP），同时清理旧命名的服务（迁移兼容）
+	if ip != "" {
+		oldChainName := fmt.Sprintf("chain-%s-relay-%d", protocolName, listenPort)
+		oldServiceName := fmt.Sprintf("%s-relay-%d", protocolName, listenPort)
+		_, _ = c.DeleteService(gostServerIP, oldServiceName)
+		_, _ = c.DeleteChain(gostServerIP, oldChainName)
+	}
 
 	// 删除 Service（不存在视为成功）
 	_, err := c.DeleteService(gostServerIP, serviceName)
@@ -687,23 +757,25 @@ func (c *Client) deleteRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 }
 
 // CreateMerchantForwards 批量创建商户的 3 个转发服务 (TCP/WS/HTTP)
-// 会创建 basePort, basePort+1, basePort+2 三个端口的转发
-// 分别转发到 targetIP:10000, targetIP:10001, targetIP:10002
-func CreateMerchantForwards(gostServerIP string, basePort int, targetIP string) error {
-	return defaultClient.CreateMerchantForwards(gostServerIP, basePort, targetIP)
+// bindIP: 可选，系统服务器上为此商户分配的 IP（多商户隔离）
+func CreateMerchantForwards(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	return defaultClient.CreateMerchantForwards(gostServerIP, basePort, targetIP, bindIP...)
 }
 
 // CreateMerchantForwards 批量创建商户的 3 个转发服务
-func (c *Client) CreateMerchantForwards(gostServerIP string, basePort int, targetIP string) error {
-	var createdConfigs []MerchantPortConfig
+func (c *Client) CreateMerchantForwards(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
 
+	var createdConfigs []MerchantPortConfig
 	for _, cfg := range MerchantPortConfigs {
 		listenPort := basePort + cfg.Offset
-		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, false)
+		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, false, ip)
 		if err != nil {
-			// 回滚已创建的端口
 			for _, created := range createdConfigs {
-				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name)
+				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name, ip)
 			}
 			return fmt.Errorf("创建 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
@@ -714,20 +786,24 @@ func (c *Client) CreateMerchantForwards(gostServerIP string, basePort int, targe
 }
 
 // CreateMerchantForwardsWithTls 批量创建商户的 3 个转发服务，监听端启用 TLS
-func CreateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
-	return defaultClient.CreateMerchantForwardsWithTls(gostServerIP, basePort, targetIP)
+func CreateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	return defaultClient.CreateMerchantForwardsWithTls(gostServerIP, basePort, targetIP, bindIP...)
 }
 
 // CreateMerchantForwardsWithTls 批量创建商户的 3 个转发服务，监听端启用 TLS
-func (c *Client) CreateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
-	var createdConfigs []MerchantPortConfig
+func (c *Client) CreateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
 
+	var createdConfigs []MerchantPortConfig
 	for _, cfg := range MerchantPortConfigs {
 		listenPort := basePort + cfg.Offset
-		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, true)
+		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, true, ip)
 		if err != nil {
 			for _, created := range createdConfigs {
-				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name)
+				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name, ip)
 			}
 			return fmt.Errorf("创建 TLS %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
@@ -738,19 +814,21 @@ func (c *Client) CreateMerchantForwardsWithTls(gostServerIP string, basePort int
 }
 
 // DeleteMerchantForwards 批量删除商户的 3 个转发服务
-// 会删除 basePort, basePort+1, basePort+2 三个端口的转发
-func DeleteMerchantForwards(gostServerIP string, basePort int) error {
-	return defaultClient.DeleteMerchantForwards(gostServerIP, basePort)
+func DeleteMerchantForwards(gostServerIP string, basePort int, bindIP ...string) error {
+	return defaultClient.DeleteMerchantForwards(gostServerIP, basePort, bindIP...)
 }
 
 // DeleteMerchantForwards 批量删除商户的 3 个转发服务
-func (c *Client) DeleteMerchantForwards(gostServerIP string, basePort int) error {
-	var lastErr error
+func (c *Client) DeleteMerchantForwards(gostServerIP string, basePort int, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
 
+	var lastErr error
 	for _, cfg := range MerchantPortConfigs {
 		listenPort := basePort + cfg.Offset
-		if err := c.deleteRelayTLSForwardWithProtocol(gostServerIP, listenPort, cfg.Name); err != nil {
-			// 记录错误但继续删除其他端口
+		if err := c.deleteRelayTLSForwardWithProtocol(gostServerIP, listenPort, cfg.Name, ip); err != nil {
 			lastErr = fmt.Errorf("删除 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
 	}
@@ -759,52 +837,54 @@ func (c *Client) DeleteMerchantForwards(gostServerIP string, basePort int) error
 }
 
 // UpdateMerchantForwards 批量更新商户的 3 个转发服务（删除+创建）
-// 用于商户 IP 变更时更新转发目标（使用默认目标端口 10000/10001/10002）
-func UpdateMerchantForwards(gostServerIP string, basePort int, targetIP string) error {
-	return defaultClient.UpdateMerchantForwards(gostServerIP, basePort, targetIP)
+func UpdateMerchantForwards(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	return defaultClient.UpdateMerchantForwards(gostServerIP, basePort, targetIP, bindIP...)
 }
 
 // UpdateMerchantForwards 批量更新商户的 3 个转发服务
-func (c *Client) UpdateMerchantForwards(gostServerIP string, basePort int, targetIP string) error {
-	_ = c.DeleteMerchantForwards(gostServerIP, basePort)
-	return c.CreateMerchantForwards(gostServerIP, basePort, targetIP)
+func (c *Client) UpdateMerchantForwards(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	_ = c.DeleteMerchantForwards(gostServerIP, basePort, bindIP...)
+	return c.CreateMerchantForwards(gostServerIP, basePort, targetIP, bindIP...)
 }
 
 // UpdateMerchantForwardsWithTls 批量更新商户的 3 个转发服务，监听端启用 TLS
-func UpdateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
-	return defaultClient.UpdateMerchantForwardsWithTls(gostServerIP, basePort, targetIP)
+func UpdateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	return defaultClient.UpdateMerchantForwardsWithTls(gostServerIP, basePort, targetIP, bindIP...)
 }
 
 // UpdateMerchantForwardsWithTls 批量更新商户的 3 个转发服务，监听端启用 TLS
-func (c *Client) UpdateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
-	_ = c.DeleteMerchantForwards(gostServerIP, basePort)
-	return c.CreateMerchantForwardsWithTls(gostServerIP, basePort, targetIP)
+func (c *Client) UpdateMerchantForwardsWithTls(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	_ = c.DeleteMerchantForwards(gostServerIP, basePort, bindIP...)
+	return c.CreateMerchantForwardsWithTls(gostServerIP, basePort, targetIP, bindIP...)
 }
 
 // UpdateMerchantForwardsWithTargetPort 批量更新商户的 3 个转发服务，支持自定义目标基础端口
-// 用于商户修改 GOST 监听端口时更新转发目标
-// targetBasePort: 商户服务器上的基础监听端口，会转发到 targetBasePort/targetBasePort+1/targetBasePort+2
-func UpdateMerchantForwardsWithTargetPort(gostServerIP string, basePort int, targetIP string, targetBasePort int) error {
-	return defaultClient.updateMerchantForwardsWithTargetPort(gostServerIP, basePort, targetIP, targetBasePort, false)
+func UpdateMerchantForwardsWithTargetPort(gostServerIP string, basePort int, targetIP string, targetBasePort int, bindIP ...string) error {
+	return defaultClient.updateMerchantForwardsWithTargetPort(gostServerIP, basePort, targetIP, targetBasePort, false, bindIP...)
 }
 
 // UpdateMerchantForwardsWithTargetPortWithTls 批量更新商户的 3 个转发服务，支持自定义目标端口，监听端启用 TLS
-func UpdateMerchantForwardsWithTargetPortWithTls(gostServerIP string, basePort int, targetIP string, targetBasePort int) error {
-	return defaultClient.updateMerchantForwardsWithTargetPort(gostServerIP, basePort, targetIP, targetBasePort, true)
+func UpdateMerchantForwardsWithTargetPortWithTls(gostServerIP string, basePort int, targetIP string, targetBasePort int, bindIP ...string) error {
+	return defaultClient.updateMerchantForwardsWithTargetPort(gostServerIP, basePort, targetIP, targetBasePort, true, bindIP...)
 }
 
-// updateMerchantForwardsWithTargetPort 内部实现，支持 TLS 开关
-func (c *Client) updateMerchantForwardsWithTargetPort(gostServerIP string, basePort int, targetIP string, targetBasePort int, tlsListener bool) error {
-	_ = c.DeleteMerchantForwards(gostServerIP, basePort)
+// updateMerchantForwardsWithTargetPort 内部实现，支持 TLS 开关和 bindIP
+func (c *Client) updateMerchantForwardsWithTargetPort(gostServerIP string, basePort int, targetIP string, targetBasePort int, tlsListener bool, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
+
+	_ = c.DeleteMerchantForwards(gostServerIP, basePort, ip)
 
 	var createdConfigs []MerchantPortConfig
 	for i, cfg := range MerchantPortConfigs {
 		listenPort := basePort + cfg.Offset
 		targetPort := targetBasePort + i
-		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, targetPort, cfg.Name, tlsListener)
+		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, targetPort, cfg.Name, tlsListener, ip)
 		if err != nil {
 			for _, created := range createdConfigs {
-				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name)
+				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name, ip)
 			}
 			return fmt.Errorf("创建 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
@@ -962,10 +1042,59 @@ func (c *Client) UpdateMerchantLocalForwardsWithCustomPorts(merchantServerIP str
 	return nil
 }
 
-// ========== 直连转发函数（TCP 直转，不加密） ==========
+// ========== PC 直连端口转发（商户服务器本地，普通 TCP） ==========
+
+// CreateMerchantPCDirectForwards 在商户服务器上创建 PC 直连端口（普通 TCP 转发）
+// 10000 → 5002 (WuKongIM TCP), 10002 → 5003 (tsdd-server HTTP)
+func CreateMerchantPCDirectForwards(merchantServerIP string) error {
+	return defaultClient.CreateMerchantPCDirectForwards(merchantServerIP)
+}
+
+// CreateMerchantPCDirectForwards 在商户服务器上创建 PC 直连端口
+func (c *Client) CreateMerchantPCDirectForwards(merchantServerIP string) error {
+	for _, cfg := range MerchantPCDirectConfigs {
+		serviceName := fmt.Sprintf("direct-%s-%d", cfg.Name, cfg.GostPort)
+		targetAddr := fmt.Sprintf("127.0.0.1:%d", cfg.AppPort)
+		listenAddr := fmt.Sprintf(":%d", cfg.GostPort)
+
+		service := &ServiceConfig{
+			Name: serviceName,
+			Addr: listenAddr,
+			Handler: &HandlerConfig{
+				Type: "tcp",
+			},
+			Listener: &ListenerConfig{
+				Type: "tcp",
+			},
+			Forwarder: &ForwarderConfig{
+				Nodes: []ForwardNodeConfig{
+					{
+						Name: fmt.Sprintf("target-%d", cfg.AppPort),
+						Addr: targetAddr,
+					},
+				},
+			},
+		}
+
+		_, err := c.CreateService(merchantServerIP, service)
+		if err != nil && !isAlreadyExistsError(err) {
+			return fmt.Errorf("创建 PC 直连 %s 端口(%d→%d)失败: %w", cfg.Name, cfg.GostPort, cfg.AppPort, err)
+		}
+	}
+
+	// 保存配置
+	_, err := c.SaveConfig(merchantServerIP, "yaml", "")
+	if err != nil {
+		return fmt.Errorf("PC 直连服务创建成功，但保存配置失败: %w", err)
+	}
+
+	return nil
+}
+
+// ========== 系统服务器 → 商户的直连转发函数（TCP 直转，不加密） ==========
 
 // MerchantDirectPortConfigs 商户直连端口配置列表（系统服务器 → 商户业务程序）
-// 直连模式跳过商户 GOST 层，直接转发到业务程序端口 10000/10001/10002
+// 直连模式跳过商户 GOST 层，直接转发到业务程序端口 5002/5200/5003
 var MerchantDirectPortConfigs = []MerchantPortConfig{
 	{PortOffsetTCP, MerchantAppPortTCP, "tcp"},
 	{PortOffsetWS, MerchantAppPortWS, "ws"},
@@ -975,10 +1104,15 @@ var MerchantDirectPortConfigs = []MerchantPortConfig{
 // createDirectForwardWithProtocol 创建 TCP 直连转发服务（内部方法）
 // 不使用 relay+tls，直接 TCP 转发
 // tlsListener: 是否在监听端启用 TLS（客户端加密）
-func (c *Client) createDirectForwardWithProtocol(gostServerIP string, listenPort int, targetIP string, targetPort int, protocolName string, tlsListener bool) (serviceName string, err error) {
-	serviceName = fmt.Sprintf("%s-direct-%d", protocolName, listenPort)
+// bindIP: 监听绑定 IP（为空则监听所有接口）
+func (c *Client) createDirectForwardWithProtocol(gostServerIP string, listenPort int, targetIP string, targetPort int, protocolName string, tlsListener bool, bindIP ...string) (serviceName string, err error) {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
+	serviceName = buildServiceName(protocolName, "direct", listenPort, ip)
 	targetAddr := fmt.Sprintf("%s:%d", targetIP, targetPort)
-	listenAddr := fmt.Sprintf(":%d", listenPort)
+	listenAddr := buildListenAddr(listenPort, ip)
 
 	// 构建 listener
 	listener := &ListenerConfig{Type: "tcp"}
@@ -1026,8 +1160,18 @@ func (c *Client) createDirectForwardWithProtocol(gostServerIP string, listenPort
 
 // deleteDirectForwardWithProtocol 删除 TCP 直连转发服务（内部方法）
 // 幂等操作：如果服务不存在，视为删除成功
-func (c *Client) deleteDirectForwardWithProtocol(gostServerIP string, listenPort int, protocolName string) error {
-	serviceName := fmt.Sprintf("%s-direct-%d", protocolName, listenPort)
+func (c *Client) deleteDirectForwardWithProtocol(gostServerIP string, listenPort int, protocolName string, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
+	serviceName := buildServiceName(protocolName, "direct", listenPort, ip)
+
+	// 迁移兼容：清理旧命名
+	if ip != "" {
+		oldServiceName := fmt.Sprintf("%s-direct-%d", protocolName, listenPort)
+		_, _ = c.DeleteService(gostServerIP, oldServiceName)
+	}
 
 	// 删除 Service（不存在视为成功）
 	_, err := c.DeleteService(gostServerIP, serviceName)
@@ -1044,91 +1188,116 @@ func (c *Client) deleteDirectForwardWithProtocol(gostServerIP string, listenPort
 	return nil
 }
 
-// CreateMerchantDirectForwards 批量创建商户的 3 个直连转发服务 (TCP/WS/HTTP)
-// 会创建 basePort, basePort+1, basePort+2 三个端口的转发
-// 直接转发到 targetIP:10000, targetIP:10001, targetIP:10002（跳过商户 GOST 层）
-func CreateMerchantDirectForwards(gostServerIP string, basePort int, targetIP string) error {
-	return defaultClient.CreateMerchantDirectForwards(gostServerIP, basePort, targetIP)
+// CreateMerchantDirectForwards 批量创建商户的直连转发服务
+func CreateMerchantDirectForwards(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	return defaultClient.CreateMerchantDirectForwards(gostServerIP, basePort, targetIP, bindIP...)
 }
 
-// CreateMerchantDirectForwards 批量创建商户的 3 个直连转发服务
-func (c *Client) CreateMerchantDirectForwards(gostServerIP string, basePort int, targetIP string) error {
-	var createdConfigs []MerchantPortConfig
+func (c *Client) CreateMerchantDirectForwards(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
 
+	var createdConfigs []MerchantPortConfig
 	for _, cfg := range MerchantDirectPortConfigs {
 		listenPort := basePort + cfg.Offset
-		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, false)
+		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, false, ip)
 		if err != nil {
-			// 回滚已创建的端口
 			for _, created := range createdConfigs {
-				_ = c.deleteDirectForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name)
+				_ = c.deleteDirectForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name, ip)
 			}
 			return fmt.Errorf("创建直连 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
 		createdConfigs = append(createdConfigs, cfg)
 	}
-
 	return nil
 }
 
-// CreateMerchantDirectForwardsWithTls 批量创建商户的 3 个直连转发服务，监听端启用 TLS
-func CreateMerchantDirectForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
-	return defaultClient.CreateMerchantDirectForwardsWithTls(gostServerIP, basePort, targetIP)
+// CreateMerchantDirectForwardsWithTls 批量创建商户的直连转发服务，监听端启用 TLS
+func CreateMerchantDirectForwardsWithTls(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	return defaultClient.CreateMerchantDirectForwardsWithTls(gostServerIP, basePort, targetIP, bindIP...)
 }
 
-// CreateMerchantDirectForwardsWithTls 批量创建商户的 3 个直连转发服务，监听端启用 TLS
-func (c *Client) CreateMerchantDirectForwardsWithTls(gostServerIP string, basePort int, targetIP string) error {
-	var createdConfigs []MerchantPortConfig
+func (c *Client) CreateMerchantDirectForwardsWithTls(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
 
+	var createdConfigs []MerchantPortConfig
 	for _, cfg := range MerchantDirectPortConfigs {
 		listenPort := basePort + cfg.Offset
-		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, true)
+		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, true, ip)
 		if err != nil {
 			for _, created := range createdConfigs {
-				_ = c.deleteDirectForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name)
+				_ = c.deleteDirectForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name, ip)
 			}
 			return fmt.Errorf("创建 TLS 直连 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
 		createdConfigs = append(createdConfigs, cfg)
 	}
-
 	return nil
 }
 
-// DeleteMerchantDirectForwards 批量删除商户的 3 个直连转发服务
-// 会删除 basePort, basePort+1, basePort+2 三个端口的转发
-func DeleteMerchantDirectForwards(gostServerIP string, basePort int) error {
-	return defaultClient.DeleteMerchantDirectForwards(gostServerIP, basePort)
+// DeleteMerchantDirectForwards 批量删除商户的直连转发服务
+func DeleteMerchantDirectForwards(gostServerIP string, basePort int, bindIP ...string) error {
+	return defaultClient.DeleteMerchantDirectForwards(gostServerIP, basePort, bindIP...)
 }
 
-// DeleteMerchantDirectForwards 批量删除商户的 3 个直连转发服务
-func (c *Client) DeleteMerchantDirectForwards(gostServerIP string, basePort int) error {
-	var lastErr error
+func (c *Client) DeleteMerchantDirectForwards(gostServerIP string, basePort int, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
 
+	var lastErr error
 	for _, cfg := range MerchantDirectPortConfigs {
 		listenPort := basePort + cfg.Offset
-		if err := c.deleteDirectForwardWithProtocol(gostServerIP, listenPort, cfg.Name); err != nil {
-			// 记录错误但继续删除其他端口
+		if err := c.deleteDirectForwardWithProtocol(gostServerIP, listenPort, cfg.Name, ip); err != nil {
 			lastErr = fmt.Errorf("删除直连 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
 	}
-
 	return lastErr
 }
 
-// UpdateMerchantDirectForwards 批量更新商户的 3 个直连转发服务（删除+创建）
-// 用于商户 IP 变更时更新转发目标
-func UpdateMerchantDirectForwards(gostServerIP string, basePort int, targetIP string) error {
-	return defaultClient.UpdateMerchantDirectForwards(gostServerIP, basePort, targetIP)
+// UpdateMerchantDirectForwards 批量更新商户的直连转发服务
+func UpdateMerchantDirectForwards(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	return defaultClient.UpdateMerchantDirectForwards(gostServerIP, basePort, targetIP, bindIP...)
 }
 
-// UpdateMerchantDirectForwards 批量更新商户的 3 个直连转发服务
-func (c *Client) UpdateMerchantDirectForwards(gostServerIP string, basePort int, targetIP string) error {
-	// 先删除旧的
-	_ = c.DeleteMerchantDirectForwards(gostServerIP, basePort)
+func (c *Client) UpdateMerchantDirectForwards(gostServerIP string, basePort int, targetIP string, bindIP ...string) error {
+	_ = c.DeleteMerchantDirectForwards(gostServerIP, basePort, bindIP...)
+	return c.CreateMerchantDirectForwards(gostServerIP, basePort, targetIP, bindIP...)
+}
 
-	// 再创建新的
-	return c.CreateMerchantDirectForwards(gostServerIP, basePort, targetIP)
+// ========== 系统服务器 WSS 443 隧道（手机 App WSS 连接） ==========
+
+// CreateWSSRelayForward 在系统服务器上创建 WSS 443 隧道
+// bindIP:443 (TLS) → relay+tls → merchantIP:10014 → WuKongIM:5200
+func CreateWSSRelayForward(gostServerIP string, merchantIP string, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
+	_, err := defaultClient.createRelayTLSForwardWithProtocol(
+		gostServerIP, SystemWSSListenPort, merchantIP, MerchantWSSProxyPort, "wss", true, ip)
+	return err
+}
+
+// DeleteWSSRelayForward 删除系统服务器上的 WSS 443 隧道
+func DeleteWSSRelayForward(gostServerIP string, bindIP ...string) error {
+	ip := ""
+	if len(bindIP) > 0 {
+		ip = bindIP[0]
+	}
+	return defaultClient.deleteRelayTLSForwardWithProtocol(gostServerIP, SystemWSSListenPort, "wss", ip)
+}
+
+// UpdateWSSRelayForward 更新系统服务器上的 WSS 443 隧道（商户 IP 变更时）
+func UpdateWSSRelayForward(gostServerIP string, merchantIP string, bindIP ...string) error {
+	_ = DeleteWSSRelayForward(gostServerIP, bindIP...)
+	return CreateWSSRelayForward(gostServerIP, merchantIP, bindIP...)
 }
 
 // ========== 一键部署：简化转发配置 ==========
