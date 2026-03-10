@@ -1096,8 +1096,9 @@ func OpenRequiredPortsForSecurityGroups(ctx context.Context, cli *ec2.Client, se
 		requiredPorts = append(requiredPorts, PortRange{5100, 5100})   // WuKongIM TCP
 		requiredPorts = append(requiredPorts, PortRange{5200, 5200})   // WuKongIM WS
 		requiredPorts = append(requiredPorts, PortRange{5300, 5300})   // WuKongIM Manager
-		requiredPorts = append(requiredPorts, PortRange{10010, 10012}) // gost端口
-		requiredPorts = append(requiredPorts, PortRange{10000, 10002}) // 业务端口
+		requiredPorts = append(requiredPorts, PortRange{10000, 10014}) // GOST 全端口范围（业务+relay+WSS代理）
+		requiredPorts = append(requiredPorts, PortRange{9394, 9394})   // GOST API
+		requiredPorts = append(requiredPorts, PortRange{443, 443})     // WSS (App TLS 连接)
 		requiredPorts = append(requiredPorts, PortRange{5003, 5003})   // TSDD API (自定义 docker-compose 端口映射)
 		requiredPorts = append(requiredPorts, PortRange{8084, 8084})   // 管理后台端口
 		requiredPorts = append(requiredPorts, PortRange{54321, 54321}) // 总控后台端口

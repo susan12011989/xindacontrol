@@ -355,6 +355,13 @@ export interface DeployGostServerReq {
   bandwidth?: string // EIP 带宽，默认 5Mbps
 }
 
+// GOST 一键部署（安装+配置转发）
+export interface SetupGostDeployReq {
+  server_id: number // 系统服务器ID
+  merchant_ids: number[] // 商户ID列表
+  forward_type?: number // 转发类型: 1-加密(默认) 2-直连
+}
+
 // 在已有服务器上安装 GOST 请求
 export interface InstallGostReq {
   server_id?: number // 服务器ID（二选一）

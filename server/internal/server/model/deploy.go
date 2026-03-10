@@ -364,6 +364,15 @@ type InstallNginxReq struct {
 	ServerId int `json:"server_id" binding:"required"` // 系统服务器ID
 }
 
+// ========== GOST 一键部署（安装+配置转发） ==========
+
+// GOST 一键部署请求（安装+配置转发）
+type SetupGostDeployReq struct {
+	ServerId    int   `json:"server_id" binding:"required"`    // 系统服务器ID
+	MerchantIds []int `json:"merchant_ids" binding:"required"` // 要配置转发的商户ID列表
+	ForwardType int   `json:"forward_type"`                    // 转发类型: 1-加密(默认) 2-直连
+}
+
 // ========== GOST 配置持久化 ==========
 
 // 持久化 GOST 配置请求

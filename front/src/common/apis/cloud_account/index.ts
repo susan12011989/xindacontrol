@@ -64,3 +64,12 @@ export function getAliyunBalance(params: { merchant_id?: number, cloud_account_i
     params
   })
 }
+
+/** 查询腾讯云账户余额 */
+export function getTencentBalance(params: { merchant_id?: number, cloud_account_id?: number }) {
+  return request<{ code: number, data: CloudAccount.TencentBalanceResp, message: string }>({
+    url: "cloud/tencent/balance",
+    method: "get",
+    params
+  })
+}

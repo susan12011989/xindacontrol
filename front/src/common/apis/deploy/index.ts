@@ -363,6 +363,16 @@ export function deployGostServer(data: Deploy.DeployGostServerReq, onData: (chun
   }, onData, onError)
 }
 
+/** GOST 一键部署：安装+配置转发（流式） */
+export function setupGostDeploy(data: Deploy.SetupGostDeployReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
+  return createStreamRequest({
+    url: "deploy/gost/setup",
+    method: "post",
+    data,
+    timeout: 600000
+  }, onData, onError)
+}
+
 /** 在已有服务器上安装 GOST（流式） */
 export function installGostToServer(data: Deploy.InstallGostReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
   return createStreamRequest({

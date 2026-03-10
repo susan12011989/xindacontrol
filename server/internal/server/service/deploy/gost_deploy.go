@@ -3,6 +3,7 @@ package deploy
 import (
 	"fmt"
 	"net"
+	"os"
 	"server/internal/server/cloud/aliyun"
 	"server/internal/server/model"
 	"server/pkg/dbs"
@@ -260,8 +261,49 @@ func waitForSSH(host, password string, progressCallback func(string)) error {
 	return fmt.Errorf("SSH 连接超时")
 }
 
+// uploadGostBinary 通过 SSH 上传预存的 GOST 二进制到目标服务器
+func uploadGostBinary(client *ssh.Client, progressCallback func(string)) error {
+	// 预存路径（control 服务器上的 GOST 二进制）
+	gostBinaryPath := "/opt/control/assets/gost"
+
+	data, err := os.ReadFile(gostBinaryPath)
+	if err != nil {
+		return fmt.Errorf("读取本地 GOST 二进制失败: %w", err)
+	}
+
+	progressCallback(fmt.Sprintf(">>> 上传 GOST 二进制 (%d MB)...", len(data)/1024/1024))
+
+	// 通过 SSH 上传到 /tmp/gost
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("创建上传会话失败: %w", err)
+	}
+	defer session.Close()
+
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("获取 stdin 失败: %w", err)
+	}
+
+	go func() {
+		defer stdin.Close()
+		stdin.Write(data)
+	}()
+
+	if err := session.Run("cat > /tmp/gost && chmod +x /tmp/gost"); err != nil {
+		return fmt.Errorf("上传 GOST 失败: %w", err)
+	}
+
+	return nil
+}
+
 // installGostViaSSHClient 通过已有 SSH 客户端安装 GOST
 func installGostViaSSHClient(client *ssh.Client, progressCallback func(string)) error {
+	// 先上传 GOST 二进制（避免目标服务器从 GitHub 下载超时）
+	if err := uploadGostBinary(client, progressCallback); err != nil {
+		progressCallback(fmt.Sprintf("二进制上传失败，尝试从 GitHub 下载: %s", err))
+	}
+
 	// GOST 安装脚本 - 支持 root 和非 root 用户（自动使用 sudo）
 	installScript := fmt.Sprintf(`#!/bin/bash
 set -e
@@ -278,13 +320,21 @@ else
     SUDO="sudo"
 fi
 
-echo ">>> 下载 GOST..."
-cd /tmp
-wget -q "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_amd64.tar.gz" -O gost.tar.gz
-tar -xzf gost.tar.gz
-$SUDO mv gost /usr/local/bin/
-$SUDO chmod +x /usr/local/bin/gost
-rm -f gost.tar.gz
+echo ">>> 安装 GOST..."
+if [ -f /tmp/gost ]; then
+    # 使用预上传的二进制
+    $SUDO mv /tmp/gost /usr/local/bin/
+    $SUDO chmod +x /usr/local/bin/gost
+else
+    # 回退：从 GitHub 下载
+    echo ">>> 从 GitHub 下载 GOST..."
+    cd /tmp
+    wget -q --timeout=30 "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_amd64.tar.gz" -O gost.tar.gz
+    tar -xzf gost.tar.gz
+    $SUDO mv gost /usr/local/bin/
+    $SUDO chmod +x /usr/local/bin/gost
+    rm -f gost.tar.gz
+fi
 
 echo ">>> 创建配置..."
 $SUDO mkdir -p /etc/gost /var/log/gost
@@ -429,6 +479,179 @@ func deployTlsCertsIfAvailable(server entity.Servers, progressCallback func(stri
 
 	progressCallback("TLS 证书部署成功")
 	return true
+}
+
+// SetupGostDeploy 一键部署 GOST（安装+配置转发）
+func SetupGostDeploy(req *model.SetupGostDeployReq, progressCallback func(string)) error {
+	// 1. 获取服务器信息
+	var server entity.Servers
+	has, err := dbs.DBAdmin.Where("id = ?", req.ServerId).Get(&server)
+	if err != nil {
+		return fmt.Errorf("查询服务器失败: %w", err)
+	}
+	if !has {
+		return fmt.Errorf("服务器不存在: %d", req.ServerId)
+	}
+	if server.ServerType != 2 {
+		return fmt.Errorf("只能对系统服务器执行此操作")
+	}
+
+	host := server.Host
+	forwardType := req.ForwardType
+	if forwardType == 0 {
+		forwardType = entity.ForwardTypeEncrypted
+	}
+
+	progressCallback(fmt.Sprintf("目标服务器: %s (%s)", server.Name, host))
+
+	// 2. 检测 GOST 是否已安装
+	progressCallback("检测 GOST 安装状态...")
+	sshClient, err := GetSSHClient(req.ServerId)
+	if err != nil {
+		return fmt.Errorf("SSH 连接失败: %w", err)
+	}
+	defer sshClient.Close()
+
+	output, _ := sshClient.ExecuteCommand("which gost")
+	gostInstalled := strings.TrimSpace(output) != ""
+
+	if gostInstalled {
+		progressCallback("GOST 已安装，跳过安装步骤")
+	} else {
+		// 3. 安装 GOST
+		progressCallback("GOST 未安装，开始安装...")
+		err = installGostViaSSHClient(sshClient.Client, progressCallback)
+		if err != nil {
+			return fmt.Errorf("安装 GOST 失败: %w", err)
+		}
+		progressCallback("GOST 安装完成")
+	}
+
+	// 4. 验证 GOST API
+	progressCallback("验证 GOST API...")
+	time.Sleep(2 * time.Second)
+	if err := verifyGostAPI(host); err != nil {
+		progressCallback(fmt.Sprintf("警告: GOST API 验证失败: %s", err))
+	} else {
+		progressCallback("GOST API 验证成功")
+	}
+
+	// 5. 部署 TLS 证书
+	tlsDeployed := deployTlsCertsIfAvailable(server, progressCallback)
+
+	// 6. 查询要配置的商户
+	var merchants []entity.Merchants
+	err = dbs.DBAdmin.In("id", req.MerchantIds).Where("status = 1").Find(&merchants)
+	if err != nil {
+		return fmt.Errorf("查询商户失败: %w", err)
+	}
+	if len(merchants) == 0 {
+		return fmt.Errorf("未找到有效商户")
+	}
+
+	// 7. 逐个商户配置转发
+	forwardTypeName := "加密(relay+tls)"
+	if forwardType == entity.ForwardTypeDirect {
+		forwardTypeName = "直连(tcp)"
+	}
+
+	successCount := 0
+	failCount := 0
+
+	for _, m := range merchants {
+		progressCallback(fmt.Sprintf("配置商户 [%s] 转发 (端口: %d, 目标: %s, 模式: %s)...",
+			m.Name, m.Port, m.ServerIP, forwardTypeName))
+
+		if m.ServerIP == "" {
+			progressCallback(fmt.Sprintf("  跳过: 商户 %s 未配置服务器IP", m.Name))
+			failCount++
+			continue
+		}
+		if m.Port == 0 {
+			progressCallback(fmt.Sprintf("  跳过: 商户 %s 未配置端口", m.Name))
+			failCount++
+			continue
+		}
+
+		var forwardErr error
+		if forwardType == entity.ForwardTypeDirect {
+			if tlsDeployed || server.TlsEnabled == 1 {
+				forwardErr = gostapi.CreateMerchantDirectForwardsWithTls(host, m.Port, m.ServerIP)
+			} else {
+				forwardErr = gostapi.CreateMerchantDirectForwards(host, m.Port, m.ServerIP)
+			}
+		} else {
+			if tlsDeployed || server.TlsEnabled == 1 {
+				forwardErr = gostapi.CreateMerchantForwardsWithTls(host, m.Port, m.ServerIP)
+			} else {
+				forwardErr = gostapi.CreateMerchantForwards(host, m.Port, m.ServerIP)
+			}
+		}
+
+		if forwardErr != nil {
+			progressCallback(fmt.Sprintf("  失败: %s", forwardErr))
+			failCount++
+		} else {
+			progressCallback(fmt.Sprintf("  成功: %s 端口 %d/%d/%d (TCP/WS/HTTP)", m.Name, m.Port, m.Port+1, m.Port+2))
+			successCount++
+
+			// 配置 Nginx 缓存（HTTP 端口 = basePort+2）
+			httpPort := m.Port + 2
+			if isNginxInstalled(req.ServerId) {
+				if err := UpdateGostServiceToLoopback(req.ServerId, httpPort); err == nil {
+					if err := ConfigureNginxCacheForPort(req.ServerId, httpPort); err != nil {
+						_ = RestoreGostServiceToPublic(req.ServerId, httpPort)
+						progressCallback(fmt.Sprintf("  Nginx 缓存配置失败(端口 %d): %s", httpPort, err))
+					} else {
+						progressCallback(fmt.Sprintf("  Nginx 缓存已配置(端口 %d)", httpPort))
+					}
+				}
+			}
+		}
+	}
+
+	// 8. 如果启用了 TLS，升级 listener
+	if server.TlsEnabled == 1 || tlsDeployed {
+		progressCallback("升级 GOST listener 为 TLS...")
+		if err := upgradeGostListenerToTls(host); err != nil {
+			progressCallback(fmt.Sprintf("警告: TLS listener 升级失败: %s", err))
+		} else {
+			progressCallback("TLS listener 升级成功")
+		}
+	}
+
+	// 9. 添加 WSS 443 端口（App WebSocket 连接用）
+	if len(merchants) > 0 && merchants[0].ServerIP != "" {
+		progressCallback("配置 WSS 443 端口...")
+		if err := gostapi.CreateWSSRelayForward(host, merchants[0].ServerIP); err != nil {
+			progressCallback(fmt.Sprintf("警告: WSS 443 配置失败: %s", err))
+		} else {
+			progressCallback("WSS 443 端口配置成功")
+		}
+	}
+
+	// 10. 持久化配置
+	progressCallback("保存 GOST 配置到文件...")
+	if err := PersistGostConfig(req.ServerId); err != nil {
+		progressCallback(fmt.Sprintf("警告: 配置持久化失败: %s", err))
+	} else {
+		progressCallback("配置已保存")
+	}
+
+	// 更新服务器的 ForwardType
+	updateServer := entity.Servers{ForwardType: forwardType, UpdatedAt: time.Now()}
+	updateCols := []string{"forward_type", "updated_at"}
+	if successCount > 0 && len(merchants) > 0 && server.MerchantId == 0 {
+		updateServer.MerchantId = merchants[0].Id
+		updateCols = append(updateCols, "merchant_id")
+	}
+	_, _ = dbs.DBAdmin.Where("id = ?", req.ServerId).Cols(updateCols...).Update(&updateServer)
+
+	progressCallback("========================================")
+	progressCallback(fmt.Sprintf("部署完成! 成功: %d, 失败: %d", successCount, failCount))
+	progressCallback("========================================")
+
+	return nil
 }
 
 // verifyGostAPI 验证 GOST API 是否可用

@@ -79,7 +79,8 @@ func Routes(gi gin.IRouter) {
 	group.GET("gost/chains", listGostChains)
 
 	// GOST 服务器一键部署
-	group.POST("gost/deploy", deployGostServer)          // 一键部署 GOST 转发服务器（流式API）
+	group.POST("gost/setup", setupGostDeploy)            // 一键部署 GOST（安装+配置转发，流式API）
+	group.POST("gost/deploy", deployGostServer)          // 一键部署 GOST 转发服务器（流式API）- 阿里云创建
 	group.GET("gost/deploy/config", getGostDeployConfig) // 获取部署默认配置
 	group.POST("gost/install", installGostToServer)      // 在已有服务器上安装 GOST（流式API）
 
@@ -781,6 +782,36 @@ func deployTSDDWithAMI(ctx *gin.Context) {
 
 // deployNode 集群节点部署（支持水平扩容）
 // ========== GOST 服务器一键部署 ==========
+
+// setupGostDeploy 一键部署 GOST（安装+配置转发，流式API）
+func setupGostDeploy(ctx *gin.Context) {
+	var req model.SetupGostDeployReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GStreamEnd(ctx, true, err.Error())
+		return
+	}
+
+	if len(req.MerchantIds) == 0 {
+		result.GStreamEnd(ctx, true, "请选择至少一个商户")
+		return
+	}
+
+	// 流式响应
+	result.GStream(ctx)
+
+	err := deployService.SetupGostDeploy(&req, func(message string) {
+		result.GStreamData(ctx, gin.H{
+			"message": fmt.Sprintf("%s %s", time.Now().Format(time.DateTime), message),
+		})
+	})
+
+	if err != nil {
+		result.GStreamEnd(ctx, true, err.Error())
+		return
+	}
+
+	result.GStreamEnd(ctx, true, "部署完成")
+}
 
 // deployGostServer 一键部署 GOST 转发服务器（流式API）
 func deployGostServer(ctx *gin.Context) {

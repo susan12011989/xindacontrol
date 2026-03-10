@@ -2,7 +2,7 @@
 import type { CloudAccountResp } from "@@/apis/cloud_account/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
 import { getBillingCostUsage } from "@@/apis/aws"
-import { createCloudAccount, deleteCloudAccount, getAliyunBalance, getCloudAccountList, updateCloudAccount } from "@@/apis/cloud_account"
+import { createCloudAccount, deleteCloudAccount, getAliyunBalance, getCloudAccountList, getTencentBalance, updateCloudAccount } from "@@/apis/cloud_account"
 import { getMerchantList } from "@@/apis/merchant"
 import { getAwsRegions } from "@@/constants/aws-regions"
 
@@ -393,26 +393,43 @@ const crudStore = reactive({
   }
 })
 
-// 余额弹窗状态
+// 余额弹窗状态（阿里云）
 const balanceDialogVisible = ref(false)
 const balanceDialogLoading = ref(false)
 const balanceDialogValue = ref<string>("")
 
-function onShowBalance(row: CloudAccountResp) {
-  if (row.cloud_type !== "aliyun") {
-    ElMessage.warning("仅支持阿里云账号")
-    return
-  }
-  balanceDialogVisible.value = true
-  balanceDialogLoading.value = true
-  const params: any = row.account_type === "merchant" && row.merchant_id
+// 腾讯云余额弹窗
+const tencentBalanceDialog = reactive({
+  visible: false,
+  loading: false,
+  data: null as any
+})
+
+function buildBalanceParams(row: CloudAccountResp) {
+  return row.account_type === "merchant" && row.merchant_id
     ? { merchant_id: row.merchant_id }
     : { cloud_account_id: row.id }
-  getAliyunBalance(params).then((res) => {
-    balanceDialogValue.value = res.data.balance
-  }).finally(() => {
-    balanceDialogLoading.value = false
-  })
+}
+
+function onShowBalance(row: CloudAccountResp) {
+  if (row.cloud_type === "aliyun") {
+    balanceDialogVisible.value = true
+    balanceDialogLoading.value = true
+    getAliyunBalance(buildBalanceParams(row)).then((res) => {
+      balanceDialogValue.value = res.data.balance
+    }).finally(() => {
+      balanceDialogLoading.value = false
+    })
+  } else if (row.cloud_type === "tencent") {
+    tencentBalanceDialog.visible = true
+    tencentBalanceDialog.loading = true
+    tencentBalanceDialog.data = null
+    getTencentBalance(buildBalanceParams(row)).then((res) => {
+      tencentBalanceDialog.data = res.data
+    }).finally(() => {
+      tencentBalanceDialog.loading = false
+    })
+  }
 }
 
 // AWS 账单弹窗逻辑（从云账号列表直达）
@@ -611,7 +628,7 @@ function getCloudTypeText(type: string) {
       <template #balance-slot="{ row }">
         <el-button v-if="row.cloud_type === 'aliyun'" link type="primary" @click="onShowBalance(row)">查余额</el-button>
         <el-button v-else-if="row.cloud_type === 'aws'" link type="primary" @click="onOpenAwsBilling(row)">账单</el-button>
-        <span v-else-if="row.cloud_type === 'tencent'">-</span>
+        <el-button v-else-if="row.cloud_type === 'tencent'" link type="primary" @click="onShowBalance(row)">查余额</el-button>
         <span v-else>-</span>
       </template>
 
@@ -653,6 +670,38 @@ function getCloudTypeText(type: string) {
       </div>
       <template #footer>
         <el-button @click="balanceDialogVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 腾讯云余额弹窗 -->
+    <el-dialog v-model="tencentBalanceDialog.visible" title="腾讯云账户余额" width="450px">
+      <div v-if="tencentBalanceDialog.loading" style="min-height: 120px">
+        <el-skeleton :rows="4" animated />
+      </div>
+      <div v-else-if="tencentBalanceDialog.data" class="tencent-balance">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="可用余额">
+            <span style="font-size: 18px; font-weight: bold; color: #409eff">{{ tencentBalanceDialog.data.balance_yuan }} 元</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="现金余额">{{ tencentBalanceDialog.data.cash_balance_yuan }} 元</el-descriptions-item>
+          <el-descriptions-item label="赠送余额">{{ (tencentBalanceDialog.data.present_balance / 100).toFixed(2) }} 元</el-descriptions-item>
+          <el-descriptions-item label="收入余额">{{ (tencentBalanceDialog.data.income_balance / 100).toFixed(2) }} 元</el-descriptions-item>
+          <el-descriptions-item label="冻结金额">{{ (tencentBalanceDialog.data.freeze_balance / 100).toFixed(2) }} 元</el-descriptions-item>
+          <el-descriptions-item label="欠费金额">
+            <span :style="{ color: tencentBalanceDialog.data.owe_balance > 0 ? '#f56c6c' : '' }">
+              {{ (tencentBalanceDialog.data.owe_balance / 100).toFixed(2) }} 元
+            </span>
+          </el-descriptions-item>
+          <el-descriptions-item label="欠费状态">
+            <el-tag :type="tencentBalanceDialog.data.is_overdue ? 'danger' : 'success'" size="small">
+              {{ tencentBalanceDialog.data.is_overdue ? '欠费' : '正常' }}
+            </el-tag>
+          </el-descriptions-item>
+        </el-descriptions>
+      </div>
+      <div v-else>查询失败</div>
+      <template #footer>
+        <el-button @click="tencentBalanceDialog.visible = false">关闭</el-button>
       </template>
     </el-dialog>
 

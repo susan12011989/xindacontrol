@@ -94,9 +94,12 @@ type Servers struct {
 	TlsDeployedAt *time.Time `xorm:"comment('TLS证书部署时间') DATETIME"`
 	Description   string     `xorm:"default '' comment('描述') VARCHAR(255)"`
 	Tags          string     `xorm:"default '' comment('标签') VARCHAR(255)"`
-	AwsInstanceId  string `xorm:"aws_instance_id default '' comment('AWS EC2实例ID') VARCHAR(32)" json:"aws_instance_id"`
-	AwsRegionId    string `xorm:"aws_region_id default '' comment('AWS区域') VARCHAR(32)" json:"aws_region_id"`
-	CloudAccountId int64  `xorm:"cloud_account_id default 0 comment('云账号ID') BIGINT" json:"cloud_account_id"`
+	AwsInstanceId   string `xorm:"aws_instance_id default '' comment('AWS EC2实例ID') VARCHAR(32)" json:"aws_instance_id"`
+	AwsRegionId     string `xorm:"aws_region_id default '' comment('AWS区域') VARCHAR(32)" json:"aws_region_id"`
+	CloudAccountId  int64  `xorm:"cloud_account_id default 0 comment('云账号ID') BIGINT" json:"cloud_account_id"`
+	CloudType       string `xorm:"cloud_type default '' comment('云类型: aws,aliyun,tencent') VARCHAR(20)" json:"cloud_type"`
+	CloudInstanceId string `xorm:"cloud_instance_id default '' comment('云实例ID') VARCHAR(64)" json:"cloud_instance_id"`
+	CloudRegionId   string `xorm:"cloud_region_id default '' comment('云区域ID') VARCHAR(64)" json:"cloud_region_id"`
 	GroupId        int    `xorm:"not null default 0 comment('分组ID') index INT"`
 	CreatedAt     time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 	UpdatedAt     time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`

@@ -1,11 +1,10 @@
 <script lang="ts" setup>
-import type { DeployGostServerReq, ServerResp } from "@@/apis/deploy/type"
+import type { ServerResp } from "@@/apis/deploy/type"
 import type { MerchantResp } from "@@/apis/merchant/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
-import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus, getProgramConfig, updateProgramConfig, getNginxCacheStatus, clearNginxCache, persistGostConfig, getGostConfigSyncStatus } from "@@/apis/deploy"
+import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus, getProgramConfig, updateProgramConfig, getNginxCacheStatus, clearNginxCache, persistGostConfig, getGostConfigSyncStatus, setupGostDeploy } from "@@/apis/deploy"
 import type { GostConfigSyncStatusResp } from "@@/apis/deploy/type"
 import { getMerchantList } from "@@/apis/merchant"
-import { getCloudAccountList } from "@@/apis/cloud_account"
 import { createStreamRequest } from "@/http/axios"
 
 defineOptions({
@@ -13,104 +12,81 @@ defineOptions({
 })
 
 // ========== GOST 一键部署 ==========
-const deployDialogVisible = ref(false)
-const deployLogs = ref<string[]>([])
-const isDeploying = ref(false)
-const deployLogRef = ref<HTMLDivElement>()
-
-// 云账号列表
-const cloudAccountList = ref<any[]>([])
+const setupDialogVisible = ref(false)
+const setupLogs = ref<string[]>([])
+const isSettingUp = ref(false)
+const setupLogRef = ref<HTMLDivElement>()
 
 // 部署表单
-const deployForm = reactive<DeployGostServerReq>({
-  cloud_account_id: 0,
-  region_id: "ap-southeast-1",
-  instance_type: "",
-  image_id: "",
-  server_name: "",
-  group_id: 0,
-  password: "",
-  bandwidth: "5"
+const setupForm = reactive({
+  server_id: 0,
+  merchant_ids: [] as number[],
+  forward_type: 1
 })
 
-// 加载云账号列表
-async function loadCloudAccounts() {
-  try {
-    const res = await getCloudAccountList({ page: 1, size: 100 })
-    cloudAccountList.value = Array.isArray(res.data?.list) ? res.data.list : []
-  } catch (e) {
-    console.error("加载云账号失败:", e)
-  }
-}
-
 // 打开部署弹窗
-function openDeployDialog() {
-  deployLogs.value = []
-  deployForm.cloud_account_id = cloudAccountList.value[0]?.id || 0
-  deployForm.region_id = "ap-southeast-1"
-  deployForm.server_name = `gost-${Date.now()}`
-  deployDialogVisible.value = true
+function openSetupDialog() {
+  setupLogs.value = []
+  setupForm.server_id = 0
+  setupForm.merchant_ids = []
+  setupForm.forward_type = 1
+  setupDialogVisible.value = true
 }
 
 // 执行一键部署
-function startDeploy() {
-  if (!deployForm.cloud_account_id) {
-    ElMessage.warning("请选择云账号")
+function startSetup() {
+  if (!setupForm.server_id) {
+    ElMessage.warning("请选择服务器")
     return
   }
-  if (!deployForm.region_id) {
-    ElMessage.warning("请选择地区")
+  if (setupForm.merchant_ids.length === 0) {
+    ElMessage.warning("请选择至少一个商户")
     return
   }
 
-  isDeploying.value = true
-  deployLogs.value = ["开始部署 GOST 服务器..."]
+  isSettingUp.value = true
+  setupLogs.value = ["开始部署..."]
 
-  const cancel = createStreamRequest(
-    {
-      url: "deploy/gost/deploy",
-      method: "POST",
-      data: deployForm
-    },
+  setupGostDeploy(
+    setupForm,
     (data: any, isComplete?: boolean) => {
       if (data?.message) {
-        deployLogs.value.push(data.message)
+        setupLogs.value.push(data.message)
         scrollToBottom()
       }
       if (isComplete) {
-        isDeploying.value = false
+        isSettingUp.value = false
         if (data?.success) {
           ElMessage.success("部署完成!")
-          loadServerList() // 刷新服务器列表
+          loadRecords()
         }
       }
     },
     (error: any) => {
-      isDeploying.value = false
-      deployLogs.value.push(`错误: ${error?.message || error}`)
+      isSettingUp.value = false
+      setupLogs.value.push(`错误: ${error?.message || error}`)
       ElMessage.error("部署失败")
     }
   )
 }
 
+// 全选/取消全选商户
+function toggleAllMerchants(checked: any) {
+  if (checked) {
+    setupForm.merchant_ids = merchantList.value.map(m => m.id)
+  } else {
+    setupForm.merchant_ids = []
+  }
+}
+
 // 滚动到日志底部
 function scrollToBottom() {
   nextTick(() => {
-    if (deployLogRef.value) {
-      deployLogRef.value.scrollTop = deployLogRef.value.scrollHeight
+    if (setupLogRef.value) {
+      setupLogRef.value.scrollTop = setupLogRef.value.scrollHeight
     }
   })
 }
-
-// AWS 地区列表（用于一键部署）
-const regionOptions = [
-  { value: "ap-southeast-1", label: "新加坡" },
-  { value: "ap-northeast-1", label: "东京" },
-  { value: "ap-east-1", label: "香港" },
-  { value: "us-west-2", label: "美西(俄勒冈)" },
-  { value: "us-east-1", label: "美东(弗吉尼亚)" },
-  { value: "eu-west-1", label: "欧洲(爱尔兰)" }
-]
 
 // ========== 服务器选择（仅系统服务器） ==========
 const allServerList = ref<ServerResp[]>([])
@@ -725,7 +701,6 @@ async function doPersistConfig() {
 // ========== 生命周期 ==========
 onMounted(() => {
   loadServerList()
-  loadCloudAccounts()
   // 加载商户下拉
   getMerchantList({ page: 1, size: 2000 }).then((res) => {
     merchantList.value = Array.isArray(res.data?.list) ? res.data.list : []
@@ -791,7 +766,7 @@ onMounted(() => {
         <el-divider direction="vertical" />
         <el-button type="info" icon="Box" @click="openCacheDialog">缓存管理</el-button>
         <el-divider direction="vertical" />
-        <el-button type="success" icon="Plus" @click="openDeployDialog">一键部署 GOST 服务器</el-button>
+        <el-button type="success" icon="Plus" @click="openSetupDialog">一键部署</el-button>
       </div>
     </el-card>
 
@@ -859,42 +834,42 @@ onMounted(() => {
       <vxe-form ref="xCreateFormDom" v-bind="xCreateFormOpt" />
     </vxe-modal>
 
-    <!-- 一键部署 GOST 服务器弹窗 -->
-    <el-dialog v-model="deployDialogVisible" title="一键部署 GOST 服务器" width="700px" :close-on-click-modal="false">
-      <el-form :model="deployForm" label-width="120px">
-        <el-form-item label="云账号" required>
-          <el-select v-model="deployForm.cloud_account_id" placeholder="选择云账号" style="width: 100%">
-            <el-option v-for="acc in cloudAccountList" :key="acc.id" :label="`${acc.name} (${acc.cloud_type})`" :value="acc.id" />
+    <!-- 一键部署弹窗 -->
+    <el-dialog v-model="setupDialogVisible" title="一键部署 GOST" width="700px" :close-on-click-modal="false">
+      <el-form :model="setupForm" label-width="120px">
+        <el-form-item label="系统服务器" required>
+          <el-select v-model="setupForm.server_id" placeholder="选择系统服务器" style="width: 100%">
+            <el-option v-for="s in allServerList.filter(s => s.server_type === 2)" :key="s.id" :label="`${s.name} (${s.host})`" :value="s.id" />
           </el-select>
         </el-form-item>
-        <el-form-item label="地区" required>
-          <el-select v-model="deployForm.region_id" placeholder="选择地区" style="width: 100%">
-            <el-option v-for="r in regionOptions" :key="r.value" :label="r.label" :value="r.value" />
-          </el-select>
+        <el-form-item label="商户" required>
+          <div style="margin-bottom: 8px">
+            <el-checkbox :model-value="setupForm.merchant_ids.length === merchantList.length && merchantList.length > 0" :indeterminate="setupForm.merchant_ids.length > 0 && setupForm.merchant_ids.length < merchantList.length" @change="toggleAllMerchants">全选</el-checkbox>
+          </div>
+          <el-checkbox-group v-model="setupForm.merchant_ids">
+            <el-checkbox v-for="m in merchantList" :key="m.id" :value="m.id">{{ m.name }} (端口:{{ m.port }}, IP:{{ m.server_ip || '未配置' }})</el-checkbox>
+          </el-checkbox-group>
         </el-form-item>
-        <el-form-item label="服务器名称">
-          <el-input v-model="deployForm.server_name" placeholder="自动生成" />
-        </el-form-item>
-        <el-form-item label="带宽(Mbps)">
-          <el-input v-model="deployForm.bandwidth" placeholder="默认 5Mbps" />
-        </el-form-item>
-        <el-form-item label="SSH密码">
-          <el-input v-model="deployForm.password" type="password" placeholder="留空则自动生成密钥" show-password />
+        <el-form-item label="转发模式">
+          <el-radio-group v-model="setupForm.forward_type">
+            <el-radio :value="1">加密 (relay+tls)</el-radio>
+            <el-radio :value="2">直连 (tcp)</el-radio>
+          </el-radio-group>
         </el-form-item>
       </el-form>
 
       <!-- 部署日志 -->
-      <div v-if="deployLogs.length > 0" class="deploy-log-container">
+      <div v-if="setupLogs.length > 0" class="deploy-log-container">
         <div class="deploy-log-title">部署日志:</div>
-        <div ref="deployLogRef" class="deploy-log-content">
-          <div v-for="(log, idx) in deployLogs" :key="idx" class="deploy-log-line">{{ log }}</div>
+        <div ref="setupLogRef" class="deploy-log-content">
+          <div v-for="(log, idx) in setupLogs" :key="idx" class="deploy-log-line">{{ log }}</div>
         </div>
       </div>
 
       <template #footer>
-        <el-button @click="deployDialogVisible = false" :disabled="isDeploying">取消</el-button>
-        <el-button type="primary" @click="startDeploy" :loading="isDeploying">
-          {{ isDeploying ? '部署中...' : '开始部署' }}
+        <el-button @click="setupDialogVisible = false" :disabled="isSettingUp">取消</el-button>
+        <el-button type="primary" @click="startSetup" :loading="isSettingUp">
+          {{ isSettingUp ? '部署中...' : '开始部署' }}
         </el-button>
       </template>
     </el-dialog>

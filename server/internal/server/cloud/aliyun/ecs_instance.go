@@ -149,46 +149,19 @@ func CreateInstance(req *CreateInstanceRequest) (*CreateInstanceResult, error) {
 	// 认证信息 - 根据用户选择决定使用密码还是密钥
 	var authInfo *ServerAuthInfo
 
-	if req.UsePassword {
-		// 用户选择密码认证
-		password := req.Password
-		if password == "" {
-			password = generateSecurePassword()
-		}
-		request.Password = tea.String(password)
-		authInfo = &ServerAuthInfo{
-			AuthType: 1, // 密码认证
-			Password: password,
-		}
-		logx.Infof("creating instance with password authentication (user selected)")
-	} else {
-		// 默认使用SSH密钥对
-		keyPairName := fmt.Sprintf("control-auto-%s-%d", req.Region, time.Now().Unix())
-		privateKey, err := CreateKeyPair(client, req.Region, keyPairName)
-		if err != nil {
-			logx.Errorf("create key pair failed, fallback to password: %v", err)
-			// 如果创建密钥对失败，回退到密码认证
-			password := req.Password
-			if password == "" {
-				password = generateSecurePassword()
-			}
-			request.Password = tea.String(password)
-			authInfo = &ServerAuthInfo{
-				AuthType: 1, // 密码认证
-				Password: password,
-			}
-			logx.Infof("creating instance with password authentication (fallback)")
-		} else {
-			// 使用自动创建的密钥对
-			request.KeyPairName = tea.String(keyPairName)
-			authInfo = &ServerAuthInfo{
-				AuthType:   2, // 密钥认证
-				KeyName:    keyPairName,
-				PrivateKey: privateKey,
-			}
-			logx.Infof("creating instance with auto-created SSH key pair: %s", keyPairName)
-		}
+	// 始终使用SSH密钥对认证（阿里云镜像默认禁用密码登录）
+	keyPairName := fmt.Sprintf("control-auto-%s-%d", req.Region, time.Now().Unix())
+	privateKey, err := CreateKeyPair(client, req.Region, keyPairName)
+	if err != nil {
+		return nil, fmt.Errorf("创建密钥对失败: %v", err)
 	}
+	request.KeyPairName = tea.String(keyPairName)
+	authInfo = &ServerAuthInfo{
+		AuthType:   2, // 密钥认证
+		KeyName:    keyPairName,
+		PrivateKey: privateKey,
+	}
+	logx.Infof("creating instance with SSH key pair: %s, private key length: %d", keyPairName, len(privateKey))
 
 	if req.InstanceChargeType == "PrePaid" {
 		request.PeriodUnit = tea.String(req.PeriodUnit)
@@ -364,12 +337,25 @@ func createAfterAuthorizeSecurityGroupAndRegister(merchantId int, cloudAccountId
 	logx.Infof("instance %s got public IP: %s", instanceId, publicIp)
 
 	// 注册服务器到数据库
-	err = registerServerToDatabase(instanceId, instanceName, publicIp, authInfo, merchantId)
+	serverId, err := registerServerToDatabase(instanceId, instanceName, publicIp, authInfo, merchantId, cloudAccountId, region)
 	if err != nil {
 		logx.Errorf("register server to database failed: %v", err)
 		return
 	}
-	logx.Infof("server registered to database: %s (%s)", instanceName, publicIp)
+	logx.Infof("server registered to database (id=%d): %s (%s)", serverId, instanceName, publicIp)
+
+	// 验证 SSH 连接
+	logx.Infof("verifying SSH connection to %s with key pair...", publicIp)
+	verifyErr := verifySSHConnection(publicIp, authInfo)
+	if verifyErr != nil {
+		logx.Errorf("SSH verification FAILED for %s: %v", publicIp, verifyErr)
+		// 更新服务器描述标记SSH问题
+		dbs.DBAdmin.Where("id = ?", serverId).Update(&entity.Servers{
+			Description: fmt.Sprintf("SSH验证失败: %v (实例: %s)", verifyErr, instanceId),
+		})
+		return
+	}
+	logx.Infof("SSH connection verified OK for %s", publicIp)
 
 	// 自动安装 GOST 服务
 	logx.Infof("starting GOST installation on %s", publicIp)
@@ -381,8 +367,8 @@ func createAfterAuthorizeSecurityGroupAndRegister(merchantId int, cloudAccountId
 	logx.Infof("GOST installed successfully on %s", publicIp)
 }
 
-// registerServerToDatabase 将新创建的实例注册到服务器表
-func registerServerToDatabase(instanceId, instanceName, publicIp string, authInfo *ServerAuthInfo, merchantId int) error {
+// registerServerToDatabase 将新创建的实例注册到服务器表，返回服务器ID
+func registerServerToDatabase(instanceId, instanceName, publicIp string, authInfo *ServerAuthInfo, merchantId int, cloudAccountId int64, region string) (int, error) {
 	now := time.Now()
 
 	// 确定服务器类型：如果有 merchantId 则是商户服务器(1)，否则是系统服务器(2)
@@ -392,25 +378,67 @@ func registerServerToDatabase(instanceId, instanceName, publicIp string, authInf
 	}
 
 	server := &entity.Servers{
-		ServerType:  serverType,
-		MerchantId:  merchantId,
-		Name:        instanceName,
-		Host:        publicIp,
-		Port:        22,
-		Username:    "root",
-		AuthType:    authInfo.AuthType,
-		Password:    authInfo.Password,
-		PrivateKey:  authInfo.PrivateKey,
-		DeployPath:  "/opt/teamgram/bin",
-		Status:      1, // 启用
-		Description: fmt.Sprintf("Auto-created from ECS instance %s", instanceId),
-		ForwardType: 1, // 加密转发
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ServerType:      serverType,
+		MerchantId:      merchantId,
+		Name:            instanceName,
+		Host:            publicIp,
+		Port:            22,
+		Username:        "root",
+		AuthType:        authInfo.AuthType,
+		Password:        authInfo.Password,
+		PrivateKey:      authInfo.PrivateKey,
+		DeployPath:      "/opt/teamgram/bin",
+		Status:          1, // 启用
+		Description:     fmt.Sprintf("Auto-created from ECS instance %s", instanceId),
+		ForwardType:     1, // 加密转发
+		CloudAccountId:  cloudAccountId,
+		CloudType:       "aliyun",
+		CloudInstanceId: instanceId,
+		CloudRegionId:   region,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 
 	_, err := dbs.DBAdmin.Insert(server)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	logx.Infof("server registered: id=%d, authType=%d, keyLen=%d", server.Id, authInfo.AuthType, len(authInfo.PrivateKey))
+	return server.Id, nil
+}
+
+// verifySSHConnection 验证SSH连接是否正常
+func verifySSHConnection(host string, authInfo *ServerAuthInfo) error {
+	// 等待 SSH 服务就绪（最多60秒）
+	if err := waitForSSHReady(host, 12); err != nil {
+		return fmt.Errorf("SSH service not ready: %w", err)
+	}
+
+	signer, err := ssh.ParsePrivateKey([]byte(authInfo.PrivateKey))
+	if err != nil {
+		return fmt.Errorf("parse private key failed: %w", err)
+	}
+
+	config := &ssh.ClientConfig{
+		User:            "root",
+		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         15 * time.Second,
+	}
+
+	client, err := ssh.Dial("tcp", host+":22", config)
+	if err != nil {
+		return fmt.Errorf("SSH dial failed: %w", err)
+	}
+	defer client.Close()
+
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("create session failed: %w", err)
+	}
+	defer session.Close()
+
+	return session.Run("echo ok")
 }
 
 // StartInstance 启动实例
@@ -1193,15 +1221,12 @@ func RegisterInstanceWithSSHKey(req *RegisterInstanceWithSSHKeyRequest) (*Regist
 
 		auxiliaryIPStr := strings.Join(auxiliaryIPs, ",")
 
-		// 更新辅助IP和私钥（如果需要）
+		// 更新辅助IP和私钥（始终更新密钥，确保SSH可用）
 		updates := map[string]interface{}{
 			"auxiliary_ip": auxiliaryIPStr,
+			"private_key":  privateKey,
+			"auth_type":    2,
 			"updated_at":   now,
-		}
-		// 如果原服务器没有私钥，则更新私钥
-		if existingServer.PrivateKey == "" {
-			updates["private_key"] = privateKey
-			updates["auth_type"] = 2
 		}
 
 		_, err = dbs.DBAdmin.Table("servers").Where("id = ?", existingServer.Id).Update(updates)

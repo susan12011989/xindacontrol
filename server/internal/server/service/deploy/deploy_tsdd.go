@@ -1264,6 +1264,31 @@ docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Image}}" | grep -E "tsdd|N
 		logx.Infof("[CustomAMI] Phase 2 完成: %s", output)
 	}
 
+	// ==================== Phase 3: 统一 MySQL collation ====================
+	// MySQL 8 默认 utf8mb4_0900_ai_ci，但原有表用 utf8mb4_unicode_ci
+	// tsdd-server auto-migration 创建的新表会用 MySQL 默认 collation，导致 JOIN 冲突
+	logx.Info("[CustomAMI] Phase 3: 统一 MySQL collation...")
+	collationScript := "cd /opt/tsdd\n" +
+		"MYSQL_PASS=$(grep '^MYSQL_ROOT_PASSWORD=' .env | cut -d= -f2)\n" +
+		"for i in $(seq 1 30); do\n" +
+		"    if docker exec tsdd-mysql mysqladmin ping -h localhost --silent 2>/dev/null; then break; fi\n" +
+		"    sleep 2\n" +
+		"done\n" +
+		"docker exec tsdd-mysql bash -c \"mysql -uroot -p\\\"$MYSQL_PASS\\\" -e \\\"ALTER DATABASE tsdd CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\\\"\" 2>/dev/null\n" +
+		"docker exec tsdd-mysql bash -c \"mysql -uroot -p\\\"$MYSQL_PASS\\\" -e \\\"SET GLOBAL collation_server = 'utf8mb4_unicode_ci'; SET GLOBAL character_set_server = 'utf8mb4';\\\"\" 2>/dev/null\n" +
+		"TABLES=$(docker exec tsdd-mysql bash -c \"mysql -uroot -p\\\"$MYSQL_PASS\\\" -N -e \\\"SELECT table_name FROM information_schema.tables WHERE table_schema='tsdd' AND table_collation != 'utf8mb4_unicode_ci';\\\"\" 2>/dev/null)\n" +
+		"FIXED=0\n" +
+		"for t in $TABLES; do\n" +
+		"    docker exec tsdd-mysql bash -c \"mysql -uroot -p\\\"$MYSQL_PASS\\\" -e \\\"ALTER TABLE tsdd.\\`$t\\` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\\\"\" 2>/dev/null && FIXED=$((FIXED+1))\n" +
+		"done\n" +
+		"echo \"Collation fixed: $FIXED tables converted to utf8mb4_unicode_ci\"\n"
+	output, err = client.ExecuteCommandWithTimeout(collationScript, 2*time.Minute)
+	if err != nil {
+		logx.Errorf("[CustomAMI] Collation 统一失败（非致命）: %v, output: %s", err, output)
+	} else {
+		logx.Infof("[CustomAMI] Phase 3 完成: %s", output)
+	}
+
 	return nil
 }
 

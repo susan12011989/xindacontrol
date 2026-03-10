@@ -219,15 +219,12 @@ func UpdateCloudAccount(id int64, req model.UpdateCloudAccountReq) error {
 		return errors.New("没有需要更新的字段")
 	}
 
-	affected, err := dbs.DBAdmin.Table("cloud_accounts").
+	_, err = dbs.DBAdmin.Table("cloud_accounts").
 		Where("id = ?", id).
 		Update(updates)
 	if err != nil {
 		logx.Errorf("update cloud account err: %+v", err)
 		return err
-	}
-	if affected == 0 {
-		return errors.New("更新失败")
 	}
 
 	return nil

@@ -67,10 +67,11 @@ type MerchantPortConfig struct {
 }
 
 // MerchantPortConfigs 商户三端口配置列表（系统服务器 → 商户服务器）
+// 注意: offset 0 (端口 basePort+0) 转发到 WS 端口，因为 App 使用 WebSocket+TLS 连接
 var MerchantPortConfigs = []MerchantPortConfig{
-	{PortOffsetTCP, MerchantGostPortTCP, "tcp"},
-	{PortOffsetWS, MerchantGostPortWS, "ws"},
-	{PortOffsetHTTP, MerchantGostPortHTTP, "http"},
+	{PortOffsetTCP, MerchantGostPortWS, "tcp"},    // App WSS → merchant:10011 → WuKongIM:5200
+	{PortOffsetWS, MerchantGostPortWS, "ws"},      // 备用 WS
+	{PortOffsetHTTP, MerchantGostPortHTTP, "http"}, // HTTP API → merchant:10012 → tsdd-server:5003
 }
 
 // MerchantLocalForwardConfig 商户服务器本地转发配置（GOST → 业务程序）
@@ -1274,14 +1275,15 @@ func (c *Client) UpdateMerchantDirectForwards(gostServerIP string, basePort int,
 // ========== 系统服务器 WSS 443 隧道（手机 App WSS 连接） ==========
 
 // CreateWSSRelayForward 在系统服务器上创建 WSS 443 隧道
-// bindIP:443 (TLS) → relay+tls → merchantIP:10014 → WuKongIM:5200
+// bindIP:443 (TLS) → relay+tls → merchantIP:10011 → WuKongIM:5200
+// 直接使用商户的 WS relay+tls 端口（10011），无需 nginx 中间层
 func CreateWSSRelayForward(gostServerIP string, merchantIP string, bindIP ...string) error {
 	ip := ""
 	if len(bindIP) > 0 {
 		ip = bindIP[0]
 	}
 	_, err := defaultClient.createRelayTLSForwardWithProtocol(
-		gostServerIP, SystemWSSListenPort, merchantIP, MerchantWSSProxyPort, "wss", true, ip)
+		gostServerIP, SystemWSSListenPort, merchantIP, MerchantGostPortWS, "wss", true, ip)
 	return err
 }
 
