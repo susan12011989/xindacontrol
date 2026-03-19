@@ -244,12 +244,11 @@ func formatMemorySize(kb float64) string {
 	return fmt.Sprintf("%.2fGB", kb/1024/1024)
 }
 
-// GetServiceLogs 获取服务日志（使用 journalctl）
+// GetServiceLogs 获取服务日志（优先 Docker，回退 journalctl）
 func GetServiceLogs(req model.ServiceLogsReq) (model.ServiceLogsResp, error) {
 	var resp model.ServiceLogsResp
 
-	systemdName, ok := serviceSystemdNames[req.ServiceName]
-	if !ok {
+	if _, ok := serviceSystemdNames[req.ServiceName]; !ok {
 		return resp, fmt.Errorf("不支持的服务: %s", req.ServiceName)
 	}
 
@@ -263,7 +262,23 @@ func GetServiceLogs(req model.ServiceLogsReq) (model.ServiceLogsResp, error) {
 		lines = 100
 	}
 
-	cmd := fmt.Sprintf("journalctl -u %s -n %d --no-pager", systemdName, lines)
+	// 优先尝试 Docker 日志
+	var cmd string
+	dockerName := serviceDockerNames[req.ServiceName]
+	if dockerName != "" {
+		checkCmd := fmt.Sprintf("docker inspect %s >/dev/null 2>&1 && echo 'exists'", dockerName)
+		checkOutput, _ := client.ExecuteCommand(checkCmd)
+		if strings.TrimSpace(checkOutput) == "exists" {
+			cmd = fmt.Sprintf("docker logs --tail %d %s 2>&1", lines, dockerName)
+		}
+	}
+
+	// Docker 容器不存在，回退到 journalctl
+	if cmd == "" {
+		systemdName := serviceSystemdNames[req.ServiceName]
+		cmd = fmt.Sprintf("journalctl -u %s -n %d --no-pager", systemdName, lines)
+	}
+
 	output, err := client.ExecuteCommand(cmd)
 	if err != nil {
 		return resp, fmt.Errorf("读取日志失败: %v", err)

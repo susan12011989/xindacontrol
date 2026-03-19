@@ -2,6 +2,7 @@
 import type { DockerContainerStatus, ServiceName, ServiceStatusResp } from "@@/apis/deploy/type"
 import type { CloudMonitorMetricsResp, MetricSeries } from "@@/apis/cloud_monitor"
 import { getDockerContainers, getProgramConfig, getServerDetail, getServerList, getServerStats, getServiceLogs, getServiceStatus, serviceAction, updateProgramConfig, uploadServerFile } from "@@/apis/deploy"
+import { getContainerLogs } from "@@/apis/docker"
 import { getCloudMonitorMetrics } from "@@/apis/cloud_monitor"
 import * as echarts from "echarts"
 
@@ -33,12 +34,19 @@ const statsLoading = ref(false)
 const dockerContainers = ref<DockerContainerStatus[]>([])
 const dockerLoading = ref(false)
 
-// 日志查看
+// 日志查看（systemctl 服务）
 const logDialogVisible = ref(false)
 const currentService = ref<ServiceName>("server")
 const logContent = ref("")
 const logLoading = ref(false)
 const logLines = ref(100)
+
+// Docker 容器日志查看
+const dockerLogDialogVisible = ref(false)
+const currentDockerContainer = ref<DockerContainerStatus | null>(null)
+const dockerLogContent = ref("")
+const dockerLogLoading = ref(false)
+const dockerLogLines = ref(100)
 
 // 顶部：服务器切换（远程搜索）
 const serverSelectLoading = ref(false)
@@ -320,6 +328,43 @@ function downloadLogs() {
   const a = document.createElement("a")
   a.href = url
   a.download = `${currentService.value}_${Date.now()}.log`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+// 查看 Docker 容器日志
+function viewDockerLogs(container: DockerContainerStatus) {
+  currentDockerContainer.value = container
+  dockerLogDialogVisible.value = true
+  loadDockerLogs()
+}
+
+// 加载 Docker 容器日志
+async function loadDockerLogs() {
+  if (!currentDockerContainer.value) return
+  dockerLogLoading.value = true
+  try {
+    const res = await getContainerLogs({
+      server_id: serverId.value,
+      container_id: currentDockerContainer.value.container_id,
+      lines: dockerLogLines.value
+    })
+    dockerLogContent.value = res.data.logs
+  } catch {
+    ElMessage.error("读取 Docker 日志失败")
+  } finally {
+    dockerLogLoading.value = false
+  }
+}
+
+// 下载 Docker 日志
+function downloadDockerLogs() {
+  if (!dockerLogContent.value) return
+  const blob = new Blob([dockerLogContent.value], { type: "text/plain" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `${currentDockerContainer.value?.name}_${Date.now()}.log`
   a.click()
   URL.revokeObjectURL(url)
 }
@@ -814,6 +859,13 @@ watch(() => route.query.server_id, async (val) => {
         <el-table-column prop="ports" label="端口映射" min-width="180" show-overflow-tooltip />
         <el-table-column prop="running_for" label="运行时长" width="100" />
         <el-table-column prop="container_id" label="容器ID" width="100" />
+        <el-table-column label="操作" width="80" fixed="right">
+          <template #default="{ row }">
+            <el-button link type="info" size="small" @click="viewDockerLogs(row)">
+              日志
+            </el-button>
+          </template>
+        </el-table-column>
       </el-table>
     </el-card>
 
@@ -829,7 +881,35 @@ watch(() => route.query.server_id, async (val) => {
       </template>
     </el-dialog>
 
-    <!-- 日志查看弹窗 -->
+    <!-- Docker 容器日志弹窗 -->
+    <el-dialog v-model="dockerLogDialogVisible" :title="`Docker 日志 - ${currentDockerContainer?.name}`" width="80%" destroy-on-close>
+      <div class="log-viewer-container">
+        <div class="log-toolbar mb-4">
+          <el-form inline>
+            <el-form-item label="显示行数">
+              <el-select v-model="dockerLogLines" @change="loadDockerLogs" style="width: 120px">
+                <el-option label="最后100行" :value="100" />
+                <el-option label="最后500行" :value="500" />
+                <el-option label="最后1000行" :value="1000" />
+              </el-select>
+            </el-form-item>
+            <el-form-item>
+              <el-button @click="loadDockerLogs" :loading="dockerLogLoading">
+                <el-icon><Refresh /></el-icon> 刷新
+              </el-button>
+              <el-button @click="downloadDockerLogs">
+                <el-icon><Download /></el-icon> 下载
+              </el-button>
+            </el-form-item>
+          </el-form>
+        </div>
+        <div v-loading="dockerLogLoading" class="log-content">
+          <pre><code>{{ dockerLogContent || "暂无日志" }}</code></pre>
+        </div>
+      </div>
+    </el-dialog>
+
+    <!-- 服务日志查看弹窗 -->
     <el-dialog v-model="logDialogVisible" :title="`服务日志 - ${currentService}`" width="80%" destroy-on-close>
       <div class="log-viewer-container">
         <div class="log-toolbar mb-4">

@@ -9,6 +9,7 @@ server/controlserver-*
 server/apps/server/server
 server/apps/server/control-server-linux
 server/bin/control-server
+server/control
 
 # Logs
 server/logs/

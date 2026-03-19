@@ -97,6 +97,7 @@ func DeployGostServer(config *GostDeployConfig, progressCallback func(message st
 		DiskCategory:       "cloud_efficiency",
 		DiskSize:           40, // 40GB 系统盘
 		Password:           config.Password,
+		UsePassword:        true, // GOST 部署必须使用密码认证，否则密钥对私钥不会保存
 	}
 
 	instanceResult, err := aliyun.CreateInstance(createReq)
@@ -104,6 +105,10 @@ func DeployGostServer(config *GostDeployConfig, progressCallback func(message st
 		return nil, fmt.Errorf("创建 ECS 实例失败: %w", err)
 	}
 	result.InstanceId = instanceResult.InstanceId
+	// 使用 CreateInstance 返回的密码（用户未提供时会自动生成）
+	if instanceResult.Password != "" {
+		config.Password = instanceResult.Password
+	}
 	progressCallback(fmt.Sprintf("ECS 实例创建成功: %s", result.InstanceId))
 
 	// Step 2: 等待实例运行
