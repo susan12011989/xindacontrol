@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/signal"
 	"server/internal/server/cfg"
+	ctrl "server/internal/server/control"
+	"server/internal/server/cron"
 	"server/internal/server/middleware"
 	"server/internal/server/router/alert"
 	"server/internal/server/router/announcements"
@@ -16,8 +18,11 @@ import (
 	"server/internal/server/router/cloud_aliyun"
 	"server/internal/server/router/cloud_aws"
 	"server/internal/server/router/cloud_tencent"
+	controlRouter "server/internal/server/router/control"
 	"server/internal/server/router/deploy"
+	deployService "server/internal/server/service/deploy"
 	"server/internal/server/router/docker"
+	"server/internal/server/router/wukongim"
 	"server/internal/server/router/feature"
 	"server/internal/server/router/global"
 	"server/internal/server/router/health"
@@ -51,6 +56,18 @@ func Serve(ctx context.Context) {
 	token_manager.Init()
 	gostapi.InitTaskQueue(dbs.Rds()) // 初始化 GOST 任务队列
 
+	// 初始化统一控制层（根据配置切换单机/多机模式）
+	controlMode := ctrl.ModeCluster // 默认多机模式
+	if cfg.C.Control != nil && cfg.C.Control.Mode != "" {
+		controlMode = ctrl.Mode(cfg.C.Control.Mode)
+	}
+	ctrl.Init(ctrl.Config{Mode: controlMode})
+
+	// 启动 GOST 链路健康监控（后台定时检测，异常记入告警日志）
+	gostMonitor := cron.NewGostMonitor(2 * time.Minute)
+	gostMonitor.Start()
+	defer gostMonitor.Stop()
+
 	// 自动创建表：公告发送日志
 	_ = dbs.DBAdmin.Sync2(new(entity.AnnouncementLogs))
 	// 自动创建表：功能开关
@@ -73,6 +90,8 @@ func Serve(ctx context.Context) {
 	_ = dbs.DBAdmin.Sync2(new(entity.ResourceGroups))
 	// 同步 Servers 表结构（新增字段自动加列）
 	_ = dbs.DBAdmin.Sync2(new(entity.Servers))
+	// 自动创建表：隧道连接统计记录
+	_ = dbs.DBAdmin.Sync2(new(entity.TunnelStatsRecord))
 	// http api
 	ge := gin.Default()
 
@@ -98,6 +117,7 @@ func Serve(ctx context.Context) {
 	group.Use(middleware.APIRateLimit())     // API限流
 	// group.Use(middleware.IPWhiteList)     // IP白名单
 	group.Use(middleware.LogRequest)         // 请求日志
+	group.Use(middleware.NoDestructiveOps)   // maintainer 角色禁止删除/销毁操作
 	group.GET("ping", func(c *gin.Context) { // 测试是否能通
 		result.GOK(c, map[string]any{
 			"timestamp": time.Now().Unix(),
@@ -124,6 +144,8 @@ func Serve(ctx context.Context) {
 	resource_group.Routes(group)    // 资源分组管理
 	resource_overview.Routes(group) // 资源总览
 	clients.Routes(group)           // 客户端管理
+	controlRouter.Routes(group)     // 统一控制层（兼容单机/多机）
+	wukongim.Routes(group)          // WuKongIM监控管理
 
 	// 配置静态文件服务（前端页面 + SPA 回退）
 	fsys := static.FS()
@@ -170,6 +192,16 @@ func Serve(ctx context.Context) {
 		logx.Infof("Started admin server on %s", cfg.C.ListenOn)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logx.Errorf("Server error: %v", err)
+		}
+	}()
+
+	// 启动隧道连接数定期采集（每5分钟）
+	tunnelTicker := time.NewTicker(5 * time.Minute)
+	go func() {
+		// 启动后先采集一次
+		deployService.CollectAndSaveTunnelStats()
+		for range tunnelTicker.C {
+			deployService.CollectAndSaveTunnelStats()
 		}
 	}()
 

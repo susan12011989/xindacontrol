@@ -12,7 +12,7 @@ import (
 
 // Nginx 缓存相关常量
 const (
-	NginxCacheDir     = "/var/cache/nginx/gost_cache"
+	NginxCacheDir     = "/var/cache/nginx/media_cache" // V2: 统一媒体缓存目录
 	NginxBaseConfPath = "/etc/nginx/conf.d/gost-cache.conf"
 )
 
@@ -379,16 +379,15 @@ func isNginxInstalled(serverId int) bool {
 }
 
 // identifyHttpPort 从端口列表中识别 HTTP 端口
-// 如果提供了自定义端口，取第 3 个（offset+2 是 HTTP）
-// 如果没有提供自定义端口，使用默认的 ForwardPorts 中的第 3 个（10012）
+// V2: 统一入口 10443，HTTP 走 nginx 路径分发
 func identifyHttpPort(ports []int) int {
-	if len(ports) >= 3 {
-		return ports[2] // 第 3 个端口是 HTTP（offset+2）
+	if len(ports) >= 2 {
+		return ports[0] // V2: 第 1 个端口是统一入口
 	}
 	if len(ports) == 0 {
 		// 使用默认端口
-		if len(gostapi.ForwardPorts) >= 3 {
-			return gostapi.ForwardPorts[2] // 10012
+		if len(gostapi.ForwardPorts) >= 1 {
+			return gostapi.ForwardPorts[0] // V2: 统一入口
 		}
 	}
 	return 0

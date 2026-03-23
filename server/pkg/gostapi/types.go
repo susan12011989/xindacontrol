@@ -558,3 +558,9 @@ type PluginConfig struct {
 
 // Duration 时间间隔（纳秒）
 type Duration int64
+
+// DurationSeconds 创建秒级 Duration 指针
+func DurationSeconds(seconds int) *Duration {
+	d := Duration(int64(seconds) * 1_000_000_000)
+	return &d
+}

@@ -6,6 +6,13 @@ import { flatMultiLevelRoutes } from "./helper"
 
 const Layouts = () => import("@/layouts/index.vue")
 
+// 扩展 RouteMeta 类型，增加 mode 字段
+declare module "vue-router" {
+  interface RouteMeta {
+    mode?: "local" | "cluster" // 路由所属模式，不设则两种模式都显示
+  }
+}
+
 /**
  * @name 常驻路由
  * @description 除了 redirect/403/404/login 等隐藏页面，其他页面建议设置唯一的 Name 属性
@@ -65,7 +72,19 @@ export const constantRoutes: RouteRecordRaw[] = [
         meta: {
           title: "商户列表",
           svgIcon: "dashboard",
-          affix: true
+          affix: true,
+          mode: "cluster"
+        }
+      },
+      {
+        path: "overview",
+        component: () => import("@/pages/overview/index.vue"),
+        name: "Overview",
+        meta: {
+          title: "系统概览",
+          svgIcon: "dashboard",
+          affix: true,
+          mode: "local"
         }
       }
     ]
@@ -73,7 +92,7 @@ export const constantRoutes: RouteRecordRaw[] = [
   {
     path: "/merchant/create",
     component: Layouts,
-    meta: { hidden: true },
+    meta: { hidden: true, mode: "cluster" },
     children: [
       {
         path: "",
@@ -89,7 +108,7 @@ export const constantRoutes: RouteRecordRaw[] = [
   {
     path: "/merchant/edit/:id",
     component: Layouts,
-    meta: { hidden: true },
+    meta: { hidden: true, mode: "cluster" },
     children: [
       {
         path: "",
@@ -196,7 +215,8 @@ export const constantRoutes: RouteRecordRaw[] = [
         meta: {
           title: "服务器",
           elIcon: "Monitor",
-          keepAlive: true
+          keepAlive: true,
+          mode: "cluster"
         }
       },
       {
@@ -241,6 +261,16 @@ export const constantRoutes: RouteRecordRaw[] = [
         }
       },
       {
+        path: "wukongim-monitor",
+        component: () => import("@/pages/deploy/wukongim-monitor.vue"),
+        name: "WuKongIMMonitor",
+        meta: {
+          title: "IM监控",
+          elIcon: "DataLine",
+          keepAlive: false
+        }
+      },
+      {
         path: "docker",
         component: () => import("@/pages/deploy/docker.vue"),
         name: "DeployDocker",
@@ -279,7 +309,8 @@ export const constantRoutes: RouteRecordRaw[] = [
         meta: {
           title: "批量运维",
           elIcon: "Operation",
-          keepAlive: false
+          keepAlive: false,
+          mode: "cluster"
         }
       },
       {
@@ -299,7 +330,8 @@ export const constantRoutes: RouteRecordRaw[] = [
         meta: {
           title: "存储配置",
           elIcon: "FolderOpened",
-          keepAlive: false
+          keepAlive: false,
+          mode: "cluster"
         }
       },
       {
@@ -343,7 +375,8 @@ export const constantRoutes: RouteRecordRaw[] = [
     meta: {
       title: "云管理",
       elIcon: "MostlyCloudy",
-      keepAlive: true
+      keepAlive: true,
+      mode: "cluster" // 云管理仅多机模式
     },
     children: [
       {

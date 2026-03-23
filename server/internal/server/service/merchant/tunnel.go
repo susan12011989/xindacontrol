@@ -152,11 +152,11 @@ fi'`, targetIP, port, timeoutSec)
 
 			// === 端到端探测 ===
 			if merchantPort > 0 {
-				// HTTP 端到端：127.0.0.1:{port+2} → TLS → 商户GOST:10012 → 商户:10002
+				// V2: 统一入口探测 → relay+tls → 商户:10443 → nginx → 业务程序
 				e2ePort := merchantPort + gostapi.PortOffsetHTTP
 				item.E2eSuccess, item.E2eMessage = probeE2e(client, e2ePort, "/", timeoutSec)
 
-				// MinIO 端到端：127.0.0.1:{port+3} → TLS → 商户GOST:10013 → MinIO:9000
+				// MinIO 探测（走统一入口 /s3/ 路径）
 				minioPort := merchantPort + gostapi.PortOffsetMinIO
 				item.MinioE2eSuccess, item.MinioE2eMessage = probeE2e(client, minioPort, "/minio/health/live", timeoutSec)
 			} else {

@@ -54,6 +54,20 @@ func Routes(gi gin.IRouter) {
 	group.GET("server-stats", getServerStats)
 	group.POST("server-stats/batch", getServerStatsBatch)
 
+	// 隧道连接监控（所有已认证用户可查看）
+	group.GET("traffic/overview", getMerchantTunnelOverview) // 商户 | IP | 转发状态 | 连接数
+	group.GET("traffic", getTrafficStats)                    // 单台服务器详情
+	group.POST("traffic/batch", getTrafficStatsBatch)        // 批量
+	group.GET("traffic/history", getTunnelStatsHistory)       // 历史记录
+	group.GET("traffic/aggregate", getTunnelStatsAggregate)  // 聚合统计（按小时/天）
+
+	// 应急响应（仅超级管理员可操作，不自动触发）
+	trafficAdmin := group.Group("traffic", middleware.SuperAdminOnly)
+	trafficAdmin.POST("block-ip", blockIP)
+	trafficAdmin.DELETE("block-ip", unblockIP)
+	trafficAdmin.GET("blocked-ips", getBlockedIPs)
+	trafficAdmin.POST("rate-limit", emergencyRateLimit)
+
 	// Docker 容器状态
 	group.GET("docker/containers", getDockerContainers)
 
@@ -1130,4 +1144,162 @@ func clearNginxCache(ctx *gin.Context) {
 	}
 
 	result.GOK(ctx, gin.H{"message": "缓存已清除"})
+}
+
+// ========== 隧道连接监控与应急响应 ==========
+
+// getTunnelStatsAggregate 聚合统计（按小时/天，支持时间区间筛选）
+func getTunnelStatsAggregate(ctx *gin.Context) {
+	var req model.TunnelStatsAggregateReq
+	if err := ctx.ShouldBindQuery(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	data, err := deployService.GetTunnelStatsAggregate(req)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// getMerchantTunnelOverview 商户隧道汇总：商户 | IP | 转发状态 | 连接数
+func getMerchantTunnelOverview(ctx *gin.Context) {
+	data, err := deployService.GetMerchantTunnelOverview()
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+	result.GOK(ctx, data)
+}
+
+// getTunnelStatsHistory 查询隧道统计历史
+func getTunnelStatsHistory(ctx *gin.Context) {
+	var req model.TunnelStatsHistoryReq
+	if err := ctx.ShouldBindQuery(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+	if req.Page <= 0 {
+		req.Page = 1
+	}
+	if req.PageSize <= 0 {
+		req.PageSize = 50
+	}
+
+	data, err := deployService.GetTunnelStatsHistory(req)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// getTrafficStats 获取服务器隧道连接统计
+func getTrafficStats(ctx *gin.Context) {
+	var req model.GetTrafficStatsReq
+	if err := ctx.ShouldBindQuery(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	data, err := deployService.GetTunnelStats(req)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// getTrafficStatsBatch 批量获取流量统计
+func getTrafficStatsBatch(ctx *gin.Context) {
+	var req model.GetTrafficStatsBatchReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	data, err := deployService.GetTunnelStatsBatch(req)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
+// blockIP 封禁 IP
+func blockIP(ctx *gin.Context) {
+	var req model.BlockIPReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	if err := deployService.BlockIP(req); err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, gin.H{"message": fmt.Sprintf("IP %s 已封禁", req.IP)})
+}
+
+// unblockIP 解封 IP
+func unblockIP(ctx *gin.Context) {
+	serverId := 0
+	fmt.Sscanf(ctx.Query("server_id"), "%d", &serverId)
+	ip := ctx.Query("ip")
+	if serverId == 0 || ip == "" {
+		result.GParamErr(ctx, fmt.Errorf("server_id 和 ip 不能为空"))
+		return
+	}
+
+	if err := deployService.UnblockIP(serverId, ip); err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, gin.H{"message": fmt.Sprintf("IP %s 已解封", ip)})
+}
+
+// getBlockedIPs 获取被封禁的 IP 列表
+func getBlockedIPs(ctx *gin.Context) {
+	serverId := 0
+	fmt.Sscanf(ctx.Query("server_id"), "%d", &serverId)
+	if serverId == 0 {
+		result.GParamErr(ctx, fmt.Errorf("server_id 不能为空"))
+		return
+	}
+
+	ips, err := deployService.GetBlockedIPs(serverId)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, gin.H{"ips": ips})
+}
+
+// emergencyRateLimit 紧急限流
+func emergencyRateLimit(ctx *gin.Context) {
+	var req model.EmergencyRateLimitReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	if err := deployService.EmergencyRateLimit(req); err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	msg := "限流规则已更新"
+	if req.MaxConnPerIP == 0 && req.MaxSynRate == 0 {
+		msg = "限流已取消"
+	}
+	result.GOK(ctx, gin.H{"message": msg})
 }

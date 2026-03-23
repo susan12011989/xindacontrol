@@ -92,6 +92,54 @@ func GetTwoFA(ctx *gin.Context) bool {
 	return ctx.GetBool("two_fa")
 }
 
+// SuperAdminOnly 仅超级管理员（uid=1）可访问
+// 流量监控的封禁/限流等敏感操作仅限超管手动执行
+func SuperAdminOnly(ctx *gin.Context) {
+	uid := ctx.GetInt64("uid")
+	if uid != 1 {
+		result.GResult(ctx, 403, nil, "无权操作：仅超级管理员可执行此操作")
+		ctx.Abort()
+		return
+	}
+	ctx.Next()
+}
+
+// NoDestructiveOps 禁止删除/销毁类操作（用于 maintainer 角色）
+// maintainer 可以查看和修改，但不能删除
+func NoDestructiveOps(ctx *gin.Context) {
+	uid := ctx.GetInt64("uid")
+	// 超管不受限制
+	if uid == 1 {
+		ctx.Next()
+		return
+	}
+
+	method := ctx.Request.Method
+	path := ctx.Request.URL.Path
+
+	// DELETE 方法直接禁止
+	if method == "DELETE" {
+		result.GResult(ctx, 403, nil, "无权操作：该账号没有删除权限")
+		ctx.Abort()
+		return
+	}
+
+	// POST 中包含销毁性关键词的也禁止
+	destructivePaths := []string{
+		"/destroy", "/remove", "/disband", "/drop",
+		"/force-stop", "/reset-all", "/clear-all",
+	}
+	for _, dp := range destructivePaths {
+		if strings.Contains(path, dp) {
+			result.GResult(ctx, 403, nil, "无权操作：该账号没有销毁权限")
+			ctx.Abort()
+			return
+		}
+	}
+
+	ctx.Next()
+}
+
 func LogRequest(ctx *gin.Context) {
 	start := time.Now()
 	path := ctx.Request.URL.Path

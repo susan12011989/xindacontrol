@@ -766,12 +766,11 @@ func InstallGostToExistingServer(req *model.InstallGostReq, progressCallback fun
 		progressCallback("GOST API 验证成功")
 	}
 
-	// 配置商户本地转发规则（relay+tls 监听 → 本地业务端口）
-	progressCallback("配置商户本地转发规则...")
-	progressCallback(fmt.Sprintf("  10010(TCP)  → 127.0.0.1:%d (WuKongIM TCP)", gostapi.MerchantAppPortTCP))
-	progressCallback(fmt.Sprintf("  10011(WS)   → 127.0.0.1:%d (WuKongIM WS)", gostapi.MerchantAppPortWS))
-	progressCallback(fmt.Sprintf("  10012(HTTP)  → 127.0.0.1:%d (tsdd-server)", gostapi.MerchantAppPortHTTP))
-	progressCallback(fmt.Sprintf("  10014(WSS)  → 127.0.0.1:%d (WuKongIM WS)", gostapi.MerchantWSSProxyAppPort))
+	// 配置商户本地转发规则（V2: 统一入口 + TCP）
+	progressCallback("配置商户本地转发规则 (V2 架构)...")
+	for _, cfg := range gostapi.MerchantLocalForwardConfigs {
+		progressCallback(fmt.Sprintf("  %d(%s) → 127.0.0.1:%d", cfg.GostPort, cfg.Name, cfg.AppPort))
+	}
 
 	err = gostapi.CreateMerchantLocalForwards(host)
 	if err != nil {
@@ -781,24 +780,19 @@ func InstallGostToExistingServer(req *model.InstallGostReq, progressCallback fun
 		progressCallback("商户本地转发配置成功")
 	}
 
-	// 配置 PC 直连端口（普通 TCP 转发，非 relay）
-	progressCallback("配置 PC 直连端口...")
-	progressCallback(fmt.Sprintf("  %d(TCP)  → 127.0.0.1:%d (PC 直连 WuKongIM)", gostapi.MerchantDirectPortTCP, gostapi.MerchantAppPortTCP))
-	progressCallback(fmt.Sprintf("  %d(HTTP) → 127.0.0.1:%d (PC 直连 tsdd-server)", gostapi.MerchantDirectPortHTTP, gostapi.MerchantAppPortHTTP))
-
-	if pcErr := gostapi.CreateMerchantPCDirectForwards(host); pcErr != nil {
-		progressCallback(fmt.Sprintf("警告: 配置 PC 直连端口失败: %s", pcErr))
-	} else {
-		progressCallback("PC 直连端口配置成功")
+	// V2: 部署 nginx 路径分发（替代旧的多端口 + WSS 代理容器）
+	progressCallback("部署 nginx 路径分发...")
+	nginxConf := gostapi.MerchantNginxConfigTemplate()
+	for _, nc := range gostapi.MerchantNginxConfigs {
+		progressCallback(fmt.Sprintf("  %s → 127.0.0.1:%d (%s)", nc.Path, nc.AppPort, nc.Name))
 	}
 
-	// 部署 nginx WSS 代理容器（用于 WSS → WuKongIM WS 路径转换）
-	progressCallback("部署 nginx WSS 代理容器...")
-	if wsErr := deployNginxWSSProxy(host, username, password, privateKey, port); wsErr != nil {
-		progressCallback(fmt.Sprintf("警告: nginx WSS 代理部署失败: %s", wsErr))
-		progressCallback("  手机 WSS 连接可能不可用，请手动部署")
+	nginxDeployErr := deployMerchantNginx(host, username, password, privateKey, port, nginxConf)
+	if nginxDeployErr != nil {
+		progressCallback(fmt.Sprintf("警告: nginx 部署失败: %s", nginxDeployErr))
+		progressCallback("  请确保 Docker 已安装")
 	} else {
-		progressCallback("nginx WSS 代理部署成功")
+		progressCallback("nginx 路径分发配置成功")
 	}
 
 	// 如果是已注册的系统服务器，自动部署 TLS 证书
@@ -809,9 +803,11 @@ func InstallGostToExistingServer(req *model.InstallGostReq, progressCallback fun
 		}
 	}
 
-	progressCallback(fmt.Sprintf("✓ GOST 安装完成! API: http://%s:%d", host, DefaultGostAPIPort))
-	progressCallback("  隧道端口: 10010(TCP→5002), 10011(WS→5200), 10012(HTTP→5003), 10014(WSS→5210) - relay+tls")
-	progressCallback("  直连端口: 10000(TCP→5002), 10002(HTTP→5003) - PC 直连")
+	progressCallback(fmt.Sprintf("✓ GOST 安装完成! (V2 架构) API: http://%s:%d", host, DefaultGostAPIPort))
+	progressCallback(fmt.Sprintf("  统一入口: :%d (relay+tls → nginx 路径分发)", gostapi.MerchantUnifiedPort))
+	progressCallback(fmt.Sprintf("  TCP 长连接: :%d (relay+tls → WuKongIM)", gostapi.MerchantTCPPort))
+	progressCallback(fmt.Sprintf("  nginx: :%d (/ws→%d, /api/→%d, /s3/→%d)",
+		gostapi.MerchantNginxPort, gostapi.MerchantAppPortWS, gostapi.MerchantAppPortHTTP, gostapi.MerchantAppPortMinIO))
 
 	return nil
 }
@@ -930,6 +926,75 @@ echo ">>> nginx WSS 代理部署完成! 监听端口 5210"
 	output, err := session.CombinedOutput(deployScript)
 	if err != nil {
 		return fmt.Errorf("部署失败: %s, output: %s", err, string(output))
+	}
+
+	return nil
+}
+
+// deployMerchantNginx 在商户服务器上部署 V2 nginx 路径分发容器（tsdd-nginx）
+// 替代旧的 tsdd-ws-proxy，统一处理 /ws、/api/、/s3/ 路径分发
+func deployMerchantNginx(host, username, password, privateKey string, port int, nginxConf string) error {
+	var authMethods []ssh.AuthMethod
+	if password != "" {
+		authMethods = append(authMethods, ssh.Password(password))
+	}
+	if privateKey != "" {
+		signer, err := ssh.ParsePrivateKey([]byte(privateKey))
+		if err != nil {
+			return fmt.Errorf("解析私钥失败: %w", err)
+		}
+		authMethods = append(authMethods, ssh.PublicKeys(signer))
+	}
+	if len(authMethods) == 0 {
+		return fmt.Errorf("必须提供密码或私钥")
+	}
+
+	sshConfig := &ssh.ClientConfig{
+		User:            username,
+		Auth:            authMethods,
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         30 * time.Second,
+	}
+
+	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, port), sshConfig)
+	if err != nil {
+		return fmt.Errorf("SSH 连接失败: %w", err)
+	}
+	defer client.Close()
+
+	nginxDeployScript := fmt.Sprintf(`#!/bin/bash
+set -e
+if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+
+$SUDO mkdir -p /opt/tsdd/nginx
+
+$SUDO tee /opt/tsdd/nginx/default.conf > /dev/null << 'NGINX_CONF_EOF'
+%s
+NGINX_CONF_EOF
+
+echo ">>> 部署 nginx 路径分发容器..."
+$SUDO docker rm -f tsdd-ws-proxy 2>/dev/null || true
+$SUDO docker rm -f tsdd-nginx 2>/dev/null || true
+
+$SUDO docker run -d \
+    --name tsdd-nginx \
+    --restart always \
+    --network host \
+    -v /opt/tsdd/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro \
+    nginx:alpine
+
+echo ">>> nginx 路径分发部署完成!"
+`, nginxConf)
+
+	nginxSession, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("创建 SSH 会话失败: %w", err)
+	}
+	defer nginxSession.Close()
+
+	nginxOutput, err := nginxSession.CombinedOutput(nginxDeployScript)
+	if err != nil {
+		return fmt.Errorf("部署失败: %s, output: %s", err, string(nginxOutput))
 	}
 
 	return nil

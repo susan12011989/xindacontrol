@@ -1092,16 +1092,17 @@ func OpenRequiredPortsForSecurityGroups(ctx context.Context, cli *ec2.Client, se
 		requiredPorts = append(requiredPorts, PortRange{82, 82})       // Web 前端
 		requiredPorts = append(requiredPorts, PortRange{8090, 8090})   // TSDD API
 		requiredPorts = append(requiredPorts, PortRange{6979, 6979})   // TSDD gRPC
-		requiredPorts = append(requiredPorts, PortRange{5001, 5001})   // WuKongIM API
-		requiredPorts = append(requiredPorts, PortRange{5100, 5100})   // WuKongIM TCP
+		requiredPorts = append(requiredPorts, PortRange{5001, 5002})   // WuKongIM API + tsdd-server HTTP
+		requiredPorts = append(requiredPorts, PortRange{5110, 5110})   // WuKongIM TCP 长连接
 		requiredPorts = append(requiredPorts, PortRange{5200, 5200})   // WuKongIM WS
 		requiredPorts = append(requiredPorts, PortRange{5300, 5300})   // WuKongIM Manager
-		requiredPorts = append(requiredPorts, PortRange{10000, 10014}) // GOST 全端口范围（业务+relay+WSS代理）
+		requiredPorts = append(requiredPorts, PortRange{8080, 8080})   // nginx 路径分发 (V2)
+		requiredPorts = append(requiredPorts, PortRange{10010, 10010}) // GOST TCP relay (V2)
+		requiredPorts = append(requiredPorts, PortRange{10443, 10443}) // GOST 统一入口 relay (V2)
 		requiredPorts = append(requiredPorts, PortRange{9394, 9394})   // GOST API
-		requiredPorts = append(requiredPorts, PortRange{443, 443})     // WSS (App TLS 连接)
-		requiredPorts = append(requiredPorts, PortRange{5003, 5003})   // TSDD API (自定义 docker-compose 端口映射)
+		requiredPorts = append(requiredPorts, PortRange{9000, 9000})   // MinIO S3
+		requiredPorts = append(requiredPorts, PortRange{443, 443})     // TLS 统一入口 (V2)
 		requiredPorts = append(requiredPorts, PortRange{8084, 8084})   // 管理后台端口
-		requiredPorts = append(requiredPorts, PortRange{54321, 54321}) // 总控后台端口
 	}
 
 	protocol := "tcp"

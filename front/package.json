@@ -15,6 +15,7 @@
     "test": "vitest"
   },
   "dependencies": {
+    "@tsdd/shared-admin": "file:../../shared-admin",
     "@element-plus/icons-vue": "2.3.1",
     "axios": "1.7.9",
     "dayjs": "1.11.13",

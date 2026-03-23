@@ -18,46 +18,95 @@ const (
 	// GostAPIPort GOST API 端口
 	GostAPIPort = "9394"
 
-	// 商户端口偏移
-	PortOffsetTCP   = 0
-	PortOffsetWS    = 1
-	PortOffsetHTTP  = 2
-	PortOffsetMinIO = 3
+	// ========== V2 端口架构 ==========
+	// 设计原则：443 为核心入口，nginx 路径分发，每商户最少端口
+	//
+	// 完整链路：
+	//   App → 系统服务器:443 (TLS) → relay+tls → 商户:10443 → nginx:8080 → 业务程序
+	//   PC  → 系统服务器:BASE_PORT (TCP) → relay+tls → 商户:10010 → WuKongIM:5110
+	//
+	// 商户服务器只暴露 2 个端口：10443(统一入口) + 10010(TCP长连接)
+	// 系统服务器每商户只需 1 个端口(TCP) + 443 共享
 
-	// 商户服务器 GOST 监听端口（接收系统服务器转发）
-	MerchantGostPortTCP   = 10010
-	MerchantGostPortWS    = 10011
-	MerchantGostPortHTTP  = 10012
-	MerchantGostPortMinIO = 10013
+	// --- 系统服务器端口 ---
 
-	// 商户服务器业务程序端口（GOST relay 转发到本地业务）
-	MerchantAppPortTCP   = 5002 // WuKongIM TCP
+	// SystemUnifiedPort 系统服务器统一入口（TLS，所有客户端共享）
+	// nginx TLS 终结后按路径分发：/ws → WuKongIM, /api/ → tsdd-server, /s3/ → MinIO
+	SystemUnifiedPort = 443
+
+	// --- 商户服务器 GOST 监听端口（接收系统服务器转发） ---
+
+	// MerchantUnifiedPort 商户统一入口（relay+tls → nginx 路径分发）
+	// 承载 WebSocket + HTTP API + MinIO S3 三合一
+	MerchantUnifiedPort = 10443
+
+	// MerchantTCPPort 商户 TCP 长连接入口（relay+tls → WuKongIM TCP）
+	// PC 桌面端 TCP 直连用
+	MerchantTCPPort = 10010
+
+	// MerchantNginxPort 商户本地 nginx 监听端口（GOST → nginx → 业务程序）
+	MerchantNginxPort = 8080
+
+	// --- 商户服务器业务程序端口（nginx 转发到本地业务，不对外暴露） ---
+
+	MerchantAppPortTCP   = 5110 // WuKongIM TCP 长连接
 	MerchantAppPortWS    = 5200 // WuKongIM WebSocket
-	MerchantAppPortHTTP  = 5003 // tsdd-server HTTP API
+	MerchantAppPortHTTP  = 5002 // tsdd-server HTTP API
 	MerchantAppPortMinIO = 9000 // MinIO S3 API
+	MerchantAppPortWKAPI = 5001 // WuKongIM HTTP API（内部）
+	MerchantAppPortWKMgr = 5300 // WuKongIM Manager（可选）
 
-	// 商户服务器 PC 直连端口（普通 TCP 转发，非 relay）
-	MerchantDirectPortTCP  = 10000 // PC 直连 TCP → 5002
-	MerchantDirectPortHTTP = 10002 // PC 直连 HTTP → 5003
+	// --- 系统服务器每商户端口偏移（仅 TCP 端口需要） ---
+	// 新架构：443 共享 + 每商户 1 个 TCP 端口(BASE_PORT)
+	// 比旧架构(6端口/商户)大幅减少
 
-	// 商户服务器 WSS 代理端口
-	MerchantWSSProxyPort    = 10014 // relay+tls → WuKongIM WS
-	MerchantWSSProxyAppPort = 5200  // 直连 WuKongIM WebSocket 端口
+	PortOffsetTCP = 0 // BASE_PORT + 0 → 商户:10010 (TCP)
 
-	// 系统服务器 WSS 监听端口（手机 App WSS 连接）
-	SystemWSSListenPort = 443 // :443 (TLS) → relay+tls → 商户:10014
+	// --- GOST API ---
 
-	// 兼容旧代码的别名
-	TargetPortTCP  = MerchantGostPortTCP
-	TargetPortWS   = MerchantGostPortWS
-	TargetPortHTTP = MerchantGostPortHTTP
+	GostAPIPortInt = 9394
+
+	// --- 兼容旧代码的别名（逐步移除） ---
+
+	// Deprecated: 使用 MerchantTCPPort 替代
+	MerchantGostPortTCP = MerchantTCPPort
+	// Deprecated: 使用 MerchantUnifiedPort 替代（WS 已合入统一入口）
+	MerchantGostPortWS = MerchantUnifiedPort
+	// Deprecated: 使用 MerchantUnifiedPort 替代（HTTP 已合入统一入口）
+	MerchantGostPortHTTP = MerchantUnifiedPort
+	// Deprecated: 使用 MerchantUnifiedPort 替代（MinIO 已合入统一入口）
+	MerchantGostPortMinIO = MerchantUnifiedPort
+
+	// Deprecated: 旧偏移量，新架构不再使用多端口偏移
+	PortOffsetWS    = 0 // 已废弃，WS 走 443 统一入口
+	PortOffsetHTTP  = 0 // 已废弃，HTTP 走 443 统一入口
+	PortOffsetMinIO = 0 // 已废弃，MinIO 走 443 统一入口
+
+	// Deprecated: PC 直连端口，新架构 PC 走 BASE_PORT TCP
+	MerchantDirectPortTCP  = MerchantTCPPort
+	MerchantDirectPortHTTP = MerchantUnifiedPort
+
+	// Deprecated: WSS 代理端口，新架构 WSS 走 443 统一入口
+	MerchantWSSProxyPort    = MerchantUnifiedPort
+	MerchantWSSProxyAppPort = MerchantAppPortWS
+
+	// Deprecated: 使用 SystemUnifiedPort 替代
+	SystemWSSListenPort = SystemUnifiedPort
+
+	// Deprecated: 旧别名
+	TargetPortTCP  = MerchantTCPPort
+	TargetPortWS   = MerchantUnifiedPort
+	TargetPortHTTP = MerchantUnifiedPort
+
+	// Deprecated: 旧业务端口别名（V1 用 5002 做 TCP，V2 改为 5110）
+	MerchantAppPortTCPLegacy = 5002
 )
 
-// ========== 简化转发配置 ==========
+// ========== V2 端口转发配置 ==========
 
-// ForwardPorts 固定转发端口列表（监听端口=目标端口，对称转发）
-// 默认使用商户 GOST 监听端口: TCP/WS/HTTP
-var ForwardPorts = []int{10010, 10011, 10012}
+// ForwardPorts 系统服务器 → 商户服务器的转发端口列表
+// V2: 只需要转发 2 个端口（统一入口 + TCP）
+var ForwardPorts = []int{MerchantUnifiedPort, MerchantTCPPort}
 
 // MerchantPortConfig 商户端口配置（用于系统服务器转发）
 type MerchantPortConfig struct {
@@ -66,33 +115,44 @@ type MerchantPortConfig struct {
 	Name       string
 }
 
-// MerchantPortConfigs 商户三端口配置列表（系统服务器 → 商户服务器）
-// 注意: offset 0 (端口 basePort+0) 转发到 WS 端口，因为 App 使用 WebSocket+TLS 连接
+// MerchantPortConfigs 系统服务器转发配置
+// V2: 443 共享 → 商户:10443 (统一入口), BASE_PORT → 商户:10010 (TCP)
 var MerchantPortConfigs = []MerchantPortConfig{
-	{PortOffsetTCP, MerchantGostPortWS, "tcp"},    // App WSS → merchant:10011 → WuKongIM:5200
-	{PortOffsetWS, MerchantGostPortWS, "ws"},      // 备用 WS
-	{PortOffsetHTTP, MerchantGostPortHTTP, "http"}, // HTTP API → merchant:10012 → tsdd-server:5003
+	{PortOffsetTCP, MerchantTCPPort, "tcp"}, // BASE_PORT → merchant:10010 → WuKongIM TCP:5110
 }
 
-// MerchantLocalForwardConfig 商户服务器本地转发配置（GOST → 业务程序）
+// MerchantLocalForwardConfig 商户服务器本地转发配置（GOST → 本地服务）
 type MerchantLocalForwardConfig struct {
 	GostPort int    // GOST 监听端口
 	AppPort  int    // 业务程序端口
 	Name     string // 协议名称
 }
 
-// MerchantLocalForwardConfigs 商户服务器本地转发配置列表（relay+tls → 本地业务）
+// MerchantLocalForwardConfigs 商户服务器 GOST 本地转发列表
+// V2: 统一入口(10443) → nginx(8080) 路径分发, TCP(10010) → WuKongIM(5110)
 var MerchantLocalForwardConfigs = []MerchantLocalForwardConfig{
-	{MerchantGostPortTCP, MerchantAppPortTCP, "tcp"},           // 10010 → 5002
-	{MerchantGostPortWS, MerchantAppPortWS, "ws"},              // 10011 → 5200
-	{MerchantGostPortHTTP, MerchantAppPortHTTP, "http"},         // 10012 → 5003
-	{MerchantWSSProxyPort, MerchantWSSProxyAppPort, "wss"},       // 10014 → 5200 (WuKongIM WS)
+	{MerchantUnifiedPort, MerchantNginxPort, "unified"}, // 10443 → nginx:8080 (路径分发 WS/HTTP/S3)
+	{MerchantTCPPort, MerchantAppPortTCP, "tcp"},         // 10010 → WuKongIM:5110 (TCP 长连接)
 }
 
-// MerchantPCDirectConfigs PC 直连端口配置（普通 TCP 转发，非 relay）
-var MerchantPCDirectConfigs = []MerchantLocalForwardConfig{
-	{MerchantDirectPortTCP, MerchantAppPortTCP, "tcp"},   // 10000 → 5002
-	{MerchantDirectPortHTTP, MerchantAppPortHTTP, "http"}, // 10002 → 5003
+// MerchantPCDirectConfigs PC 直连端口配置
+// V2: PC 走 BASE_PORT TCP 长连接 + 443 共享 HTTP，无需额外直连端口
+// Deprecated: 保留空列表兼容旧代码
+var MerchantPCDirectConfigs = []MerchantLocalForwardConfig{}
+
+// MerchantNginxConfig 商户 nginx 路径分发配置
+type MerchantNginxConfig struct {
+	Path    string // URL 路径前缀
+	AppPort int    // 后端业务端口
+	Name    string // 用途说明
+}
+
+// MerchantNginxConfigs 商户 nginx 路径 → 业务端口映射
+var MerchantNginxConfigs = []MerchantNginxConfig{
+	{"/ws", MerchantAppPortWS, "WuKongIM WebSocket"},    // /ws → 5200
+	{"/api/", MerchantAppPortHTTP, "tsdd-server HTTP"},   // /api/ → 5002
+	{"/s3/", MerchantAppPortMinIO, "MinIO S3"},           // /s3/ → 9000
+	{"/manager/", MerchantAppPortWKMgr, "WuKongIM 管理"}, // /manager/ → 5300
 }
 
 // Client GOST API 客户端
@@ -638,47 +698,115 @@ func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 	}
 
 	// 生成唯一的名称（根据协议类型和绑定 IP 区分）
-	chainName := buildServiceName(protocolName, "relay", listenPort, ip)
-	chainName = "chain-" + chainName
-	serviceName = buildServiceName(protocolName, "relay", listenPort, ip)
+	baseName := buildServiceName(protocolName, "relay", listenPort, ip)
+	tlsChainName := "chain-tls-" + baseName
+	wssChainName := "chain-wss-" + baseName
+	serviceName = baseName
 	targetAddr := fmt.Sprintf("%s:%d", targetIP, targetPort)
 	listenAddr := buildListenAddr(listenPort, ip)
 
-	// 1. 创建 Chain
-	chain := &ChainConfig{
-		Name: chainName,
+	// keepalive 公共配置
+	connectorMeta := map[string]any{
+		"keepalive":        true,
+		"keepalivePeriod":  "30s",
+		"keepaliveTimeout": "15s",
+		"connectTimeout":   "10s",
+	}
+	hopSelector := &SelectorConfig{
+		Strategy:    "round",
+		MaxFails:    3,
+		FailTimeout: DurationSeconds(30),
+	}
+
+	// 1. 创建主链（relay + tls 加密）
+	tlsChain := &ChainConfig{
+		Name: tlsChainName,
 		Hops: []HopConfig{
 			{
-				Name: fmt.Sprintf("hop-%d", listenPort),
+				Name: fmt.Sprintf("hop-tls-%d", listenPort),
 				Nodes: []NodeConfig{
 					{
-						Name: fmt.Sprintf("node-%d", listenPort),
+						Name: fmt.Sprintf("node-tls-%d", listenPort),
 						Addr: targetAddr,
 						Connector: &ConnectorConfig{
-							Type: "relay",
+							Type:     "relay",
+							Metadata: connectorMeta,
 						},
 						Dialer: &DialerConfig{
 							Type: "tls",
+							Metadata: map[string]any{
+								"keepalive":        true,
+								"keepalivePeriod":  "30s",
+								"handshakeTimeout": "10s",
+							},
 						},
 					},
 				},
+				Selector: hopSelector,
 			},
 		},
 	}
 
-	_, err = c.CreateChain(gostServerIP, chain)
+	_, err = c.CreateChain(gostServerIP, tlsChain)
 	if err != nil && !isAlreadyExistsError(err) {
-		return "", fmt.Errorf("创建 Chain 失败: %w", err)
+		return "", fmt.Errorf("创建 TLS Chain 失败: %w", err)
 	}
 
-	// 2. 创建 Service
-	listener := &ListenerConfig{Type: "tcp"}
+	// 2. 创建备用链（relay + wss 加密）
+	// WSS = WebSocket over TLS，流量特征与正常 HTTPS 浏览一致，抗 DPI 封锁能力最强
+	// 注意：不使用 TCP 回退，因为明文流量会暴露 IP 导致被封
+	wssChain := &ChainConfig{
+		Name: wssChainName, // 复用 wssChainName 变量名，实际是 WSS 链
+		Hops: []HopConfig{
+			{
+				Name: fmt.Sprintf("hop-wss-%d", listenPort),
+				Nodes: []NodeConfig{
+					{
+						Name: fmt.Sprintf("node-wss-%d", listenPort),
+						Addr: targetAddr,
+						Connector: &ConnectorConfig{
+							Type:     "relay",
+							Metadata: connectorMeta,
+						},
+						Dialer: &DialerConfig{
+							Type: "wss",
+							Metadata: map[string]any{
+								"keepalive":        true,
+								"keepalivePeriod":  "30s",
+								"handshakeTimeout": "15s",
+							},
+						},
+					},
+				},
+				Selector: hopSelector,
+			},
+		},
+	}
+
+	_, err = c.CreateChain(gostServerIP, wssChain)
+	if err != nil && !isAlreadyExistsError(err) {
+		_, _ = c.DeleteChain(gostServerIP, tlsChainName)
+		return "", fmt.Errorf("创建 WSS 备用 Chain 失败: %w", err)
+	}
+
+	// 3. 创建 Service（ChainGroup failover：TLS 优先，失败回退 WSS，全程加密）
+	listener := &ListenerConfig{
+		Type: "tcp",
+		Metadata: map[string]any{
+			"keepalive":       true,
+			"keepalivePeriod": "30s",
+		},
+	}
 	if tlsListener {
 		listener = &ListenerConfig{
 			Type: "tls",
 			TLS: &TLSConfig{
 				CertFile: TlsCertPath,
 				KeyFile:  TlsKeyPath,
+			},
+			Metadata: map[string]any{
+				"keepalive":       true,
+				"keepalivePeriod": "30s",
 			},
 		}
 	}
@@ -687,8 +815,20 @@ func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 		Name: serviceName,
 		Addr: listenAddr,
 		Handler: &HandlerConfig{
-			Type:  "tcp",
-			Chain: chainName,
+			Type:    "tcp",
+			Retries: 3,
+			// ChainGroup failover: TLS 优先，失败自动切 WSS（全程加密，不暴露 IP）
+			ChainGroup: &ChainGroupConfig{
+				Chains: []string{tlsChainName, wssChainName},
+				Selector: &SelectorConfig{
+					Strategy:    "failover",            // TLS 失败 → 自动切 WSS
+					MaxFails:    3,                      // 连续 3 次失败后切换
+					FailTimeout: DurationSeconds(60),    // 60 秒后重新尝试 TLS
+				},
+			},
+			Metadata: map[string]any{
+				"readTimeout": "0",
+			},
 		},
 		Listener: listener,
 		Forwarder: &ForwarderConfig{
@@ -703,7 +843,8 @@ func (c *Client) createRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 
 	_, err = c.CreateService(gostServerIP, service)
 	if err != nil && !isAlreadyExistsError(err) {
-		_, _ = c.DeleteChain(gostServerIP, chainName)
+		_, _ = c.DeleteChain(gostServerIP, tlsChainName)
+		_, _ = c.DeleteChain(gostServerIP, wssChainName)
 		return "", fmt.Errorf("创建 Service 失败: %w", err)
 	}
 
@@ -725,15 +866,19 @@ func (c *Client) deleteRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 		ip = bindIP[0]
 	}
 
-	chainName := "chain-" + buildServiceName(protocolName, "relay", listenPort, ip)
-	serviceName := buildServiceName(protocolName, "relay", listenPort, ip)
+	baseName := buildServiceName(protocolName, "relay", listenPort, ip)
+	tlsChainName := "chain-tls-" + baseName
+	wssChainName := "chain-tcp-" + baseName
+	serviceName := baseName
 
-	// 如果使用了新命名（带 IP），同时清理旧命名的服务（迁移兼容）
+	// 兼容旧命名格式（迁移期间清理）
+	oldChainName := "chain-" + baseName
+	_, _ = c.DeleteChain(gostServerIP, oldChainName)
 	if ip != "" {
-		oldChainName := fmt.Sprintf("chain-%s-relay-%d", protocolName, listenPort)
-		oldServiceName := fmt.Sprintf("%s-relay-%d", protocolName, listenPort)
-		_, _ = c.DeleteService(gostServerIP, oldServiceName)
-		_, _ = c.DeleteChain(gostServerIP, oldChainName)
+		oldLegacyChain := fmt.Sprintf("chain-%s-relay-%d", protocolName, listenPort)
+		oldLegacyService := fmt.Sprintf("%s-relay-%d", protocolName, listenPort)
+		_, _ = c.DeleteService(gostServerIP, oldLegacyService)
+		_, _ = c.DeleteChain(gostServerIP, oldLegacyChain)
 	}
 
 	// 删除 Service（不存在视为成功）
@@ -742,10 +887,11 @@ func (c *Client) deleteRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 		return fmt.Errorf("删除 Service 失败: %w", err)
 	}
 
-	// 删除 Chain（不存在视为成功）
-	_, err = c.DeleteChain(gostServerIP, chainName)
+	// 删除 TLS Chain + TCP 备用 Chain
+	_, _ = c.DeleteChain(gostServerIP, tlsChainName)
+	_, err = c.DeleteChain(gostServerIP, wssChainName)
 	if err != nil && !isNotFoundError(err) {
-		return fmt.Errorf("删除 Chain 失败: %w", err)
+		// TCP chain 删除失败不阻塞
 	}
 
 	// 保存配置到文件（持久化）
@@ -953,20 +1099,37 @@ func (c *Client) UpdateMerchantLocalForwards(merchantServerIP string) error {
 
 // createMerchantLocalForward 创建单个商户本地转发服务（内部方法）
 // 监听 relay+tls 端口，通过 forwarder 直接 TCP 转发到本地业务端口
+// 优化：添加 keepalive、readTimeout 防止连接被网络设备/NAT 超时断开
 func (c *Client) createMerchantLocalForward(merchantServerIP string, listenPort int, appPort int, protocolName string) (serviceName string, err error) {
 	serviceName = fmt.Sprintf("local-%s-%d", protocolName, listenPort)
 	targetAddr := fmt.Sprintf("127.0.0.1:%d", appPort)
 	listenAddr := fmt.Sprintf(":%d", listenPort)
 
 	// 创建 Service（监听 relay+tls，使用 forwarder 直接转发到本地业务端口）
+	// handler metadata:
+	//   keepalive: true  — 启用 TCP keepalive 探测，防止空闲连接被 NAT/防火墙断开
+	//   ttl: 15m         — 连接最大空闲时间（无数据传输时 15 分钟后关闭，触发客户端重连）
+	//   readTimeout: 0   — 读超时设为 0 表示无限等待（长连接场景不能设短）
+	//   retries: 3       — relay 转发到后端失败时重试 3 次
 	service := &ServiceConfig{
 		Name: serviceName,
 		Addr: listenAddr,
 		Handler: &HandlerConfig{
-			Type: "relay",
+			Type:    "relay",
+			Retries: 3,
+			Metadata: map[string]any{
+				"keepalive":   true,
+				"ttl":         "15m",
+				"readTimeout": "0",
+			},
 		},
 		Listener: &ListenerConfig{
 			Type: "tls",
+			Metadata: map[string]any{
+				"keepalive":        true,
+				"keepalivePeriod":  "30s", // 每 30 秒发送 keepalive 探测
+				"keepaliveTimeout": "15s", // 探测超时 15 秒
+			},
 		},
 		Forwarder: &ForwarderConfig{
 			Nodes: []ForwardNodeConfig{
@@ -1272,18 +1435,17 @@ func (c *Client) UpdateMerchantDirectForwards(gostServerIP string, basePort int,
 	return c.CreateMerchantDirectForwards(gostServerIP, basePort, targetIP, bindIP...)
 }
 
-// ========== 系统服务器 WSS 443 隧道（手机 App WSS 连接） ==========
+// ========== 系统服务器 443 统一入口隧道 ==========
 
-// CreateWSSRelayForward 在系统服务器上创建 WSS 443 隧道
-// bindIP:443 (TLS) → relay+tls → merchantIP:10011 → WuKongIM:5200
-// 直接使用商户的 WS relay+tls 端口（10011），无需 nginx 中间层
+// CreateWSSRelayForward 在系统服务器上创建 443 统一入口隧道
+// V2: bindIP:443 (TLS) → relay+tls → merchantIP:10443 → nginx → 路径分发(WS/HTTP/S3)
 func CreateWSSRelayForward(gostServerIP string, merchantIP string, bindIP ...string) error {
 	ip := ""
 	if len(bindIP) > 0 {
 		ip = bindIP[0]
 	}
 	_, err := defaultClient.createRelayTLSForwardWithProtocol(
-		gostServerIP, SystemWSSListenPort, merchantIP, MerchantGostPortWS, "wss", true, ip)
+		gostServerIP, SystemUnifiedPort, merchantIP, MerchantUnifiedPort, "wss", true, ip)
 	return err
 }
 
@@ -1305,16 +1467,11 @@ func UpdateWSSRelayForward(gostServerIP string, merchantIP string, bindIP ...str
 // ========== 一键部署：简化转发配置 ==========
 
 // SetupForwardTarget 一键配置 GOST 转发到目标服务器（使用 relay+tls 加密）
-// 监听 ForwardPorts 中的端口，通过 relay+tls 转发到 targetIP 的相同端口（对称转发）
+// V2: 监听 ForwardPorts 中的端口，通过 relay+tls 转发到 targetIP 的相同端口
 //
-// 流量路径：客户端 → 系统GOST:10010 → [relay+tls加密] → 商户GOST:10010
-//
-// 示例：
-//
-//	SetupForwardTarget("1.2.3.4", "5.6.7.8")
-//	结果：1.2.3.4:10010 → relay+tls → 5.6.7.8:10010
-//	      1.2.3.4:10011 → relay+tls → 5.6.7.8:10011
-//	      1.2.3.4:10012 → relay+tls → 5.6.7.8:10012
+// 流量路径：
+//   系统GOST:10443 → [relay+tls] → 商户GOST:10443 → nginx → WS/HTTP/S3
+//   系统GOST:10010 → [relay+tls] → 商户GOST:10010 → WuKongIM TCP
 func SetupForwardTarget(gostServerIP, targetIP string) error {
 	return defaultClient.SetupForwardTarget(gostServerIP, targetIP)
 }
@@ -1537,6 +1694,83 @@ func (c *Client) deleteSimpleForward(gostServerIP string, listenPort int) error 
 // GetForwardStatus 获取转发状态
 func GetForwardStatus(gostServerIP string) (map[int]string, error) {
 	return defaultClient.GetForwardStatus(gostServerIP)
+}
+
+// GetServiceStats 获取所有隧道服务的连接统计
+func GetServiceStats(gostServerIP string) ([]TunnelStats, error) {
+	return defaultClient.GetServiceStats(gostServerIP)
+}
+
+// TunnelStats 隧道连接统计
+type TunnelStats struct {
+	Name         string `json:"name"`          // 服务名称（如 fwd-11010）
+	Port         int    `json:"port"`          // 监听端口
+	Target       string `json:"target"`        // 转发目标
+	CurrentConns uint64 `json:"current_conns"` // 当前连接数
+	TotalConns   uint64 `json:"total_conns"`   // 累计连接数
+	InputBytes   uint64 `json:"input_bytes"`   // 入站字节数
+	OutputBytes  uint64 `json:"output_bytes"`  // 出站字节数
+	TotalErrs    uint64 `json:"total_errs"`    // 累计错误数
+	State        string `json:"state"`         // 运行状态
+}
+
+// GetServiceStats 获取所有隧道的连接统计
+func (c *Client) GetServiceStats(gostServerIP string) ([]TunnelStats, error) {
+	// 获取完整配置（含 status）
+	config, err := c.GetConfig(gostServerIP, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var results []TunnelStats
+	for _, svc := range config.Services {
+		ts := TunnelStats{
+			Name: svc.Name,
+		}
+
+		// 解析端口
+		if strings.HasPrefix(svc.Name, "fwd-") {
+			fmt.Sscanf(svc.Name, "fwd-%d", &ts.Port)
+		}
+
+		// 转发目标
+		if svc.Forwarder != nil && len(svc.Forwarder.Nodes) > 0 {
+			ts.Target = svc.Forwarder.Nodes[0].Addr
+		}
+
+		// 连接统计（从 GOST status API 获取）
+		status, statusErr := c.getServiceStatus(gostServerIP, svc.Name)
+		if statusErr == nil && status != nil {
+			ts.State = status.State
+			if status.Stats != nil {
+				ts.CurrentConns = status.Stats.CurrentConns
+				ts.TotalConns = status.Stats.TotalConns
+				ts.InputBytes = status.Stats.InputBytes
+				ts.OutputBytes = status.Stats.OutputBytes
+				ts.TotalErrs = status.Stats.TotalErrs
+			}
+		}
+
+		results = append(results, ts)
+	}
+
+	return results, nil
+}
+
+// getServiceStatus 获取单个服务的运行状态和统计
+func (c *Client) getServiceStatus(ip, serviceName string) (*ServiceStatus, error) {
+	url := buildURL(ip, fmt.Sprintf("/config/services/%s", serviceName))
+	respBody, err := c.doRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var svc ServiceConfig
+	if err := json.Unmarshal(respBody, &svc); err != nil {
+		return nil, err
+	}
+
+	return svc.Status, nil
 }
 
 // GetForwardStatus 获取转发状态

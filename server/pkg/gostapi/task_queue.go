@@ -281,12 +281,7 @@ func (tq *TaskQueue) processTask(task *GostTask) {
 	switch task.Type {
 	case TaskCreateMerchantLocalForwards:
 		err = CreateMerchantLocalForwards(task.ServerIP)
-		if err == nil {
-			// 同时创建 PC 直连端口（10000→5002, 10002→5003）
-			if pcErr := CreateMerchantPCDirectForwards(task.ServerIP); pcErr != nil {
-				logx.Errorf("创建 PC 直连端口失败（不影响隧道）: %+v", pcErr)
-			}
-		}
+		// V2: PC 直连端口已废弃（PC 走 BASE_PORT TCP + 443 共享 HTTP）
 	case TaskDeleteMerchantLocalForwards:
 		err = DeleteMerchantLocalForwards(task.ServerIP)
 	case TaskCreateMerchantForwards:
@@ -295,18 +290,9 @@ func (tq *TaskQueue) processTask(task *GostTask) {
 		} else {
 			err = CreateMerchantForwards(task.ServerIP, task.BasePort, task.TargetIP, task.BindIP)
 		}
-		if err == nil {
-			// 同时创建 WSS 443 隧道（bindIP:443 TLS → 商户:10014 → WuKongIM:5200）
-			if wssErr := CreateWSSRelayForward(task.ServerIP, task.TargetIP, task.BindIP); wssErr != nil {
-				logx.Errorf("创建 WSS 443 隧道失败（不影响基础转发）: %+v", wssErr)
-			}
-		}
+		// V2: WSS 443 走统一入口 → 10443，由 CreateMerchantForwards 自动包含
 	case TaskDeleteMerchantForwards:
 		err = DeleteMerchantForwards(task.ServerIP, task.BasePort, task.BindIP)
-		// 同时删除 WSS 443 隧道
-		if delErr := DeleteWSSRelayForward(task.ServerIP, task.BindIP); delErr != nil {
-			logx.Errorf("删除 WSS 443 隧道失败（不影响）: %+v", delErr)
-		}
 	case TaskUpdateMerchantForwards:
 		if task.TargetBasePort > 0 {
 			if task.TlsListener {
@@ -321,12 +307,7 @@ func (tq *TaskQueue) processTask(task *GostTask) {
 				err = UpdateMerchantForwards(task.ServerIP, task.BasePort, task.TargetIP, task.BindIP)
 			}
 		}
-		if err == nil {
-			// 同时更新 WSS 443 隧道
-			if wssErr := UpdateWSSRelayForward(task.ServerIP, task.TargetIP, task.BindIP); wssErr != nil {
-				logx.Errorf("更新 WSS 443 隧道失败（不影响基础转发）: %+v", wssErr)
-			}
-		}
+		// V2: WSS 443 走统一入口，无需单独更新
 	case TaskCreateMerchantDirectForwards:
 		if task.TlsListener {
 			err = CreateMerchantDirectForwardsWithTls(task.ServerIP, task.BasePort, task.TargetIP, task.BindIP)

@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import { useAppStore } from "@/pinia/stores/app"
+import { useControlModeStore } from "@/pinia/stores/control-mode"
 import { usePermissionStore } from "@/pinia/stores/permission"
 import { useSettingsStore } from "@/pinia/stores/settings"
 import { useDevice } from "@@/composables/useDevice"
@@ -16,11 +17,30 @@ const { isMobile } = useDevice()
 const { isLeft, isTop } = useLayoutMode()
 const route = useRoute()
 const appStore = useAppStore()
+const controlModeStore = useControlModeStore()
 const permissionStore = usePermissionStore()
 const settingsStore = useSettingsStore()
 
 const activeMenu = computed(() => route.meta.activeMenu || route.path)
-const noHiddenRoutes = computed(() => permissionStore.routes.filter(item => !item.meta?.hidden))
+
+// 根据控制模式过滤路由：
+// - hidden 的路由不显示
+// - meta.mode = "cluster" 的路由在单机模式下不显示
+// - 没有 mode 标记的路由始终显示
+const filterByMode = (routes: any[]) => {
+  return routes.filter(item => {
+    if (item.meta?.hidden) return false
+    if (item.meta?.mode === "cluster" && controlModeStore.isLocal) return false
+    // 递归过滤子路由
+    if (item.children) {
+      item.children = filterByMode(item.children)
+      // 如果所有子路由都被过滤掉了，隐藏父路由
+      if (item.children.length === 0 && !item.component) return false
+    }
+    return true
+  })
+}
+const noHiddenRoutes = computed(() => filterByMode([...permissionStore.routes]))
 const isCollapse = computed(() => !appStore.sidebar.opened)
 const isLogo = computed(() => isLeft.value && settingsStore.showLogo)
 const backgroundColor = computed(() => (isLeft.value ? v3SidebarMenuBgColor : undefined))

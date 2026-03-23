@@ -337,7 +337,7 @@ func ChangeMerchantGostPort(merchantId int, newPort int) (model.ChangeGostPortRe
 	}
 
 	// 第二步：通过 GOST API 更新商户服务器上的本地转发服务
-	// 新端口监听 relay+tls，转发到本地业务程序端口（10010/10011/10012）
+	// 新端口监听 relay+tls，转发到本地业务程序端口（V2: 10443+10010）
 	if err := gostapi.UpdateMerchantLocalForwardsWithCustomPorts(m.ServerIP, newPort, gostapi.MerchantAppPortTCP); err != nil {
 		return resp, fmt.Errorf("更新商户服务器GOST配置失败: %v", err)
 	}

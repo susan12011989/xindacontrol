@@ -206,6 +206,25 @@ type CloudAccounts struct {
 	UpdatedAt       time.Time `xorm:"default CURRENT_TIMESTAMP DATETIME"`
 }
 
+// TunnelStatsRecord 隧道连接统计记录（定期采集存储）
+type TunnelStatsRecord struct {
+	Id           int64     `xorm:"not null pk autoincr BIGINT"`
+	ServerId     int       `xorm:"not null comment('GOST服务器ID') index INT"`
+	ServerHost   string    `xorm:"comment('服务器IP') VARCHAR(64)"`
+	MerchantId   int       `xorm:"default 0 comment('商户ID') index INT"`
+	MerchantName string    `xorm:"comment('商户名称') VARCHAR(100)"`
+	TunnelName   string    `xorm:"not null comment('隧道名称 如fwd-11010') VARCHAR(64)"`
+	Port         int       `xorm:"default 0 comment('监听端口') INT"`
+	Target       string    `xorm:"comment('转发目标地址') VARCHAR(255)"`
+	CurrentConns int       `xorm:"default 0 comment('当前连接数') INT"`
+	TotalConns   int64     `xorm:"default 0 comment('累计连接数') BIGINT"`
+	InputBytes   int64     `xorm:"default 0 comment('入站字节数') BIGINT"`
+	OutputBytes  int64     `xorm:"default 0 comment('出站字节数') BIGINT"`
+	TotalErrs    int64     `xorm:"default 0 comment('累计错误数') BIGINT"`
+	State        string    `xorm:"default '' comment('运行状态') VARCHAR(32)"`
+	CollectedAt  time.Time `xorm:"not null comment('采集时间') index DATETIME"`
+}
+
 type GlobalOssUrl struct {
 	Id        int       `xorm:"not null pk autoincr INT"`
 	Url       string    `xorm:"url"`

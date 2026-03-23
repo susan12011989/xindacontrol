@@ -289,10 +289,16 @@ func checkAPIHealth(client interface{ ExecuteCommand(string) (string, error) }, 
 		containerName string // 关联的容器名称
 		isWebSocket   bool   // 是否是WebSocket端口
 	}{
+		// 业务程序端口
 		{"商户管理后台(GET)", "/v1/health", 8084, "nginx反向代理到后端API", "manager", false},
 		{"后端API直连(GET)", "/v1/health", 8090, "TangSengDaoDaoServer直接访问", "tsddserver", false},
 		{"WuKongIM", "/health", 5001, "IM通讯核心服务", "wukongim", false},
 		{"WebSocket", "/", 5200, "WebSocket连接端口", "wukongim", true},
+		// V2 GOST + nginx 路径分发
+		{"GOST服务", "/", 9394, "GOST relay代理 (API端口)", "gost", true},
+		{"GOST统一入口", "/", 10443, "relay+tls统一入口(V2)", "gost", true},
+		{"GOST TCP入口", "/", 10010, "relay+tls TCP长连接(V2)", "gost", true},
+		{"nginx路径分发", "/health", 8080, "V2 nginx路径分发(/ws,/api/,/s3/)", "tsdd-nginx", false},
 	}
 
 	for _, api := range apiEndpoints {
@@ -355,6 +361,9 @@ func checkAPIHealth(client interface{ ExecuteCommand(string) (string, error) }, 
 
 	// 验证nginx代理配置
 	results = append(results, checkNginxProxyConfig(client))
+
+	// V2: 检查 nginx 路径分发是否正确转发到各后端
+	results = append(results, checkNginxPathRouting(client)...)
 
 	return results
 }
@@ -571,6 +580,64 @@ func calculateOverallStatus(services, apis []model.HealthCheckItem) string {
 		return "unhealthy"
 	}
 	return "partial"
+}
+
+// checkNginxPathRouting V2: 检查 nginx 路径分发是否正确转发到各后端
+func checkNginxPathRouting(client interface{ ExecuteCommand(string) (string, error) }) []model.HealthCheckItem {
+	var results []model.HealthCheckItem
+
+	// 通过 nginx:8080 检测各路径是否可达后端
+	paths := []struct {
+		name string
+		path string
+		want string // 期望的 HTTP 状态码前缀
+	}{
+		{"nginx→WS(/ws)", "/ws", ""},       // WebSocket 升级请求返回 400 也算通（端口通）
+		{"nginx→API(/api/)", "/api/v1/health", "200"},
+		{"nginx→S3(/s3/)", "/s3/minio/health/live", "200"},
+	}
+
+	for _, p := range paths {
+		item := model.HealthCheckItem{Name: p.name, ContainerName: "tsdd-nginx"}
+		start := time.Now()
+
+		if p.path == "/ws" {
+			// WebSocket: 只检查端口连通性
+			cmd := "(echo > /dev/tcp/127.0.0.1/8080) 2>/dev/null && echo 'ok' || echo 'fail'"
+			output, _ := client.ExecuteCommand(fmt.Sprintf("bash -c \"%s\"", cmd))
+			item.Latency = time.Since(start).Milliseconds()
+			if strings.TrimSpace(output) == "ok" {
+				item.Status = "ok"
+				item.Message = fmt.Sprintf("nginx:8080 WS 路径可达 (%dms)", item.Latency)
+			} else {
+				item.Status = "error"
+				item.Message = "nginx:8080 不可达，V2 路径分发异常"
+			}
+		} else {
+			cmd := fmt.Sprintf("curl -s -w '\\n%%{http_code}' --connect-timeout 5 --max-time 10 http://127.0.0.1:8080%s 2>/dev/null | tail -1 || echo '000'", p.path)
+			output, _ := client.ExecuteCommand(fmt.Sprintf("bash -c \"%s\"", cmd))
+			item.Latency = time.Since(start).Milliseconds()
+			code := strings.TrimSpace(output)
+
+			if p.want != "" && strings.HasPrefix(code, p.want) {
+				item.Status = "ok"
+				item.Message = fmt.Sprintf("路径分发正常 HTTP %s (%dms)", code, item.Latency)
+			} else if code == "000" {
+				item.Status = "error"
+				item.Message = "nginx:8080 不可达，请检查 tsdd-nginx 容器"
+			} else if code == "502" {
+				item.Status = "error"
+				item.Message = fmt.Sprintf("502 后端不可达 - nginx 无法连接到后端服务")
+			} else {
+				item.Status = "warning"
+				item.Message = fmt.Sprintf("HTTP %s（预期 %s）", code, p.want)
+			}
+		}
+
+		results = append(results, item)
+	}
+
+	return results
 }
 
 // BatchCheckServerHealth 批量检查服务器健康状态

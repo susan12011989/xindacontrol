@@ -733,3 +733,66 @@ export type GenerateTlsCertResponseData = ApiResponseData<GenerateTlsCertResp>
 export type BatchTlsResponseData = ApiResponseData<BatchTlsResp>
 export type TlsStatusResponseData = ApiResponseData<TlsStatusResp>
 export type CertFingerprintResponseData = ApiResponseData<CertFingerprintResp>
+
+// ========== 流量监控与应急响应 ==========
+
+// 网卡流量数据
+export interface InterfaceTraffic {
+  name: string
+  rx_rate: number  // 入站 KB/s
+  tx_rate: number  // 出站 KB/s
+  rx_total: string
+  tx_total: string
+}
+
+// IP 连接统计
+export interface IPConnection {
+  ip: string
+  count: number
+}
+
+// 流量监控响应
+export interface TrafficStatsResp {
+  interfaces: InterfaceTraffic[]
+  total_rx_rate: number
+  total_tx_rate: number
+  total_rx: string
+  total_tx: string
+  connections: number
+  syn_count: number
+  estab_count: number
+  top_ips: IPConnection[]
+  alert_level: "normal" | "warning" | "danger"
+  alert_msg: string
+}
+
+// 批量流量监控项
+export interface ServerTrafficStat {
+  server_id: number
+  total_rx_rate: number
+  total_tx_rate: number
+  connections: number
+  syn_count: number
+  alert_level: "normal" | "warning" | "danger"
+  alert_msg: string
+  error?: string
+}
+
+// 封禁 IP 请求
+export interface BlockIPReq {
+  server_id: number
+  ip: string
+  duration?: string  // "1h", "24h", "permanent"
+}
+
+// 紧急限流请求
+export interface EmergencyRateLimitReq {
+  server_id: number
+  max_conn_per_ip: number  // 0=取消限制
+  max_syn_rate: number     // 0=取消限制
+}
+
+// 流量监控 API 响应类型
+export type TrafficStatsResponseData = ApiResponseData<TrafficStatsResp>
+export type TrafficStatsBatchResponseData = ApiResponseData<{ stats: ServerTrafficStat[] }>
+export type BlockedIPsResponseData = ApiResponseData<{ ips: string[] }>

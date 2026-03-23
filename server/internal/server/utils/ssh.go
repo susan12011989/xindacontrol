@@ -407,8 +407,20 @@ func (p *SSHConnectionPool) GetOrCreateConnection(key string, host string, port 
 
 	// 本地模式跳过 SSH 连接
 	if !client.isLocal() {
-		if err := client.Connect(); err != nil {
-			return nil, err
+		// 指数退避重试：1s → 2s → 4s（最多 3 次）
+		var lastErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			if err := client.Connect(); err != nil {
+				lastErr = err
+				backoff := time.Duration(1<<uint(attempt)) * time.Second
+				time.Sleep(backoff)
+				continue
+			}
+			lastErr = nil
+			break
+		}
+		if lastErr != nil {
+			return nil, lastErr
 		}
 	}
 

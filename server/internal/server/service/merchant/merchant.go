@@ -316,7 +316,7 @@ func enqueueGostServicesForServers(listenPort int, forwardHost string, tunnelIP 
 			}
 			directCount++
 		} else {
-			// 加密转发（默认）：通过 relay+tls 转发到商户 GOST 10010/10011/10012
+			// 加密转发（默认）：通过 relay+tls 转发到商户 GOST (V2: 10443+10010)
 			if tlsEnabled {
 				err = gostapi.EnqueueCreateMerchantForwardsWithTls(s.Host, listenPort, forwardHost, tunnelIP)
 			} else {

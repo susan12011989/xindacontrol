@@ -536,3 +536,61 @@ export function batchRollbackTls(data?: Deploy.BatchTlsReq) {
     timeout: 300000
   })
 }
+
+// ========== 流量监控与应急响应 ==========
+
+/** 获取服务器流量统计 */
+export function getTrafficStats(server_id: number) {
+  return request<Types.TrafficStatsResponseData>({
+    url: "deploy/traffic",
+    method: "get",
+    params: { server_id },
+    timeout: 15000
+  })
+}
+
+/** 批量获取流量统计 */
+export function getTrafficStatsBatch(server_ids: number[]) {
+  return request<Types.TrafficStatsBatchResponseData>({
+    url: "deploy/traffic/batch",
+    method: "post",
+    data: { server_ids },
+    timeout: 30000
+  })
+}
+
+/** 封禁 IP */
+export function blockIP(data: Types.BlockIPReq) {
+  return request({
+    url: "deploy/traffic/block-ip",
+    method: "post",
+    data
+  })
+}
+
+/** 解封 IP */
+export function unblockIP(server_id: number, ip: string) {
+  return request({
+    url: "deploy/traffic/block-ip",
+    method: "delete",
+    params: { server_id, ip }
+  })
+}
+
+/** 获取被封禁的 IP 列表 */
+export function getBlockedIPs(server_id: number) {
+  return request<Types.BlockedIPsResponseData>({
+    url: "deploy/traffic/blocked-ips",
+    method: "get",
+    params: { server_id }
+  })
+}
+
+/** 紧急限流 */
+export function emergencyRateLimit(data: Types.EmergencyRateLimitReq) {
+  return request({
+    url: "deploy/traffic/rate-limit",
+    method: "post",
+    data
+  })
+}

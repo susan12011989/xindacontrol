@@ -196,8 +196,9 @@ onMounted(() => {
             </el-radio>
           </el-radio-group>
           <div class="form-item-tip">
-            加密：通过商户GOST(10010/11/12)解密后转发到业务程序<br>
-            直连：直接转发到商户业务程序(10000/01/02)，不加密
+            V2架构：统一端口 443(TLS) → 商户:10443(nginx路径分发) + TCP:10010<br>
+            加密：relay+tls 全链路加密（推荐）<br>
+            直连：TCP 直连，无加密
           </div>
         </el-form-item>
 

@@ -198,6 +198,156 @@ type GetServerStatsBatchResp struct {
 	Stats []ServerBasicStat `json:"stats"`
 }
 
+// ========== 隧道连接监控 ==========
+
+// 隧道统计请求
+type GetTrafficStatsReq struct {
+	ServerId int `json:"server_id" form:"server_id" binding:"required"`
+}
+
+// 单条隧道统计
+type TunnelStatItem struct {
+	Name         string `json:"name"`
+	Port         int    `json:"port"`
+	Target       string `json:"target"`
+	CurrentConns int    `json:"current_conns"`
+	TotalConns   int64  `json:"total_conns"`
+	InputBytes   int64  `json:"input_bytes"`
+	OutputBytes  int64  `json:"output_bytes"`
+	TotalErrs    int64  `json:"total_errs"`
+	State        string `json:"state"`
+}
+
+// 隧道统计响应
+type TunnelStatsResp struct {
+	Tunnels           []TunnelStatItem `json:"tunnels"`
+	TotalTunnels      int              `json:"total_tunnels"`
+	TotalCurrentConns int              `json:"total_current_conns"`
+	IdleTunnels       int              `json:"idle_tunnels"` // 当前无连接的隧道数
+	AlertLevel        string           `json:"alert_level"`
+	AlertMsg          string           `json:"alert_msg"`
+}
+
+// 批量请求
+type GetTrafficStatsBatchReq struct {
+	ServerIds []int `json:"server_ids" binding:"required"`
+}
+
+// 批量概要
+type ServerTunnelSummary struct {
+	ServerId          int    `json:"server_id"`
+	TotalTunnels      int    `json:"total_tunnels"`
+	TotalCurrentConns int    `json:"total_current_conns"`
+	IdleTunnels       int    `json:"idle_tunnels"`
+	AlertLevel        string `json:"alert_level"`
+	AlertMsg          string `json:"alert_msg"`
+	Error             string `json:"error,omitempty"`
+}
+
+// 批量响应
+type TunnelStatsBatchResp struct {
+	Stats []ServerTunnelSummary `json:"stats"`
+}
+
+// 历史记录查询请求
+type TunnelStatsHistoryReq struct {
+	ServerId   int    `json:"server_id" form:"server_id"`
+	MerchantId int    `json:"merchant_id" form:"merchant_id"`
+	TunnelName string `json:"tunnel_name" form:"tunnel_name"`
+	StartTime  string `json:"start_time" form:"start_time"`
+	EndTime    string `json:"end_time" form:"end_time"`
+	Page       int    `json:"page" form:"page"`
+	PageSize   int    `json:"page_size" form:"page_size"`
+}
+
+// 历史记录项
+type TunnelStatsHistoryItem struct {
+	ServerId     int    `json:"server_id"`
+	ServerHost   string `json:"server_host"`
+	MerchantId   int    `json:"merchant_id"`
+	MerchantName string `json:"merchant_name"`
+	TunnelName   string `json:"tunnel_name"`
+	Port         int    `json:"port"`
+	Target       string `json:"target"`
+	CurrentConns int    `json:"current_conns"`
+	TotalConns   int64  `json:"total_conns"`
+	InputBytes   int64  `json:"input_bytes"`
+	OutputBytes  int64  `json:"output_bytes"`
+	TotalErrs    int64  `json:"total_errs"`
+	State        string `json:"state"`
+	CollectedAt  string `json:"collected_at"`
+}
+
+// 历史记录响应
+type TunnelStatsHistoryResp struct {
+	Total   int                      `json:"total"`
+	Records []TunnelStatsHistoryItem `json:"records"`
+}
+
+// 商户隧道汇总（主视图）
+type MerchantTunnelSummary struct {
+	MerchantId   int    `json:"merchant_id"`
+	MerchantName string `json:"merchant_name"`
+	ServerIP     string `json:"server_ip"`
+	ServerId     int    `json:"server_id"`
+	ForwardState string `json:"forward_state"` // online/offline/partial
+	CurrentConns int    `json:"current_conns"`
+	TotalConns   int64  `json:"total_conns"`
+	TunnelCount  int    `json:"tunnel_count"`
+	IdleCount    int    `json:"idle_count"`    // 无连接的隧道数
+	ErrorCount   int64  `json:"error_count"`
+	AlertLevel   string `json:"alert_level"`
+}
+
+// 商户隧道汇总响应
+type MerchantTunnelOverviewResp struct {
+	Merchants []MerchantTunnelSummary `json:"merchants"`
+	Total     int                     `json:"total"`
+}
+
+// 隧道统计聚合查询请求
+type TunnelStatsAggregateReq struct {
+	MerchantId int    `json:"merchant_id" form:"merchant_id"`           // 按商户筛选
+	ServerId   int    `json:"server_id" form:"server_id"`               // 按服务器筛选
+	StartTime  string `json:"start_time" form:"start_time"`             // 开始时间 2026-03-01
+	EndTime    string `json:"end_time" form:"end_time"`                 // 结束时间 2026-03-23
+	GroupBy    string `json:"group_by" form:"group_by"`                 // 聚合粒度: hour/day（默认 day）
+}
+
+// 聚合统计项
+type TunnelStatsAggregateItem struct {
+	TimeSlot     string `json:"time_slot"`     // 时间段 2026-03-20 或 2026-03-20 14:00
+	MerchantName string `json:"merchant_name"`
+	ServerIP     string `json:"server_ip"`
+	MaxConns     int    `json:"max_conns"`     // 该时段最大连接数
+	AvgConns     int    `json:"avg_conns"`     // 该时段平均连接数
+	TotalConns   int64  `json:"total_conns"`   // 该时段累计连接数
+	TotalInput   int64  `json:"total_input"`   // 该时段入站字节数
+	TotalOutput  int64  `json:"total_output"`  // 该时段出站字节数
+	TotalErrs    int64  `json:"total_errs"`    // 该时段错误数
+	SampleCount  int    `json:"sample_count"`  // 采样次数
+}
+
+// 聚合统计响应
+type TunnelStatsAggregateResp struct {
+	Items []TunnelStatsAggregateItem `json:"items"`
+	Total int                        `json:"total"`
+}
+
+// 应急封禁请求
+type BlockIPReq struct {
+	ServerId int    `json:"server_id" binding:"required"`
+	IP       string `json:"ip" binding:"required"`
+	Duration string `json:"duration"` // "1h", "24h", "permanent"
+}
+
+// 应急限流请求
+type EmergencyRateLimitReq struct {
+	ServerId     int `json:"server_id" binding:"required"`
+	MaxConnPerIP int `json:"max_conn_per_ip"` // 0=取消限制
+	MaxSynRate   int `json:"max_syn_rate"`    // 0=取消限制
+}
+
 // ========== 配置文件 ==========
 
 // 获取配置文件请求

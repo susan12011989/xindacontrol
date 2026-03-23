@@ -1,5 +1,6 @@
 import type { Router } from "vue-router"
 import { ping } from "@/common/apis/admin"
+import { useControlModeStore } from "@/pinia/stores/control-mode"
 import { usePermissionStore } from "@/pinia/stores/permission"
 import { useUserStore } from "@/pinia/stores/user"
 import { routerConfig } from "@/router/config"
@@ -64,12 +65,21 @@ export function registerNavigationGuard(router: Router) {
     // 否则要重新获取权限角色
     try {
       await userStore.getInfo()
+      // 获取控制模式（单机/多机），用于前端菜单适配
+      const controlModeStore = useControlModeStore()
+      if (!controlModeStore.loaded) {
+        await controlModeStore.fetchMode()
+      }
       // 注意：角色必须是一个数组！ 例如: ["admin"] 或 ["developer", "editor"]
       const roles = userStore.roles
       // 生成可访问的 Routes
       routerConfig.dynamic ? permissionStore.setRoutes(roles) : permissionStore.setAllRoutes()
       // 将 "有访问权限的动态路由" 添加到 Router 中
       permissionStore.addRoutes.forEach(route => router.addRoute(route))
+      // 单机模式：将默认页重定向到系统概览
+      if (controlModeStore.isLocal && (to.path === "/" || to.path === "/dashboard")) {
+        return { path: "/overview", replace: true }
+      }
       // 设置 replace: true, 因此导航将不会留下历史记录
       return { ...to, replace: true }
     } catch (error) {

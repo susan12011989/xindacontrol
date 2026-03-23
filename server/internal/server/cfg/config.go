@@ -34,6 +34,11 @@ type IpEmbedConfig struct {
 	Targets   []IpEmbedTarget // 上传目标列表
 }
 
+// ControlCfg 控制模式配置
+type ControlCfg struct {
+	Mode string // local: 单机模式（所有服务本机运行） cluster: 多机模式（通过SSH管理远程服务器）
+}
+
 var C struct {
 	service.ServiceConf
 	ListenOn    string
@@ -41,6 +46,7 @@ var C struct {
 	Redis       *dbs.RedisCfg
 	MerchantAPI *MerchantAPICfg // 商户API认证配置
 	IpEmbed     *IpEmbedConfig  // IP隐写上传配置
+	Control     *ControlCfg     // 控制模式配置
 }
 
 // ApplyEnvOverrides 从环境变量覆盖配置
@@ -96,6 +102,15 @@ func ApplyEnvOverrides() {
 	if v := os.Getenv("LISTEN_ADDR"); v != "" {
 		logx.Infof("Overriding listen addr from env: %s", v)
 		C.ListenOn = v
+	}
+
+	// 控制模式覆盖
+	if v := os.Getenv("CONTROL_MODE"); v != "" {
+		logx.Infof("Overriding control mode from env: %s", v)
+		if C.Control == nil {
+			C.Control = &ControlCfg{}
+		}
+		C.Control.Mode = v
 	}
 
 	// 商户API配置覆盖

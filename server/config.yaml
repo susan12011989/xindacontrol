@@ -22,6 +22,12 @@ Redis:
   Password:
   DB: 10
   PoolSize: 3
+# 控制模式配置
+# local: 单机模式（所有服务运行在本机，无需SSH）
+# cluster: 多机模式（通过SSH管理远程服务器，默认）
+Control:
+  Mode: "cluster"
+
 # 商户API认证配置（供商户服务调用）
 MerchantAPI:
   Username: "merchant_api"

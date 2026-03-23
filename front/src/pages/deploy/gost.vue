@@ -885,8 +885,8 @@ onMounted(() => {
           </el-descriptions-item>
         </el-descriptions>
         <el-alert type="info" :closable="false" style="margin-bottom: 16px">
-          配置后，此服务器的 GOST 将监听指定端口并转发到目标商户服务器（对称转发）。<br/>
-          默认端口: 10010(TCP), 10011(WS), 10012(HTTP)
+          V2架构：统一入口 443(TLS) + TCP 10010，nginx 路径分发。<br/>
+          商户端口: 10443(统一入口→nginx路径分发WS/HTTP/S3), 10010(TCP长连接)
         </el-alert>
         <el-form-item label="目标商户IP" required>
           <el-input v-model="forwardForm.target_ip" placeholder="商户服务器IP，例如: 1.2.3.4" />
@@ -904,8 +904,8 @@ onMounted(() => {
           </el-radio-group>
         </el-form-item>
         <el-form-item label="自定义端口">
-          <el-input v-model="forwardForm.portsStr" placeholder="留空使用默认端口(10010,10011,10012)，多个端口用逗号分隔" />
-          <div class="text-xs text-gray-400 mt-1">例如: 10010,10011,10012 或 20000,20001,20002</div>
+          <el-input v-model="forwardForm.portsStr" placeholder="留空使用默认端口(10443,10010)，多个端口用逗号分隔" />
+          <div class="text-xs text-gray-400 mt-1">V2默认: 10443(统一入口), 10010(TCP)</div>
         </el-form-item>
       </el-form>
       <template #footer>
