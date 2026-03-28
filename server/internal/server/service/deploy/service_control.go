@@ -21,6 +21,9 @@ var serviceSystemdNames = map[string]string{
 	"server":   "server.service",
 	"wukongim": "wukongim.service",
 	"gost":     "gost.service",
+	"mysql":    "mysql.service",
+	"redis":    "redis.service",
+	"minio":    "minio.service",
 }
 
 // serviceDockerNames 使用 model 中的统一映射

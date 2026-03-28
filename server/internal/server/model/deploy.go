@@ -90,8 +90,8 @@ type TestConnectionReq struct {
 
 // ========== 服务操作（systemctl） ==========
 
-// 支持的服务列表：server, wukongim, gost
-var SupportedServices = []string{"server", "wukongim", "gost"}
+// 支持的服务列表
+var SupportedServices = []string{"server", "wukongim", "gost", "mysql", "redis", "minio"}
 
 // 服务上传路径映射（Docker 部署：宿主机上的二进制所在目录）
 var ServiceUploadPaths = map[string]string{
@@ -105,11 +105,14 @@ var ServiceBinaryNames = map[string]string{
 	"wukongim": "WuKongIM",
 }
 
-// 服务 Docker 容器名映射
+// 服务 Docker 容器名映射（统一使用 imchat-* 前缀）
 var ServiceDockerNames = map[string]string{
-	"server":   "tsdd-server",
-	"wukongim": "tsdd-wukongim",
+	"server":   "imchat-server",
+	"wukongim": "imchat-wukongim",
 	"gost":     "gost",
+	"mysql":    "imchat-mysql",
+	"redis":    "imchat-redis",
+	"minio":    "imchat-minio",
 }
 
 // 服务操作请求
@@ -461,6 +464,11 @@ type InstallGostReq struct {
 	Username   string `json:"username"`    // SSH用户名，默认root
 	Password   string `json:"password"`    // SSH密码
 	PrivateKey string `json:"private_key"` // SSH私钥（二选一）
+
+	// 多机模式：指定各服务的上游地址（为空则使用 127.0.0.1 单机模式）
+	IMHost    string `json:"im_host"`    // WuKongIM 节点地址
+	APIHost   string `json:"api_host"`   // tsdd-server 节点地址
+	MinIOHost string `json:"minio_host"` // MinIO 节点地址
 }
 
 // ========== GOST 转发配置（一键部署） ==========
