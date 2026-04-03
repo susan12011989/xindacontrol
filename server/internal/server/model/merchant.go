@@ -51,8 +51,10 @@ type Merchant struct {
 	ExpiringSoon         int                          `json:"expiring_soon"`         // 2:已过期 1:即将过期 0:正常
 
 	// 配置统计（列表增强）
-	OssConfigCount  int `json:"oss_config_count"`  // OSS 配置数量
-	GostServerCount int `json:"gost_server_count"` // GOST 服务器数量
+	OssConfigCount   int `json:"oss_config_count"`   // OSS 配置数量
+	GostServerCount  int `json:"gost_server_count"`  // GOST 服务器数量
+	ServiceNodeCount int `json:"service_node_count"` // 服务节点数量
+	DeployMode       string `json:"deploy_mode"`     // 部署模式: single(单机), cluster(多机)
 }
 
 func (m *Merchant) Init(e *entity.Merchants) {

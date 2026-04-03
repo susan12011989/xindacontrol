@@ -341,3 +341,55 @@ func executeSingleCommand(server entity.Servers, command string, timeout time.Du
 	result.Output = output
 	return result
 }
+
+// GetMerchantAppServerIds 获取商户所有 App 节点的 server IDs
+func GetMerchantAppServerIds(merchantId int) ([]int, error) {
+	var nodes []entity.MerchantServiceNodes
+	err := dbs.DBAdmin.Where("merchant_id = ? AND status = 1", merchantId).
+		In("role", "app", "all", entity.ServiceNodeRoleAPI, entity.ServiceNodeRoleAll).
+		Find(&nodes)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int, 0, len(nodes))
+	for _, n := range nodes {
+		if n.ServerId > 0 {
+			ids = append(ids, n.ServerId)
+		}
+	}
+	return ids, nil
+}
+
+// MerchantBatchRestart 重启商户所有 App 节点的指定服务
+func MerchantBatchRestart(merchantId int, serviceName string, operator string) (model.BatchServiceActionResp, error) {
+	serverIds, err := GetMerchantAppServerIds(merchantId)
+	if err != nil {
+		return model.BatchServiceActionResp{}, err
+	}
+	if len(serverIds) == 0 {
+		return model.BatchServiceActionResp{}, fmt.Errorf("商户 %d 没有 App 节点", merchantId)
+	}
+	return BatchServiceAction(model.BatchServiceActionReq{
+		ServerIds:   serverIds,
+		ServiceName: serviceName,
+		Action:      "restart",
+		Parallel:    true,
+	}, operator)
+}
+
+// MerchantBatchCommand 在商户所有 App 节点执行命令
+func MerchantBatchCommand(merchantId int, command string, operator string) (model.BatchCommandResp, error) {
+	serverIds, err := GetMerchantAppServerIds(merchantId)
+	if err != nil {
+		return model.BatchCommandResp{}, err
+	}
+	if len(serverIds) == 0 {
+		return model.BatchCommandResp{}, fmt.Errorf("商户 %d 没有 App 节点", merchantId)
+	}
+	return BatchCommand(model.BatchCommandReq{
+		ServerIds: serverIds,
+		Command:   command,
+		Parallel:  true,
+		Timeout:   120,
+	}, operator)
+}

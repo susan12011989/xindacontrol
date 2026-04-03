@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"server/pkg/dbs"
 	"server/pkg/entity"
+	"strings"
 	"time"
 )
 
@@ -152,7 +153,81 @@ func CreateMerchantOssConfig(req MerchantOssConfigReq) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
+	// 自动同步 OSS URL
+	syncMerchantOssUrls(req.MerchantId)
+
 	return config.Id, nil
+}
+
+// ImportOssFromTargets 从 ip_embed_targets 导入 OSS 配置到商户
+// 通过云账号的 merchant_id 过滤，只导入属于该商户的 bucket
+func ImportOssFromTargets(merchantId int) (int, error) {
+	// 查工具页的上传目标
+	var targets []entity.IpEmbedTargets
+	if err := dbs.DBAdmin.Where("enabled = 1").OrderBy("sort_order ASC").Find(&targets); err != nil {
+		return 0, fmt.Errorf("查询上传目标失败: %v", err)
+	}
+	if len(targets) == 0 {
+		return 0, fmt.Errorf("工具页无可用上传目标")
+	}
+
+	// 查云账号，确定每个 target 属于哪个商户
+	accountIds := make([]int64, 0)
+	for _, t := range targets {
+		accountIds = append(accountIds, t.CloudAccountId)
+	}
+	var accounts []entity.CloudAccounts
+	if err := dbs.DBAdmin.In("id", accountIds).Cols("id", "merchant_id").Find(&accounts); err != nil {
+		return 0, fmt.Errorf("查询云账号失败: %v", err)
+	}
+	accMerchantMap := make(map[int64]int) // cloud_account_id -> merchant_id
+	for _, a := range accounts {
+		accMerchantMap[a.Id] = a.MerchantId
+	}
+
+	// 查已有的 merchant_oss_configs，按 bucket 去重
+	var existing []entity.MerchantOssConfigs
+	dbs.DBAdmin.Where("merchant_id = ?", merchantId).Find(&existing)
+	existBuckets := make(map[string]bool)
+	for _, e := range existing {
+		existBuckets[e.Bucket] = true
+	}
+
+	imported := 0
+	for _, t := range targets {
+		// 只导入属于该商户的 target（通过云账号关联）
+		accMerchantId := accMerchantMap[t.CloudAccountId]
+		if accMerchantId != merchantId {
+			continue
+		}
+		if existBuckets[t.Bucket] {
+			continue
+		}
+		config := &entity.MerchantOssConfigs{
+			MerchantId:     merchantId,
+			CloudAccountId: t.CloudAccountId,
+			Name:           t.Name,
+			Bucket:         t.Bucket,
+			Region:         t.RegionId,
+			IsDefault:      0,
+			Status:         1,
+			CreatedAt:      time.Now(),
+			UpdatedAt:      time.Now(),
+		}
+		if imported == 0 && len(existing) == 0 {
+			config.IsDefault = 1
+		}
+		if _, err := dbs.DBAdmin.Insert(config); err == nil {
+			imported++
+		}
+	}
+
+	if imported > 0 {
+		syncMerchantOssUrls(merchantId)
+	}
+
+	return imported, nil
 }
 
 // UpdateMerchantOssConfig 更新商户 OSS 配置
@@ -203,15 +278,30 @@ func UpdateMerchantOssConfig(id int, req MerchantOssConfigReq) error {
 	}
 
 	_, err = dbs.DBAdmin.Table("merchant_oss_configs").Where("id = ?", id).Update(updates)
+	if err == nil {
+		syncMerchantOssUrls(config.MerchantId)
+	}
 	return err
 }
 
 // DeleteMerchantOssConfig 删除商户 OSS 配置
 func DeleteMerchantOssConfig(id int) error {
-	_, err := dbs.DBAdmin.ID(id).Delete(&entity.MerchantOssConfigs{})
+	// 先查出 merchant_id
+	var config entity.MerchantOssConfigs
+	has, err := dbs.DBAdmin.ID(id).Get(&config)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return fmt.Errorf("OSS 配置不存在")
+	}
+
+	_, err = dbs.DBAdmin.ID(id).Delete(&entity.MerchantOssConfigs{})
 	if err == nil {
 		// 清理关联的标签
 		_, _ = dbs.DBAdmin.Where("resource_type = ? AND resource_id = ?", entity.ResourceTypeOssConfig, id).Delete(&entity.ResourceTagRelations{})
+		// 自动同步 OSS URL
+		syncMerchantOssUrls(config.MerchantId)
 	}
 	return err
 }
@@ -252,7 +342,7 @@ func GetMerchantDefaultOss(merchantId int) (*entity.MerchantOssConfigs, *entity.
 // MerchantGostServerReq 商户 GOST 服务器关联请求
 type MerchantGostServerReq struct {
 	Id         int    `json:"id"`
-	MerchantId int    `json:"merchant_id" binding:"required"`
+	MerchantId int    `json:"merchant_id"` // 由路由层从 URL path 注入
 	ServerId   int    `json:"server_id" binding:"required"`
 	CloudType  string `json:"cloud_type"`
 	Region     string `json:"region"`
@@ -332,6 +422,70 @@ func ListMerchantGostServers(merchantId int) ([]MerchantGostServerResp, error) {
 	return result, nil
 }
 
+// syncMerchantDirectIP 同步商户所有 GOST 服务器 IP 到 merchants.package_configuration.direct_ip
+// 包含所有 GOST 服务器的 Host + AuxiliaryIP，按优先级排列，逗号分隔
+func syncMerchantDirectIP(merchantId int) {
+	// 复用 getMerchantGostIPs：取所有启用 GOST 服务器的 Host + AuxiliaryIP
+	ips, err := getMerchantGostIPs(merchantId)
+	if err != nil {
+		return
+	}
+	directIP := strings.Join(ips, ",")
+
+	// 读取商户当前配置
+	var merchant entity.Merchants
+	has, err := dbs.DBAdmin.ID(merchantId).Get(&merchant)
+	if err != nil || !has {
+		return
+	}
+
+	if merchant.PackageConfiguration == nil {
+		merchant.PackageConfiguration = &entity.PackageConfiguration{}
+	}
+	if merchant.PackageConfiguration.DirectIP == directIP {
+		return // 无变化
+	}
+	merchant.PackageConfiguration.DirectIP = directIP
+	_, _ = dbs.DBAdmin.ID(merchantId).Cols("package_configuration").Update(&merchant)
+}
+
+// syncMerchantOssUrls 同步商户 OSS 配置的下载 URL 到 merchants.app_configs.oss_url
+func syncMerchantOssUrls(merchantId int) {
+	configs, err := ListMerchantOssConfigs(merchantId)
+	if err != nil {
+		return
+	}
+
+	urls := make([]string, 0, len(configs))
+	for _, c := range configs {
+		if c.Status == 0 {
+			continue
+		}
+		// 优先 custom_domain，其次自动生成的 endpoint
+		var url string
+		if c.CustomDomain != "" {
+			url = c.CustomDomain
+		} else if c.Endpoint != "" {
+			url = fmt.Sprintf("https://%s.%s", c.Bucket, c.Endpoint)
+		}
+		if url != "" {
+			urls = append(urls, url)
+		}
+	}
+
+	var merchant entity.Merchants
+	has, err := dbs.DBAdmin.ID(merchantId).Get(&merchant)
+	if err != nil || !has {
+		return
+	}
+
+	if merchant.AppConfigs == nil {
+		merchant.AppConfigs = &entity.AppConfigs{}
+	}
+	merchant.AppConfigs.OssUrl = urls
+	_, _ = dbs.DBAdmin.ID(merchantId).Cols("app_configs").Update(&merchant)
+}
+
 // CreateMerchantGostServer 创建商户 GOST 服务器关联
 func CreateMerchantGostServer(req MerchantGostServerReq) (int, error) {
 	// 检查服务器是否存在
@@ -380,10 +534,25 @@ func CreateMerchantGostServer(req MerchantGostServerReq) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
+	// 自动同步直连IP
+	syncMerchantDirectIP(req.MerchantId)
+
 	return relation.Id, nil
 }
 
 // UpdateMerchantGostServer 更新商户 GOST 服务器关联
+// ReorderMerchantGostServers 批量更新排序，ids 按优先级从高到低
+func ReorderMerchantGostServers(ids []int) error {
+	for i, id := range ids {
+		_, err := dbs.DBAdmin.Exec("UPDATE merchant_gost_servers SET priority = ?, updated_at = ? WHERE id = ?", i+1, time.Now(), id)
+		if err != nil {
+			return fmt.Errorf("更新排序失败 id=%d: %w", id, err)
+		}
+	}
+	return nil
+}
+
 func UpdateMerchantGostServer(id int, req MerchantGostServerReq) error {
 	var relation entity.MerchantGostServers
 	has, err := dbs.DBAdmin.ID(id).Get(&relation)
@@ -417,15 +586,30 @@ func UpdateMerchantGostServer(id int, req MerchantGostServerReq) error {
 	}
 
 	_, err = dbs.DBAdmin.Table("merchant_gost_servers").Where("id = ?", id).Update(updates)
+	if err == nil {
+		syncMerchantDirectIP(relation.MerchantId)
+	}
 	return err
 }
 
 // DeleteMerchantGostServer 删除商户 GOST 服务器关联
 func DeleteMerchantGostServer(id int) error {
-	_, err := dbs.DBAdmin.ID(id).Delete(&entity.MerchantGostServers{})
+	// 先查出 merchant_id
+	var relation entity.MerchantGostServers
+	has, err := dbs.DBAdmin.ID(id).Get(&relation)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return fmt.Errorf("关联记录不存在")
+	}
+
+	_, err = dbs.DBAdmin.ID(id).Delete(&entity.MerchantGostServers{})
 	if err == nil {
 		// 清理关联的标签
 		_, _ = dbs.DBAdmin.Where("resource_type = ? AND resource_id = ?", entity.ResourceTypeGostServer, id).Delete(&entity.ResourceTagRelations{})
+		// 自动同步直连IP
+		syncMerchantDirectIP(relation.MerchantId)
 	}
 	return err
 }

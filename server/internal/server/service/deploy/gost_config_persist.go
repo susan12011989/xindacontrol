@@ -23,10 +23,18 @@ func PersistGostConfig(serverId int) error {
 		return err
 	}
 
-	// 1. 获取运行中的完整配置
+	// 1. 获取运行中的完整配置（/config 只含文件加载的，需要补全动态创建的 services/chains）
 	config, err := gostapi.GetConfig(host, "")
 	if err != nil {
 		return fmt.Errorf("获取 GOST 运行配置失败: %w", err)
+	}
+
+	// 用 /config/services 和 /config/chains 获取完整列表（含动态创建的）
+	if svcList, err := gostapi.GetServiceList(host); err == nil && svcList.Count > 0 {
+		config.Services = svcList.List
+	}
+	if chainList, err := gostapi.GetChainList(host); err == nil && chainList.Count > 0 {
+		config.Chains = chainList.List
 	}
 
 	// 2. 转换为 YAML（Config 只有 json tag，需要 JSON→generic→YAML）
@@ -71,10 +79,16 @@ func GetGostConfigSyncStatus(serverId int) (*model.GostConfigSyncStatusResp, err
 		return nil, err
 	}
 
-	// 1. 获取运行配置
+	// 1. 获取运行配置（补全动态创建的 services/chains）
 	runningConfig, err := gostapi.GetConfig(host, "")
 	if err != nil {
 		return nil, fmt.Errorf("获取运行配置失败: %w", err)
+	}
+	if svcList, svcErr := gostapi.GetServiceList(host); svcErr == nil && svcList.Count > 0 {
+		runningConfig.Services = svcList.List
+	}
+	if chainList, chainErr := gostapi.GetChainList(host); chainErr == nil && chainList.Count > 0 {
+		runningConfig.Chains = chainList.List
 	}
 
 	// 2. 通过 SSH 读取文件配置

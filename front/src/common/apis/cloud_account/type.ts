@@ -58,7 +58,10 @@ export interface CloudAccountResp {
 
 // 阿里云账户余额响应
 export interface AliyunBalanceResp {
-  balance: string
+  available_amount: string // 可用额度（含信用额度）
+  available_cash_amount: string // 现金余额（真实余额）
+  credit_amount: string // 信用额度
+  currency: string // 币种
 }
 
 // 腾讯云账户余额响应
@@ -73,6 +76,19 @@ export interface TencentBalanceResp {
   owe_balance: number // 欠费金额（分）
   is_overdue: boolean // 是否欠费
   is_overdue_balance: boolean // 余额是否小于0
+}
+
+// 批量余额查询结果
+export interface BatchBalanceItem {
+  account_id: number
+  account_name: string
+  cloud_type: string
+  site_type: string
+  merchant_name: string
+  balance: string // 现金余额
+  currency: string // 币种
+  credit_amount: string // 信用额度（阿里云）
+  error: string // 错误信息
 }
 
 // 云账号列表响应

@@ -35,26 +35,30 @@ func GetSystemIPs() (*model.GetSystemIPsResp, error) {
 		return nil, err
 	}
 
-	// 查询 merchant_gost_servers 关联表，补充 servers.merchant_id 为 0 的情况
-	serverMerchantMap := make(map[int]int) // server_id -> merchant_id
+	// 查询 merchant_gost_servers 关联表（一台服务器可关联多个商户）
+	serverMerchantsMap := make(map[int][]int) // server_id -> []merchant_id
 	var relations []entity.MerchantGostServers
 	_ = dbs.DBAdmin.Where("status = 1").Find(&relations)
 	for _, r := range relations {
-		serverMerchantMap[r.ServerId] = r.MerchantId
+		serverMerchantsMap[r.ServerId] = append(serverMerchantsMap[r.ServerId], r.MerchantId)
 	}
 
-	// 确定每台服务器关联的商户ID：优先 servers.merchant_id，其次关联表
-	merchantIds := make([]int, 0)
-	serverFinalMerchant := make(map[int]int) // server_id -> final merchant_id
+	// 收集所有需要查询的商户ID
+	merchantIdSet := make(map[int]bool)
 	for _, s := range servers {
-		mid := s.MerchantId
-		if mid == 0 {
-			mid = serverMerchantMap[s.Id]
+		if s.MerchantId > 0 {
+			merchantIdSet[s.MerchantId] = true
 		}
-		serverFinalMerchant[s.Id] = mid
-		if mid > 0 {
-			merchantIds = append(merchantIds, mid)
+		for _, mid := range serverMerchantsMap[s.Id] {
+			if mid > 0 {
+				merchantIdSet[mid] = true
+			}
 		}
+	}
+
+	merchantIds := make([]int, 0, len(merchantIdSet))
+	for mid := range merchantIdSet {
+		merchantIds = append(merchantIds, mid)
 	}
 
 	// 批量查询商户名称
@@ -69,15 +73,42 @@ func GetSystemIPs() (*model.GetSystemIPsResp, error) {
 
 	items := make([]model.SystemIPItem, 0, len(servers))
 	for _, s := range servers {
-		mid := serverFinalMerchant[s.Id]
+		// 合并 servers.merchant_id 和 merchant_gost_servers 的商户列表（去重）
+		merchantIdMap := make(map[int]bool)
+		if s.MerchantId > 0 {
+			merchantIdMap[s.MerchantId] = true
+		}
+		for _, mid := range serverMerchantsMap[s.Id] {
+			if mid > 0 {
+				merchantIdMap[mid] = true
+			}
+		}
+
+		merchantList := make([]model.SystemIPMerchantItem, 0, len(merchantIdMap))
+		for mid := range merchantIdMap {
+			merchantList = append(merchantList, model.SystemIPMerchantItem{
+				MerchantId:   mid,
+				MerchantName: merchantMap[mid],
+			})
+		}
+
+		// 兼容旧逻辑：MerchantId/MerchantName 取第一个
+		var primaryMid int
+		var primaryMName string
+		if len(merchantList) > 0 {
+			primaryMid = merchantList[0].MerchantId
+			primaryMName = merchantList[0].MerchantName
+		}
+
 		items = append(items, model.SystemIPItem{
 			ServerId:     s.Id,
 			ServerName:   s.Name,
 			IP:           s.Host,
 			AuxiliaryIP:  s.AuxiliaryIP,
 			Status:       s.Status,
-			MerchantId:   mid,
-			MerchantName: merchantMap[mid],
+			MerchantId:   primaryMid,
+			MerchantName: primaryMName,
+			Merchants:    merchantList,
 		})
 	}
 

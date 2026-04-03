@@ -34,6 +34,7 @@ func Routes(ge gin.IRouter) {
 	group.POST("/ec2/instance/create", createEc2Instance)
 	group.POST("/ec2/instance/modify", modifyEc2Instance)
 	group.POST("/ec2/volume/resize/stream", resizeVolumeStream)
+	group.POST("/ec2/instance/resize/stream", resizeInstanceTypeStream)
 	group.GET("/ec2/volumes", listVolumes)
 	group.GET("/ec2/volumes/usage", getVolumeUsage)
 	group.GET("/ec2/images", listImages)
@@ -686,12 +687,12 @@ func allocateEip(c *gin.Context) {
 		result.GErr(c, err)
 		return
 	}
-	id, err := cloudService.AllocateAddress(acc, req.RegionId)
+	id, publicIp, err := cloudService.AllocateAddress(acc, req.RegionId, req.Address)
 	if err != nil {
 		result.GErr(c, err)
 		return
 	}
-	result.GOK(c, gin.H{"allocation_id": id})
+	result.GOK(c, gin.H{"allocation_id": id, "public_ip": publicIp})
 }
 
 func describeInstance(c *gin.Context) {
@@ -945,4 +946,180 @@ func getCloudWatchMetrics(c *gin.Context) {
 		return
 	}
 	result.GOK(c, data)
+}
+
+// 修改EC2实例类型（SSE流式输出）
+func resizeInstanceTypeStream(c *gin.Context) {
+	var req model.AwsResizeEc2InstanceReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+	if (req.CloudAccountId > 0 && req.MerchantId > 0) || (req.CloudAccountId == 0 && req.MerchantId == 0) {
+		result.GParamErr(c, fmt.Errorf("cloud_account_id 与 merchant_id 不能同时传，且必须提供一个"))
+		return
+	}
+
+	// 开启SSE
+	result.GStream(c)
+
+	// 解析账号
+	acc, err := awscloud.ResolveAwsAccount(c, req.MerchantId, req.CloudAccountId)
+	if err != nil {
+		result.GStreamData(c, gin.H{"error": err.Error()})
+		result.GStreamEnd(c, false, "解析账号失败")
+		return
+	}
+
+	// EC2 client
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	ec2cli, err := awscloud.NewEc2Client(ctx, acc, req.RegionId)
+	if err != nil {
+		result.GStreamData(c, gin.H{"error": err.Error()})
+		result.GStreamEnd(c, false, "创建EC2客户端失败")
+		return
+	}
+
+	// Step 1: 查询当前实例状态和类型
+	result.GStreamData(c, gin.H{"step": "describe_instance", "instance_id": req.InstanceId})
+	din, err := ec2cli.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{req.InstanceId}})
+	if err != nil || len(din.Reservations) == 0 || len(din.Reservations[0].Instances) == 0 {
+		result.GStreamEnd(c, false, "实例不存在或描述失败")
+		return
+	}
+	ins := din.Reservations[0].Instances[0]
+	currentType := string(ins.InstanceType)
+	currentState := string(ins.State.Name)
+	result.GStreamData(c, gin.H{
+		"step":          "current_info",
+		"current_type":  currentType,
+		"current_state": currentState,
+		"new_type":      req.NewInstanceType,
+	})
+
+	if currentType == req.NewInstanceType {
+		result.GStreamEnd(c, true, "实例类型未变更，无需操作")
+		return
+	}
+
+	// EIP 检查：没绑 Elastic IP 的实例禁止变配（停机会导致公网 IP 丢失）
+	hasEip := false
+	eipCtx, eipCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	addrOut, addrErr := ec2cli.DescribeAddresses(eipCtx, &ec2.DescribeAddressesInput{
+		Filters: []ec2types.Filter{
+			{Name: strPtr("instance-id"), Values: []string{req.InstanceId}},
+		},
+	})
+	eipCancel()
+	if addrErr == nil && len(addrOut.Addresses) > 0 {
+		hasEip = true
+	}
+	if !hasEip {
+		result.GStreamEnd(c, false, "该实例未绑定 Elastic IP，变配需要停机会导致公网 IP 丢失。请先绑定 EIP 后再操作。")
+		return
+	}
+	result.GStreamData(c, gin.H{"step": "eip_check", "has_eip": true})
+
+	// Step 2: 停止实例（如果不是已停止状态）
+	if currentState != "stopped" {
+		result.GStreamData(c, gin.H{"step": "stopping_instance"})
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, err = ec2cli.StopInstances(stopCtx, &ec2.StopInstancesInput{InstanceIds: []string{req.InstanceId}})
+		stopCancel()
+		if err != nil {
+			result.GStreamEnd(c, false, fmt.Sprintf("停止实例失败: %v", err))
+			return
+		}
+
+		// 轮询等待 stopped 状态
+		deadline := time.Now().Add(5 * time.Minute)
+		stopped := false
+		for time.Now().Before(deadline) {
+			time.Sleep(5 * time.Second)
+			pollCtx, pollCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			out, derr := ec2cli.DescribeInstances(pollCtx, &ec2.DescribeInstancesInput{InstanceIds: []string{req.InstanceId}})
+			pollCancel()
+			if derr != nil {
+				continue
+			}
+			if len(out.Reservations) > 0 && len(out.Reservations[0].Instances) > 0 {
+				state := out.Reservations[0].Instances[0].State
+				if state != nil {
+					stateName := string(state.Name)
+					result.GStreamData(c, gin.H{"step": "wait_stopped", "state": stateName})
+					if state.Name == ec2types.InstanceStateNameStopped {
+						stopped = true
+						break
+					}
+				}
+			}
+		}
+		if !stopped {
+			result.GStreamEnd(c, false, "等待实例停止超时")
+			return
+		}
+	}
+
+	// Step 3: 修改实例类型
+	result.GStreamData(c, gin.H{"step": "modifying_instance_type", "new_type": req.NewInstanceType})
+	modCtx, modCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	_, err = ec2cli.ModifyInstanceAttribute(modCtx, &ec2.ModifyInstanceAttributeInput{
+		InstanceId: &req.InstanceId,
+		InstanceType: &ec2types.AttributeValue{
+			Value: &req.NewInstanceType,
+		},
+	})
+	modCancel()
+	if err != nil {
+		// 修改失败，尝试重新启动实例
+		result.GStreamData(c, gin.H{"step": "modify_failed", "error": err.Error()})
+		result.GStreamData(c, gin.H{"step": "restarting_instance_after_failure"})
+		startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, _ = ec2cli.StartInstances(startCtx, &ec2.StartInstancesInput{InstanceIds: []string{req.InstanceId}})
+		startCancel()
+		result.GStreamEnd(c, false, fmt.Sprintf("修改实例类型失败: %v，已尝试重新启动实例", err))
+		return
+	}
+	result.GStreamData(c, gin.H{"step": "instance_type_modified", "new_type": req.NewInstanceType})
+
+	// Step 4: 启动实例
+	result.GStreamData(c, gin.H{"step": "starting_instance"})
+	startCtx, startCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	_, err = ec2cli.StartInstances(startCtx, &ec2.StartInstancesInput{InstanceIds: []string{req.InstanceId}})
+	startCancel()
+	if err != nil {
+		result.GStreamEnd(c, false, fmt.Sprintf("启动实例失败: %v", err))
+		return
+	}
+
+	// 轮询等待 running 状态
+	deadline := time.Now().Add(5 * time.Minute)
+	running := false
+	for time.Now().Before(deadline) {
+		time.Sleep(5 * time.Second)
+		pollCtx, pollCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		out, derr := ec2cli.DescribeInstances(pollCtx, &ec2.DescribeInstancesInput{InstanceIds: []string{req.InstanceId}})
+		pollCancel()
+		if derr != nil {
+			continue
+		}
+		if len(out.Reservations) > 0 && len(out.Reservations[0].Instances) > 0 {
+			state := out.Reservations[0].Instances[0].State
+			if state != nil {
+				stateName := string(state.Name)
+				result.GStreamData(c, gin.H{"step": "wait_running", "state": stateName})
+				if state.Name == ec2types.InstanceStateNameRunning {
+					running = true
+					break
+				}
+			}
+		}
+	}
+	if !running {
+		result.GStreamEnd(c, false, "等待实例启动超时")
+		return
+	}
+
+	result.GStreamEnd(c, true, fmt.Sprintf("实例类型已从 %s 变更为 %s", currentType, req.NewInstanceType))
 }

@@ -12,6 +12,14 @@ func Port2Enterprise(port uint16) string {
 	return code5 + string(rune('0'+check))
 }
 
+// Id2Enterprise 根据商户自增 ID 生成6位企业号（端口固定后替代 Port2Enterprise）
+func Id2Enterprise(id int) string {
+	c := (A*id + B) % M
+	code5 := leftPad5(c)
+	check := luhnDigit(code5)
+	return code5 + string(rune('0'+check))
+}
+
 func Enterprise2Port(code6 string) (uint16, error) {
 	if len(code6) != 6 || !isAllDigits(code6) {
 		return 0, errors.New("企业号必须是6位数字")

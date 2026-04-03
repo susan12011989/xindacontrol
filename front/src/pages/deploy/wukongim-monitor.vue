@@ -1,7 +1,6 @@
 <script lang="ts" setup>
 import type { WuKongIMConnInfo, WuKongIMConnzReq, WuKongIMVarzResp } from "@@/apis/wukongim/type"
-import { getWuKongIMConnz, getWuKongIMOnlineStatus, getWuKongIMVarz, wukongimDeviceQuit } from "@@/apis/wukongim"
-import { getServerList } from "@@/apis/deploy"
+import { getWuKongIMConnz, getWuKongIMNodes, getWuKongIMOnlineStatus, getWuKongIMVarz, wukongimDeviceQuit } from "@@/apis/wukongim"
 import { Refresh, Search } from "@element-plus/icons-vue"
 
 defineOptions({
@@ -17,35 +16,24 @@ const serverId = ref(Number(route.query.server_id) || 0)
 const serverSelectLoading = ref(false)
 const serverOptions = ref<{ label: string, value: number }[]>([])
 const selectedServerId = ref<number | undefined>(serverId.value || undefined)
-let serverSearchTimer: any = null
 
-async function fetchServerOptions(keyword = "") {
+async function fetchServerOptions() {
   serverSelectLoading.value = true
   try {
-    const params: any = { page: 1, size: 20 }
-    const key = keyword.trim()
-    if (key) {
-      if (/[0-9.:]/.test(key)) {
-        params.host = key
-      } else {
-        params.name = key
-      }
-    }
-    const res = await getServerList(params)
-    serverOptions.value = (res.data.list || []).map((s: any) => ({
-      value: s.id,
-      label: `${s.name} (${s.host}:${s.port})`
+    const res = await getWuKongIMNodes()
+    serverOptions.value = (res.data || []).map((n: any) => ({
+      value: n.server_id,
+      label: `${n.merchant_name || n.merchant_no} (${n.host})`
     }))
+    // 如果只有一个节点且未选择，自动选中
+    if (!serverId.value && serverOptions.value.length === 1) {
+      onServerChange(serverOptions.value[0].value)
+    }
   } catch {
     // ignore
   } finally {
     serverSelectLoading.value = false
   }
-}
-
-function remoteSearchServers(query: string) {
-  if (serverSearchTimer) clearTimeout(serverSearchTimer)
-  serverSearchTimer = setTimeout(() => fetchServerOptions(query), 200)
 }
 
 function onServerChange(id: number) {
@@ -210,10 +198,7 @@ onUnmounted(() => {
         <el-select
           v-model="selectedServerId"
           filterable
-          remote
-          reserve-keyword
-          placeholder="搜索服务器..."
-          :remote-method="remoteSearchServers"
+          placeholder="选择 WuKongIM 节点..."
           :loading="serverSelectLoading"
           style="width: 320px"
           @change="onServerChange"
@@ -248,10 +233,10 @@ onUnmounted(() => {
               <el-statistic title="Goroutine" :value="varzData.goroutine" />
             </el-col>
             <el-col :span="4">
-              <el-statistic title="内存" :value="formatBytes(varzData.mem)" />
+              <el-statistic title="内存" :value="(formatBytes(varzData.mem) as any)" />
             </el-col>
             <el-col :span="4">
-              <el-statistic title="运行时间" :value="varzData.uptime" />
+              <el-statistic title="运行时间" :value="(varzData.uptime as any)" />
             </el-col>
           </el-row>
           <el-divider />

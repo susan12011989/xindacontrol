@@ -1,0 +1,1 @@
+import{l as t}from"./index-BVnbCZ_8.js";function a(){return t({url:"/2fa/status",method:"GET"})}function r(){return t({url:"/2fa/setup",method:"GET"})}function o(e){return t({url:"/2fa/enable",method:"POST",data:e})}function n(e){return t({url:"/2fa/disable",method:"POST",data:e})}export{a,n as d,o as e,r as g};

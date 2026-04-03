@@ -132,40 +132,56 @@ func InstallNginxToServer(serverId int, progressCallback func(string)) error {
 	return nil
 }
 
-// generateNginxPortConfig 生成指定端口的 Nginx 配置内容
+// generateNginxPortConfig 生成指定端口的 Nginx 缓存配置
+// V3: 文件端口(8080)的所有 GET 请求都缓存（MinIO 全是文件），PUT/POST 透传（上传）
 func generateNginxPortConfig(httpPort int) string {
-	return fmt.Sprintf(`# GOST 缓存代理 - 端口 %d（自动生成，请勿手动修改）
+	return fmt.Sprintf(`# GOST 文件缓存代理 - 端口 %d（自动生成，请勿手动修改）
+# V3: 手机 → :8080(Nginx缓存) → 127.0.0.1:8080(GOST) → relay+tls → 商户MinIO
 server {
     listen %d;
     listen [::]:%d;
 
-    # 媒体文件 → 缓存（图片/视频/音频/文档）
-    location ~* \.(jpg|jpeg|png|gif|webp|bmp|ico|svg|mp4|avi|mkv|mov|webm|mp3|wav|ogg|aac|flac|amr|pdf|doc|docx|xls|xlsx|ppt|pptx|zip|rar|7z)$ {
-        proxy_pass http://127.0.0.1:%d;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    # 允许大文件上传
+    client_max_body_size 1000m;
+    client_body_buffer_size 500m;
 
-        proxy_cache gost_media;
-        proxy_cache_valid 200 7d;
-        proxy_cache_valid 304 7d;
-        proxy_cache_key $uri$is_args$args;
-        proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
-        proxy_ignore_headers Cache-Control Expires Set-Cookie;
-
-        add_header X-Cache-Status $upstream_cache_status;
-        proxy_max_temp_file_size 100m;
-    }
-
-    # 其他请求（API等）→ 直接透传，不缓存
     location / {
         proxy_pass http://127.0.0.1:%d;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+
+        # 仅缓存 GET/HEAD（下载），PUT/POST（上传）不缓存
+        proxy_cache gost_media;
+        proxy_cache_methods GET HEAD;
+        proxy_cache_valid 200 7d;
+        proxy_cache_valid 206 1h;
+        proxy_cache_valid 304 7d;
+        proxy_cache_key $uri$is_args$args;
+        proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
+        proxy_ignore_headers Cache-Control Expires Set-Cookie;
+        add_header X-Cache-Status $upstream_cache_status;
+        proxy_max_temp_file_size 500m;
+
+        # 防缓存击穿：万人群同时下载同一张图 → 只放 1 个请求穿透到后端
+        # 其余请求等第 1 个完成后直接拿缓存结果
+        proxy_cache_lock on;
+        proxy_cache_lock_timeout 30s;
+        proxy_cache_lock_age 60s;
+
+        # PUT/POST/DELETE 请求不缓存，直接透传
+        set $no_cache 0;
+        if ($request_method !~* "GET|HEAD") {
+            set $no_cache 1;
+        }
+        proxy_no_cache $no_cache;
+        proxy_cache_bypass $no_cache;
     }
 }
-`, httpPort, httpPort, httpPort, httpPort, httpPort)
+`, httpPort, httpPort, httpPort, httpPort)
 }
 
 // ConfigureNginxCacheForPort 为指定 HTTP 端口配置 Nginx 缓存
@@ -367,7 +383,8 @@ func GetNginxCacheStatus(serverId int) (*model.NginxCacheStatusResp, error) {
 }
 
 // isNginxInstalled 检查服务器是否安装了 Nginx
-func isNginxInstalled(serverId int) bool {
+// IsNginxInstalled 检查服务器是否安装了 Nginx
+func IsNginxInstalled(serverId int) bool {
 	client, err := GetSSHClient(serverId)
 	if err != nil {
 		return false

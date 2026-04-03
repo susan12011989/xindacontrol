@@ -160,6 +160,15 @@ export function modifyEc2Instance(data: Aws.AwsModifyEc2InstanceReq) {
 
 // removed non-stream resize API; use resizeVolumeStream instead
 
+export function resizeInstanceTypeStream(data: Aws.AwsResizeEc2InstanceReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
+  return createStreamRequest({
+    url: "aws/ec2/instance/resize/stream",
+    method: "post",
+    data,
+    timeout: 600000
+  }, onData, onError)
+}
+
 export function resizeVolumeStream(data: Aws.AwsResizeVolumeReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
   return createStreamRequest({
     url: "aws/ec2/volume/resize/stream",

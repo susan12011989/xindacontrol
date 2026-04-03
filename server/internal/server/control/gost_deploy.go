@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"server/internal/server/model"
+	deploy "server/internal/server/service/deploy"
 	"server/pkg/gostapi"
 	"strings"
 	"time"
@@ -20,13 +22,27 @@ type GostDeployRequest struct {
 
 // GostOneClickDeploy 统一一键部署入口
 // 单机模式: 自动安装本地 GOST + 配置直连端口映射，零参数
-// 多机模式: 委托给现有 SetupGostDeploy 流程
+// 多机模式: 委托给 SetupGostDeploy，自动安装+配置转发+TLS+持久化
 func GostOneClickDeploy(ctx context.Context, req GostDeployRequest, progress func(string)) error {
 	if IsLocalMode() {
 		return localGostDeploy(ctx, progress)
 	}
-	// 多机模式保持原有逻辑（由 deploy service 处理）
-	return fmt.Errorf("多机模式请使用 deploy/gost/setup 接口")
+
+	// 多机模式：校验参数后委托给 deploy service
+	if req.ServerId == 0 {
+		return fmt.Errorf("多机模式必须指定 server_id")
+	}
+	if len(req.MerchantIds) == 0 {
+		return fmt.Errorf("多机模式必须指定 merchant_ids")
+	}
+
+	setupReq := &model.SetupGostDeployReq{
+		ServerId:    req.ServerId,
+		MerchantIds: req.MerchantIds,
+		ForwardType: req.ForwardType,
+	}
+
+	return deploy.SetupGostDeploy(setupReq, progress)
 }
 
 // localGostDeploy 单机一键部署 GOST
@@ -37,7 +53,7 @@ func localGostDeploy(ctx context.Context, progress func(string)) error {
 	progress("========== 单机模式 GOST 一键部署 ==========")
 
 	// Step 1: 检测 GOST 是否已安装
-	progress("步骤 1/5: 检测 GOST 安装状态...")
+	progress("步骤 1/4: 检测 GOST 安装状态...")
 	result := executor.Execute(ctx, "which gost 2>/dev/null || echo ''")
 	gostPath := strings.TrimSpace(result.Output)
 
@@ -53,7 +69,7 @@ func localGostDeploy(ctx context.Context, progress func(string)) error {
 	}
 
 	// Step 2: 确保 GOST 服务运行
-	progress("步骤 2/5: 确保 GOST 服务运行...")
+	progress("步骤 2/4: 确保 GOST 服务运行...")
 	result = executor.Execute(ctx, "systemctl is-active gost 2>/dev/null || echo 'inactive'")
 	if strings.TrimSpace(result.Output) != "active" {
 		executor.Execute(ctx, "sudo systemctl start gost 2>/dev/null || true")
@@ -72,10 +88,11 @@ func localGostDeploy(ctx context.Context, progress func(string)) error {
 	}
 	progress("GOST API 正常")
 
-	// Step 3: 配置 GOST 本地转发（V2 精简架构）
-	progress("步骤 3/5: 配置 GOST 本地转发...")
-	progress(fmt.Sprintf("  %d(统一入口) → nginx:%d (路径分发 WS/HTTP/S3)", gostapi.MerchantUnifiedPort, gostapi.MerchantNginxPort))
-	progress(fmt.Sprintf("  %d(TCP)      → 127.0.0.1:%d (WuKongIM TCP)", gostapi.MerchantTCPPort, gostapi.MerchantAppPortTCP))
+	// Step 3: 配置 GOST 本地转发（V3 直转架构，不经过 nginx）
+	progress("步骤 3/4: 配置 GOST 本地转发...")
+	for _, cfg := range gostapi.MerchantLocalForwardConfigs {
+		progress(fmt.Sprintf("  :%d → 127.0.0.1:%d (%s)", cfg.GostPort, cfg.AppPort, cfg.Name))
+	}
 
 	if err := gostapi.CreateMerchantLocalForwards("127.0.0.1"); err != nil {
 		progress(fmt.Sprintf("警告: 本地转发配置失败: %s (可能已存在)", err))
@@ -83,41 +100,8 @@ func localGostDeploy(ctx context.Context, progress func(string)) error {
 		progress("GOST 本地转发配置成功")
 	}
 
-	// Step 4: 部署 nginx 路径分发
-	progress("步骤 4/5: 配置 nginx 路径分发...")
-	nginxConf := gostapi.MerchantNginxConfigTemplate()
-	for _, nc := range gostapi.MerchantNginxConfigs {
-		progress(fmt.Sprintf("  %s → 127.0.0.1:%d (%s)", nc.Path, nc.AppPort, nc.Name))
-	}
-
-	// 写入 nginx 配置并启动
-	nginxSetupCmd := fmt.Sprintf(`
-sudo mkdir -p /opt/tsdd/nginx
-cat > /tmp/tsdd-nginx.conf << 'NGINX_EOF'
-%s
-NGINX_EOF
-sudo mv /tmp/tsdd-nginx.conf /opt/tsdd/nginx/default.conf
-
-# 启动 nginx 容器
-sudo docker rm -f tsdd-nginx 2>/dev/null || true
-sudo docker run -d \
-    --name tsdd-nginx \
-    --restart always \
-    --network host \
-    -v /opt/tsdd/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro \
-    nginx:alpine
-`, nginxConf)
-
-	result = executor.Execute(ctx, nginxSetupCmd)
-	if result.Err != nil {
-		progress(fmt.Sprintf("警告: nginx 部署失败: %s", result.Err))
-		progress("  请确保 Docker 已安装")
-	} else {
-		progress("nginx 路径分发配置成功")
-	}
-
-	// Step 5: 持久化配置
-	progress("步骤 5/5: 保存配置...")
+	// Step 4: 持久化配置
+	progress("步骤 4/4: 保存配置...")
 	gostCtrl := newLocalGostController(executor)
 	if err := gostCtrl.PersistGostConfig(ctx); err != nil {
 		progress(fmt.Sprintf("警告: 配置持久化失败: %s", err))
@@ -126,12 +110,11 @@ sudo docker run -d \
 	}
 
 	progress("========================================")
-	progress("GOST 一键部署完成! (V2 精简端口架构)")
-	progress(fmt.Sprintf("  GOST API:  http://127.0.0.1:%d", gostapi.GostAPIPortInt))
-	progress(fmt.Sprintf("  统一入口:  :%d (relay+tls → nginx 路径分发)", gostapi.MerchantUnifiedPort))
-	progress(fmt.Sprintf("  TCP 长连接: :%d (relay+tls → WuKongIM)", gostapi.MerchantTCPPort))
-	progress(fmt.Sprintf("  nginx:     :%d (/ws→%d, /api/→%d, /s3/→%d)",
-		gostapi.MerchantNginxPort, gostapi.MerchantAppPortWS, gostapi.MerchantAppPortHTTP, gostapi.MerchantAppPortMinIO))
+	progress("GOST 一键部署完成! (V3 直转架构)")
+	progress(fmt.Sprintf("  GOST API: http://127.0.0.1:%d", gostapi.GostAPIPortInt))
+	for _, cfg := range gostapi.MerchantLocalForwardConfigs {
+		progress(fmt.Sprintf("  :%d → 127.0.0.1:%d (%s)", cfg.GostPort, cfg.AppPort, cfg.Name))
+	}
 	progress("========================================")
 
 	return nil

@@ -1,0 +1,1 @@
+import{l as d}from"./index-BVnbCZ_8.js";function o(t){return d({url:"/cloud/vpc/bandwidth",method:"get",params:t})}function r(t){return d({url:"/cloud/vpc/bandwidth",method:"post",data:t})}function a(t){return d({url:"/cloud/vpc/bandwidth/operate",method:"post",data:t})}export{r as c,o as g,a as o};

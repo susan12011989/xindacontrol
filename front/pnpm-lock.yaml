@@ -11,6 +11,9 @@ importers:
       '@element-plus/icons-vue':
         specifier: 2.3.1
         version: 2.3.1(vue@3.5.13(typescript@5.7.3))
+      '@tsdd/shared-admin':
+        specifier: file:../../shared-admin
+        version: file:../../shared-admin(element-plus@2.9.5(vue@3.5.13(typescript@5.7.3)))(pinia@3.0.1(typescript@5.7.3)(vue@3.5.13(typescript@5.7.3)))(vue@3.5.13(typescript@5.7.3))
       axios:
         specifier: 1.7.9
         version: 1.7.9
@@ -1007,6 +1010,13 @@ packages:
   '@trysound/sax@0.2.0':
     resolution: {integrity: sha512-L7z9BgrNEcYyUYtF+HaEfiS5ebkh9jXqbszz7pC0hRBPaatV0XjSD3+eHrpqFemQfgwiFF0QPIarnIihIDn7OA==}
     engines: {node: '>=10.13.0'}
+
+  '@tsdd/shared-admin@file:../../shared-admin':
+    resolution: {directory: ../../shared-admin, type: directory}
+    peerDependencies:
+      element-plus: ^2.3.0
+      pinia: ^2.0.0 || ^3.0.0
+      vue: ^3.3.0
 
   '@types/debug@4.1.12':
     resolution: {integrity: sha512-vIChWdVG3LG1SMxEvI/AK+FWJthlrqlTu7fbrlywTkkaONwk/UAGaULXRlf8vkzFBLVm0zkMdCquhL5aOjhXPQ==}
@@ -4343,6 +4353,18 @@ snapshots:
   '@sxzz/popperjs-es@2.11.7': {}
 
   '@trysound/sax@0.2.0': {}
+
+  '@tsdd/shared-admin@file:../../shared-admin(element-plus@2.9.5(vue@3.5.13(typescript@5.7.3)))(pinia@3.0.1(typescript@5.7.3)(vue@3.5.13(typescript@5.7.3)))(vue@3.5.13(typescript@5.7.3))':
+    dependencies:
+      axios: 1.7.9
+      dayjs: 1.11.13
+      element-plus: 2.9.5(vue@3.5.13(typescript@5.7.3))
+      js-cookie: 3.0.5
+      nprogress: 0.2.0
+      pinia: 3.0.1(typescript@5.7.3)(vue@3.5.13(typescript@5.7.3))
+      vue: 3.5.13(typescript@5.7.3)
+    transitivePeerDependencies:
+      - debug
 
   '@types/debug@4.1.12':
     dependencies:

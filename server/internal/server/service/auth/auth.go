@@ -98,7 +98,7 @@ func LoginWithTwoFA(ip, username, password, twoFACode, device string) (any, erro
 	// 登录成功
 	token_manager.RevokeAllTokens(int(user.Id)) // 单点登录
 	dbs.Rds().Del(context.Background(), failKey)
-	token, err := token_manager.GenerateToken(user.Id, user.Username, ip, device, user.TwoFactorEnabled == 1)
+	token, err := token_manager.GenerateToken(user.Id, user.Username, user.Role, ip, device, user.TwoFactorEnabled == 1)
 	if err != nil {
 		logx.Errorf("%s login err: %+v", username, err)
 		return nil, err

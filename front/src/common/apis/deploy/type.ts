@@ -517,6 +517,7 @@ export interface DeployTSDDWithAMIResp {
   message: string
   instance_id: string
   public_ip: string
+  private_ip: string
   server_id: number // 注册到系统的服务器ID
   api_url: string
   web_url: string
@@ -585,6 +586,60 @@ export interface GetDeployStatusResp {
 
 export type DeployTSDDResponseData = ApiResponseData<DeployTSDDResp>
 export type GetDeployStatusResponseData = ApiResponseData<GetDeployStatusResp>
+
+// ========== 集群节点部署 ==========
+
+export interface DeployNodeReq {
+  server_id: number
+  merchant_id: number
+  node_role: "allinone" | "db" | "app" | "minio"
+  force_reset?: boolean
+  db_host?: string       // app 节点必填，DB 节点内网 IP
+  minio_host?: string    // app 节点可选，MinIO 节点内网 IP
+  wk_node_id?: number    // WuKongIM 集群节点 ID
+  wk_seed_node?: string  // 种子节点
+  // EC2 创建模式（server_id=0 时使用）
+  ami_id?: string
+  instance_type?: string
+  volume_size_gib?: number
+  cloud_account_id?: number
+  region_id?: string
+  key_name?: string
+  subnet_id?: string
+}
+
+export type DeployNodeResponseData = ApiResponseData<DeployTSDDResp>
+
+export interface ClusterNodeInfo {
+  node_id: number
+  merchant_id: number
+  role: string
+  host: string
+  private_ip: string
+  server_id: number
+  server_name: string
+  is_primary: number
+  status: number
+  wk_node_id: number
+  db_host: string
+  minio_host: string
+  deploy_status: string
+  deploy_error: string
+  last_deploy_at: string
+}
+
+export interface ClusterTopologyResp {
+  merchant_id: number
+  merchant_name: string
+  deploy_mode: string
+  nodes: ClusterNodeInfo[]
+}
+
+export type ClusterTopologyResponseData = ApiResponseData<ClusterTopologyResp>
+
+export interface RetryDeployReq {
+  node_id: number
+}
 
 // ========== GOST 转发配置（一键部署） ==========
 

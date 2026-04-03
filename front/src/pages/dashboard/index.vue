@@ -20,6 +20,7 @@ import ImageUploader from "@/common/components/ImageUploader.vue"
 import AdminmUsersDialog from "./components/AdminmUsersDialog.vue"
 import MerchantDetail from "./components/MerchantDetail.vue"
 import MerchantForm from "./components/MerchantForm.vue"
+import ServiceNodesDialog from "./components/ServiceNodesDialog.vue"
 import { useMerchant } from "./composables/useMerchant"
 
 const router = useRouter()
@@ -89,6 +90,16 @@ const {
   submitForm,
   handleDelete
 } = useMerchant()
+
+// 服务节点管理弹窗
+const serviceNodesVisible = ref(false)
+const serviceNodesMerchantId = ref(0)
+const serviceNodesMerchantName = ref("")
+function openServiceNodes(row: any) {
+  serviceNodesMerchantId.value = row.id
+  serviceNodesMerchantName.value = row.name
+  serviceNodesVisible.value = true
+}
 
 // adminm 用户管理弹窗
 const adminmUsersVisible = ref(false)
@@ -432,9 +443,10 @@ const clientLoading = ref(false)
 const clientOptions = ref<{ label: string, value: number, raw: any }[]>([])
 const selectedSmsClientId = ref<number | undefined>(undefined)
 
-// 系统昵称批量更新
+// 系统昵称/头像批量更新
 const nicknameDialogVisible = ref(false)
 const nicknameValue = ref("")
+const avatarUrlValue = ref("")
 const nicknameTarget = reactive<{ mode: "broadcast" | "merchant_nos", selectedNos: string[] }>({ mode: "broadcast", selectedNos: [] })
 const isNicknameSingle = ref(false)
 const nicknameSingleMerchantLabel = ref("")
@@ -553,6 +565,7 @@ function openBatchSmsConfig() {
 function openBatchNicknameDialog() {
   nicknameDialogVisible.value = true
   nicknameValue.value = ""
+  avatarUrlValue.value = ""
   nicknameTarget.mode = "broadcast"
   nicknameTarget.selectedNos = []
   isNicknameSingle.value = false
@@ -563,6 +576,7 @@ function openNicknameForRow(row: any) {
   if (!row?.no) return
   nicknameDialogVisible.value = true
   nicknameValue.value = ""
+  avatarUrlValue.value = ""
   nicknameTarget.mode = "merchant_nos"
   nicknameTarget.selectedNos = [row.no]
   isNicknameSingle.value = true
@@ -645,14 +659,18 @@ async function handleSaveSms() {
   }
 }
 
-// 保存系统昵称（单个目前不做，使用批量对话框完成单个/批量/全部）
+// 保存系统昵称/头像（单个/批量/全部）
 async function handleSaveNickname() {
-  if (!nicknameValue.value || nicknameValue.value.trim() === "") {
-    ElMessage.error("请输入系统昵称")
+  const firstName = (nicknameValue.value || "").trim()
+  const avatarUrl = (avatarUrlValue.value || "").trim()
+  if (!firstName && !avatarUrl) {
+    ElMessage.error("请输入系统昵称或头像URL")
     return
   }
   try {
-    const payload: any = { first_name: nicknameValue.value.trim() }
+    const payload: any = {}
+    if (firstName) payload.first_name = firstName
+    if (avatarUrl) payload.avatar_url = avatarUrl
     if (nicknameTarget.mode === "broadcast") {
       payload.broadcast = true
     } else {
@@ -664,7 +682,7 @@ async function handleSaveNickname() {
       payload.merchant_nos = nos
     }
     await saveAdminmNicknameApi(payload)
-    ElMessage.success("系统昵称已下发更新")
+    ElMessage.success("系统账号资料已下发更新")
   } catch {
   }
 }
@@ -1041,13 +1059,16 @@ async function handlePush() {
       <div class="toolbar-wrapper">
         <div>
           <el-button type="primary" :icon="CirclePlus" @click="$router.push({ name: 'MerchantCreate' })">
-            新增商户
+            新增商户（单机）
+          </el-button>
+          <el-button type="warning" :icon="Monitor" @click="$router.push({ name: 'MerchantCreateCluster' })">
+            新增商户（集群）
           </el-button>
           <el-button type="primary" plain style="margin-left: 8px;" @click="openBatchSmsConfig">
             批量修改短信配置
           </el-button>
           <el-button type="primary" plain style="margin-left: 8px;" @click="openBatchNicknameDialog">
-            批量修改系统昵称
+            批量修改系统账号
           </el-button>
           <el-button type="primary" plain style="margin-left: 8px;" @click="openBatchSensitiveDialog">
             批量修改敏感词
@@ -1105,7 +1126,17 @@ async function handlePush() {
             </template>
           </el-table-column>
           <el-table-column prop="name" label="商户名称" min-width="150" align="center" />
-          <el-table-column prop="server_ip" label="服务器IP" min-width="150" align="center" />
+          <el-table-column label="服务器IP" min-width="180" align="center">
+            <template #default="{ row }">
+              <div>{{ row.server_ip }}</div>
+              <el-tag v-if="row.deploy_mode === 'cluster'" type="warning" size="small" class="mt-1 cursor-pointer" @click="openServiceNodes(row)">
+                多机
+              </el-tag>
+              <el-tag v-else size="small" class="mt-1 cursor-pointer" @click="openServiceNodes(row)">
+                单机
+              </el-tag>
+            </template>
+          </el-table-column>
           <el-table-column prop="port" label="端口" width="120" align="center" />
           <el-table-column prop="no" label="企业号" min-width="200" align="center" />
           <!-- <el-table-column label="商户状态" width="100" align="center">
@@ -1163,7 +1194,8 @@ async function handlePush() {
                       <el-dropdown-item @click="showDetailDialog(row)">详情</el-dropdown-item>
                       <el-dropdown-item @click="openSmsConfig(row)">短信配置</el-dropdown-item>
                       <el-dropdown-item @click="openStorageDialog(row)">存储配置</el-dropdown-item>
-                      <el-dropdown-item @click="openNicknameForRow(row)">系统昵称</el-dropdown-item>
+                      <el-dropdown-item @click="openServiceNodes(row)">服务节点</el-dropdown-item>
+                      <el-dropdown-item @click="openNicknameForRow(row)">系统账号资料</el-dropdown-item>
                       <el-dropdown-item divided @click="openTunnelDialog(row)">隧道连接检测</el-dropdown-item>
                       <el-dropdown-item @click="handleChangeGostPort(row)" :disabled="changeGostPortLoading">更换隧道端口</el-dropdown-item>
                       <el-dropdown-item @click="$router.push({ name: 'MerchantEdit', params: { id: row.id }, query: { data: JSON.stringify(row) } })">编辑</el-dropdown-item>
@@ -1209,6 +1241,14 @@ async function handlePush() {
     <MerchantDetail
       v-model:visible="detailDialogVisible"
       :merchant="currentMerchant"
+    />
+
+    <!-- 服务节点管理弹窗 -->
+    <ServiceNodesDialog
+      v-model:visible="serviceNodesVisible"
+      :merchant-id="serviceNodesMerchantId"
+      :merchant-name="serviceNodesMerchantName"
+      @updated="refreshList"
     />
 
     <!-- Adminm 用户管理弹窗 -->
@@ -1391,8 +1431,8 @@ async function handlePush() {
       </template>
     </el-dialog>
 
-    <!-- 批量修改系统昵称 -->
-    <el-dialog v-model="nicknameDialogVisible" :title="isNicknameSingle ? '修改系统昵称' : '批量修改系统昵称'" width="520px">
+    <!-- 修改系统账号资料（昵称+头像） -->
+    <el-dialog v-model="nicknameDialogVisible" :title="isNicknameSingle ? '修改系统账号资料' : '批量修改系统账号资料'" width="520px">
       <el-form label-width="120px">
         <el-form-item v-if="!isNicknameSingle" label="更新范围">
           <el-radio-group v-model="nicknameTarget.mode">
@@ -1416,7 +1456,19 @@ async function handlePush() {
           </el-select>
         </el-form-item>
         <el-form-item label="系统昵称">
-          <el-input v-model="nicknameValue" placeholder="请输入新的系统昵称" maxlength="64" show-word-limit />
+          <el-input v-model="nicknameValue" placeholder="请输入新的系统昵称（留空则不修改）" maxlength="64" show-word-limit />
+        </el-form-item>
+        <el-form-item label="系统头像URL">
+          <el-input v-model="avatarUrlValue" placeholder="请输入头像图片URL（留空则不修改）" maxlength="500" />
+          <div v-if="avatarUrlValue" style="margin-top: 8px;">
+            <el-image :src="avatarUrlValue" style="width: 64px; height: 64px; border-radius: 50%;" fit="cover">
+              <template #error>
+                <div style="width: 64px; height: 64px; border-radius: 50%; background: #f5f7fa; display: flex; align-items: center; justify-content: center; color: #909399; font-size: 12px;">
+                  预览失败
+                </div>
+              </template>
+            </el-image>
+          </div>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" @click="handleSaveNickname">保存</el-button>

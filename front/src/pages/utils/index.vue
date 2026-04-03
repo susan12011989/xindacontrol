@@ -6,7 +6,10 @@ import { useUserStore } from "@/pinia/stores/user"
 import { createTarget, deleteTarget, executeEmbedAndUpload, getSelectedIPs, getSourceFiles, getSystemIPs, getTargets, toggleTarget, updateTarget } from "@@/apis/ip_embed"
 import type { CreateTargetReq, UpdateTargetReq } from "@@/apis/ip_embed/type"
 import { getCloudAccountOptions } from "@@/apis/cloud_account"
-import { getMerchantList } from "@@/apis/merchant"
+import { getMerchantList, getMerchantOssConfigs } from "@@/apis/merchant"
+import type { MerchantResp, MerchantOssConfigResp } from "@@/apis/merchant/type"
+import { getMerchantStorageList } from "@@/apis/merchant_storage"
+import type { MerchantStorageResp } from "@@/apis/merchant_storage/type"
 import { aliyunListBuckets, awsListBuckets, tencentListBuckets } from "@@/apis/cloud_storage"
 import type { CloudBucketItem } from "@@/apis/cloud_storage/type"
 import { decryptVersion, embedIPs, embedIPsBatch, embedURLs, embedURLsBatch, enterprise2Port, extractIPs, extractURLs, generateVersion, port2Enterprise } from "@@/apis/utils"
@@ -20,6 +23,7 @@ import {
   Plus,
   Refresh,
   Right,
+  List,
   Upload,
   UploadFilled,
   View
@@ -67,10 +71,13 @@ watchEffect(() => {
   }
 })
 
-// 切换到IP批量上传时自动加载数据
+// 切换Tab时自动加载数据
 watch(activeTab, (newVal) => {
   if (newVal === "ip-upload" && ipUploadTool.systemIPs.length === 0) {
     ipUploadTool.loadData()
+  }
+  if (newVal === "merchant-stats" && merchantStats.rows.length === 0) {
+    merchantStats.load()
   }
 })
 
@@ -622,6 +629,7 @@ interface IPItem {
   status: number
   merchantId: number
   merchantName: string
+  merchantIds: number[]
 }
 
 // 商户筛选（IP选择 和 上传目标选择 共用）
@@ -778,6 +786,8 @@ function formatFileSize(bytes: number): string {
 const flattenedIPList = computed<IPItem[]>(() => {
   const list: IPItem[] = []
   for (const s of ipUploadTool.systemIPs) {
+    const merchantIds = (s.merchants || []).map(m => m.merchant_id)
+    const merchantNames = (s.merchants || []).map(m => m.merchant_name).join(", ")
     // 主IP
     list.push({
       ip: s.ip,
@@ -786,7 +796,8 @@ const flattenedIPList = computed<IPItem[]>(() => {
       isAuxiliary: false,
       status: s.status,
       merchantId: s.merchant_id,
-      merchantName: s.merchant_name
+      merchantName: merchantNames || s.merchant_name,
+      merchantIds
     })
     // 辅助IP（支持逗号分隔的多个IP）
     if (s.auxiliary_ip) {
@@ -799,7 +810,8 @@ const flattenedIPList = computed<IPItem[]>(() => {
           isAuxiliary: true,
           status: s.status,
           merchantId: s.merchant_id,
-          merchantName: s.merchant_name
+          merchantName: merchantNames || s.merchant_name,
+          merchantIds
         })
       }
     }
@@ -811,7 +823,14 @@ const flattenedIPList = computed<IPItem[]>(() => {
 const merchantFilterOptions = computed(() => {
   const map = new Map<number, string>()
   for (const s of ipUploadTool.systemIPs) {
-    if (s.merchant_id > 0 && s.merchant_name) {
+    // 优先使用 merchants 数组
+    if (s.merchants && s.merchants.length > 0) {
+      for (const m of s.merchants) {
+        if (m.merchant_id > 0 && m.merchant_name) {
+          map.set(m.merchant_id, m.merchant_name)
+        }
+      }
+    } else if (s.merchant_id > 0 && s.merchant_name) {
       map.set(s.merchant_id, s.merchant_name)
     }
   }
@@ -829,7 +848,9 @@ const merchantFilterOptions = computed(() => {
 // 按商户筛选后的 IP 列表
 const filteredIPList = computed(() => {
   if (!filterMerchantId.value) return flattenedIPList.value
-  return flattenedIPList.value.filter(item => item.merchantId === filterMerchantId.value)
+  return flattenedIPList.value.filter(item =>
+    item.merchantIds?.includes(filterMerchantId.value!) || item.merchantId === filterMerchantId.value
+  )
 })
 
 // 检测失效的IP（选中的IP在当前系统中不存在）
@@ -1318,6 +1339,98 @@ function handleUrlBatchEmbedZipChange(file: UploadFile) {
 function handleDecryptFileChange(file: UploadFile) {
   versionTool.decryptFile = file.raw as File
 }
+
+// ========== 商户IP/OSS统计工具 ==========
+interface MerchantStatRow {
+  id: number
+  no: string
+  name: string
+  server_ip: string
+  direct_ips: string[]  // GOST 服务器 IP 列表（含辅助IP）
+  oss_urls: string[]
+  gost_server_count: number
+  oss_config_count: number
+  storage_configs: { type: string; endpoint: string; download_url: string; custom_domain: string }[]
+}
+
+const merchantStats = reactive({
+  loading: false,
+  rows: [] as MerchantStatRow[],
+  searchText: "",
+
+  load: async () => {
+    merchantStats.loading = true
+    try {
+      // 获取所有商户
+      const res = await getMerchantList({ page: 1, size: 999 })
+      const merchants = res.data.list || []
+
+      // 获取所有存储配置
+      const storageRes = await getMerchantStorageList({ page: 1, size: 999 })
+      const storageList = storageRes.data.list || []
+
+      // 按商户ID分组存储配置
+      const storageMap = new Map<number, MerchantStorageResp[]>()
+      for (const s of storageList) {
+        const arr = storageMap.get(s.merchant_id) || []
+        arr.push(s)
+        storageMap.set(s.merchant_id, arr)
+      }
+
+      merchantStats.rows = merchants.map((m: MerchantResp) => ({
+        id: m.id,
+        no: m.no,
+        name: m.name,
+        server_ip: m.server_ip || "",
+        direct_ips: (m.package_configuration?.direct_ip || "").split(",").filter(Boolean),
+        oss_urls: m.app_configs?.oss_url || [],
+        gost_server_count: m.gost_server_count || 0,
+        oss_config_count: m.oss_config_count || 0,
+        storage_configs: (storageMap.get(m.id) || []).map(s => ({
+          type: s.storage_type,
+          endpoint: s.endpoint,
+          download_url: s.download_url,
+          custom_domain: s.custom_domain,
+        }))
+      }))
+    } catch {
+      ElMessage.error("加载商户数据失败")
+    } finally {
+      merchantStats.loading = false
+    }
+  },
+
+  // 过滤后的数据
+  get filteredRows(): MerchantStatRow[] {
+    if (!merchantStats.searchText) return merchantStats.rows
+    const kw = merchantStats.searchText.toLowerCase()
+    return merchantStats.rows.filter(r =>
+      r.no.toLowerCase().includes(kw) ||
+      r.name.toLowerCase().includes(kw) ||
+      r.server_ip.includes(kw) ||
+      r.direct_ips.some(ip => ip.includes(kw))
+    )
+  },
+
+  // 复制为表格文本
+  copyAsText: () => {
+    const rows = merchantStats.filteredRows
+    const header = "商户编号\t商户名称\t服务器IP\t直连IP(GOST)\tGOST数\tOSS链接\t存储配置"
+    const lines = rows.map(r => {
+      const ossStr = r.oss_urls.join(" | ") || "-"
+      const storageStr = r.storage_configs.map(s =>
+        `[${s.type}] ${s.download_url || s.endpoint || s.custom_domain || "-"}`
+      ).join(" | ") || "-"
+      const directStr = r.direct_ips.length ? r.direct_ips.join(" | ") : "-"
+      return `${r.no}\t${r.name}\t${r.server_ip || "-"}\t${directStr}\t${r.gost_server_count}\t${ossStr}\t${storageStr}`
+    })
+    const text = [header, ...lines].join("\n")
+    copyToClipboard(text).then(() => {
+      ElMessage.success(`已复制 ${rows.length} 条商户数据`)
+    })
+  }
+})
+
 </script>
 
 <template>
@@ -1976,6 +2089,110 @@ function handleDecryptFileChange(file: UploadFile) {
         </el-dialog>
       </el-tab-pane>
 
+      <!-- 商户IP/OSS统计 -->
+      <el-tab-pane label="商户IP/OSS统计" name="merchant-stats">
+        <el-card shadow="never" class="tool-card">
+          <template #header>
+            <div class="card-header">
+              <el-icon class="header-icon" :size="20">
+                <List />
+              </el-icon>
+              <span class="card-title">商户IP/OSS统计表</span>
+              <div style="margin-left: auto; display: flex; gap: 8px;">
+                <el-input
+                  v-model="merchantStats.searchText"
+                  placeholder="搜索商户编号/名称/IP"
+                  clearable
+                  style="width: 220px;"
+                />
+                <el-button :icon="Refresh" @click="merchantStats.load" :loading="merchantStats.loading">刷新</el-button>
+                <el-button type="primary" :icon="DocumentCopy" @click="merchantStats.copyAsText">一键复制</el-button>
+              </div>
+            </div>
+          </template>
+
+          <el-table
+            :data="merchantStats.filteredRows"
+            v-loading="merchantStats.loading"
+            border
+            stripe
+            style="width: 100%"
+            :header-cell-style="{ background: '#f5f7fa', fontWeight: 600 }"
+          >
+            <el-table-column prop="no" label="商户编号" width="100" fixed />
+            <el-table-column prop="name" label="商户名称" width="120" show-overflow-tooltip />
+            <el-table-column prop="server_ip" label="服务器IP" width="150">
+              <template #default="{ row }">
+                <span
+                  class="ip-mono"
+                  :class="{ 'clickable-ip': row.server_ip }"
+                  @click="row.server_ip && copyToClipboard(row.server_ip).then(() => ElMessage.success('已复制'))"
+                >{{ row.server_ip || "-" }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="直连IP(GOST)" min-width="180">
+              <template #default="{ row }">
+                <template v-if="row.direct_ips.length">
+                  <div style="display: flex; align-items: center; flex-wrap: wrap; gap: 2px 4px;">
+                    <span
+                      v-for="(ip, idx) in row.direct_ips"
+                      :key="idx"
+                      class="ip-mono clickable-ip"
+                      @click="copyToClipboard(ip).then(() => ElMessage.success('已复制'))"
+                    >{{ ip }}</span>
+                    <el-tag v-if="row.gost_server_count > 1" size="small" type="success" style="margin-left: auto;">
+                      {{ row.gost_server_count }}台
+                    </el-tag>
+                  </div>
+                </template>
+                <span v-else style="color: #909399;">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="OSS链接" min-width="250">
+              <template #default="{ row }">
+                <template v-if="row.oss_urls.length">
+                  <el-tag
+                    v-for="(url, idx) in row.oss_urls"
+                    :key="idx"
+                    size="small"
+                    type="info"
+                    class="oss-tag"
+                    @click="copyToClipboard(url).then(() => ElMessage.success('已复制'))"
+                  >
+                    {{ url }}
+                  </el-tag>
+                </template>
+                <span v-else style="color: #909399;">-</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="存储配置" min-width="300">
+              <template #default="{ row }">
+                <template v-if="row.storage_configs.length">
+                  <div v-for="(s, idx) in row.storage_configs" :key="idx" class="storage-item">
+                    <el-tag size="small" :type="s.type === 'minio' ? 'warning' : s.type === 'aliyunOSS' ? 'primary' : 'success'">
+                      {{ s.type }}
+                    </el-tag>
+                    <span
+                      class="storage-url"
+                      @click="copyToClipboard(s.download_url || s.endpoint || s.custom_domain).then(() => ElMessage.success('已复制'))"
+                    >
+                      {{ s.download_url || s.endpoint || s.custom_domain || "-" }}
+                    </span>
+                  </div>
+                </template>
+                <span v-else style="color: #909399;">-</span>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <div style="margin-top: 12px; color: #909399; font-size: 13px;">
+            共 {{ merchantStats.filteredRows.length }} 个商户
+            <span v-if="merchantStats.searchText">（已过滤，总计 {{ merchantStats.rows.length }} 个）</span>
+            <span style="margin-left: 16px;">直连IP/OSS链接 由集群部署页的 GOST服务器/OSS配置 自动同步</span>
+          </div>
+        </el-card>
+      </el-tab-pane>
+
       <!-- 版本管理工具 -->
     </el-tabs>
   </div>
@@ -2532,6 +2749,54 @@ function handleDecryptFileChange(file: UploadFile) {
 .group-list-actions {
   display: flex;
   gap: 8px;
+}
+
+// 商户IP/OSS统计样式
+.ip-mono {
+  font-family: "Courier New", monospace;
+  font-size: 13px;
+  color: #303133;
+
+  &.clickable-ip {
+    cursor: pointer;
+    &:hover {
+      color: var(--el-color-primary);
+    }
+  }
+}
+
+.oss-tag {
+  margin: 2px 4px 2px 0;
+  cursor: pointer;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+
+  &:hover {
+    opacity: 0.8;
+  }
+}
+
+.storage-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.storage-url {
+  font-size: 12px;
+  color: #606266;
+  cursor: pointer;
+  word-break: break-all;
+
+  &:hover {
+    color: var(--el-color-primary);
+  }
 }
 
 // 响应式

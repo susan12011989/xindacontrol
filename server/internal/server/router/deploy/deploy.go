@@ -99,9 +99,17 @@ func Routes(gi gin.IRouter) {
 	group.POST("gost/install", installGostToServer)      // 在已有服务器上安装 GOST（流式API）
 
 	// GOST 转发配置（一键部署）
-	group.POST("gost/forward/setup", setupGostForward)     // 配置转发目标
+	group.POST("gost/rebuild-all", rebuildAllMerchantGost)   // 批量重建所有商户 GOST 规则（流式API）
+	group.POST("gost/forward/setup", setupGostForward)       // 配置转发目标
 	group.DELETE("gost/forward/clear", clearGostForward)   // 清除转发规则
 	group.GET("gost/forward/status", getGostForwardStatus) // 获取转发状态
+
+	// 连接状态检测
+	group.GET("gost/connection-check", connectionCheck)                        // 检测所有商户连接状态
+	group.GET("gost/connection-check/:merchant_id", connectionCheckByMerchant) // 检测单个商户连接状态
+	group.GET("gost/server-check/:server_id", connectionCheckByServer)         // 检测单个系统服务器状态
+	group.POST("gost/repair/:server_id", repairGostServer)                     // 修复系统服务器 GOST 隧道（流式API）
+	group.POST("gost/enable-cache", enableNginxCacheOnServer)    // 在系统服务器上启用 Nginx 文件缓存（流式API）
 
 	// GOST 配置持久化
 	group.POST("gost/config/persist", persistGostConfig)          // 持久化运行配置到文件
@@ -116,12 +124,21 @@ func Routes(gi gin.IRouter) {
 	group.POST("tsdd/deploy", deployTSDD)              // 部署到已注册服务器 (Docker方式)
 	group.POST("tsdd/deploy-by-ip", deployTSDDByIP)    // 通过IP部署（新服务器，Docker方式）
 	group.POST("tsdd/deploy-ami", deployTSDDWithAMI)   // 使用 AMI 部署（推荐）
-	group.GET("tsdd/status", getDeployStatus)          // 获取部署状态
+	group.POST("tsdd/cluster-wizard", clusterWizard)            // 集群向导（流式API，创建EC2+部署）
+	group.POST("tsdd/deploy-node", deployNode)                 // 集群节点部署（db/app/allinone）
+	group.POST("tsdd/deploy-node-tracked", deployNodeTracked) // 集群节点部署（带状态跟踪）
+	group.POST("tsdd/retry-deploy", retryDeploy)              // 重试失败的部署
+	group.GET("tsdd/cluster-topology", getClusterTopology)    // 获取商户集群拓扑
+	group.GET("tsdd/status", getDeployStatus)                 // 获取部署状态
 
 	// ========== 批量运维操作 ==========
 	group.POST("batch/service-action", batchServiceAction)  // 批量服务操作（start/stop/restart）
 	group.POST("batch/health-check", batchHealthCheck)      // 批量健康检查
 	group.POST("batch/command", batchCommand)               // 批量执行命令
+
+	// ========== 商户级批量操作（自动找所有 App 节点） ==========
+	group.POST("merchant/batch-restart", merchantBatchRestart) // 商户级重启服务
+	group.POST("merchant/batch-command", merchantBatchCommand) // 商户级执行命令
 
 	// ========== 日志管理 ==========
 	group.POST("logs/query", queryLogs)   // 统一日志查询
@@ -755,6 +772,111 @@ func deployTSDDByIP(ctx *gin.Context) {
 	result.GOK(ctx, data)
 }
 
+// clusterWizard 集群向导（流式API）
+func clusterWizard(ctx *gin.Context) {
+	var req model.ClusterWizardReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GStreamEnd(ctx, false, err.Error())
+		return
+	}
+
+	operator := middleware.GetUsername(ctx)
+	if operator == "" {
+		operator = "admin"
+	}
+
+	// 流式响应
+	ctx.Header("Content-Type", "text/event-stream")
+	ctx.Header("Cache-Control", "no-cache")
+	ctx.Header("Connection", "keep-alive")
+
+	err := deployService.ClusterWizard(req, operator, func(step model.ClusterWizardStepResp) {
+		result.GStreamData(ctx, step)
+	})
+
+	if err != nil {
+		result.GStreamEnd(ctx, false, err.Error())
+		return
+	}
+
+	result.GStreamEnd(ctx, true, "集群部署完成")
+}
+
+// getClusterTopology 获取商户集群拓扑
+func getClusterTopology(ctx *gin.Context) {
+	var req model.ClusterTopologyReq
+	if err := ctx.ShouldBindQuery(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+	data, err := deployService.GetClusterTopology(req.MerchantId)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+	result.GOK(ctx, data)
+}
+
+// deployNodeTracked 集群节点部署（带状态跟踪）
+func deployNodeTracked(ctx *gin.Context) {
+	var req model.DeployNodeReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+	operator := middleware.GetUsername(ctx)
+	if operator == "" {
+		operator = "admin"
+	}
+	data, err := deployService.DeployNodeTracked(req, operator)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+	result.GOK(ctx, data)
+}
+
+// retryDeploy 重试失败的部署
+func retryDeploy(ctx *gin.Context) {
+	var req model.RetryDeployReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+	operator := middleware.GetUsername(ctx)
+	if operator == "" {
+		operator = "admin"
+	}
+	data, err := deployService.RetryDeploy(req.NodeId, operator)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+	result.GOK(ctx, data)
+}
+
+// deployNode 集群节点部署（db/app/allinone）
+func deployNode(ctx *gin.Context) {
+	var req model.DeployNodeReq
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+
+	operator := middleware.GetUsername(ctx)
+	if operator == "" {
+		operator = "admin"
+	}
+
+	data, err := deployService.DeployNodeByServerId(req, operator)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
+}
+
 // getDeployStatus 获取服务器部署状态
 func getDeployStatus(ctx *gin.Context) {
 	var req model.GetDeployStatusReq
@@ -825,6 +947,130 @@ func setupGostDeploy(ctx *gin.Context) {
 	}
 
 	result.GStreamEnd(ctx, true, "部署完成")
+}
+
+// rebuildAllMerchantGost 批量重建所有商户的 GOST 转发规则（流式API）
+// 对每个商户找到其关联的系统服务器，清除旧规则后重建
+func rebuildAllMerchantGost(ctx *gin.Context) {
+	result.GStream(ctx)
+
+	progress := func(msg string) {
+		result.GStreamData(ctx, gin.H{
+			"message": fmt.Sprintf("%s %s", time.Now().Format(time.DateTime), msg),
+		})
+	}
+
+	err := deployService.RebuildAllMerchantGost(progress)
+	if err != nil {
+		result.GStreamEnd(ctx, false, err.Error())
+		return
+	}
+	result.GStreamEnd(ctx, true, "全部重建完成")
+}
+
+// connectionCheck 检测所有商户的 GOST 和服务器连接状态
+func connectionCheck(ctx *gin.Context) {
+	data, err := deployService.ConnectionCheck()
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+	result.GOK(ctx, data)
+}
+
+// connectionCheckByMerchant 检测单个商户的连接状态
+func connectionCheckByMerchant(ctx *gin.Context) {
+	merchantId, err := strconv.Atoi(ctx.Param("merchant_id"))
+	if err != nil {
+		result.GParamErr(ctx, fmt.Errorf("merchant_id 无效"))
+		return
+	}
+	data, err := deployService.ConnectionCheckByMerchant(merchantId)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+	result.GOK(ctx, data)
+}
+
+// connectionCheckByServer 检测单个系统服务器的 GOST 状态
+func connectionCheckByServer(ctx *gin.Context) {
+	serverId, err := strconv.Atoi(ctx.Param("server_id"))
+	if err != nil {
+		result.GParamErr(ctx, fmt.Errorf("server_id 无效"))
+		return
+	}
+	data, err := deployService.ConnectionCheckByServer(serverId)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+	result.GOK(ctx, data)
+}
+
+// repairGostServer 修复系统服务器 GOST 隧道（流式API）
+func repairGostServer(ctx *gin.Context) {
+	serverId, err := strconv.Atoi(ctx.Param("server_id"))
+	if err != nil {
+		result.GParamErr(ctx, fmt.Errorf("server_id 无效"))
+		return
+	}
+
+	result.GStream(ctx)
+	progress := func(msg string) {
+		result.GStreamData(ctx, gin.H{
+			"message": fmt.Sprintf("%s %s", time.Now().Format(time.DateTime), msg),
+		})
+	}
+
+	if err := deployService.RepairGostServer(serverId, progress); err != nil {
+		result.GStreamEnd(ctx, false, err.Error())
+		return
+	}
+	result.GStreamEnd(ctx, true, "修复完成")
+}
+
+// enableNginxCacheOnServer 在系统服务器上启用 Nginx 文件缓存（流式API）
+func enableNginxCacheOnServer(ctx *gin.Context) {
+	var req struct {
+		ServerIds []int `json:"server_ids"`
+	}
+	if err := ctx.ShouldBindJSON(&req); err != nil || len(req.ServerIds) == 0 {
+		result.GParamErr(ctx, fmt.Errorf("server_ids 不能为空"))
+		return
+	}
+
+	result.GStream(ctx)
+	progress := func(msg string) {
+		result.GStreamData(ctx, gin.H{
+			"message": fmt.Sprintf("%s %s", time.Now().Format(time.DateTime), msg),
+		})
+	}
+
+	filePort := gostapi.SystemPortFile
+	for _, sid := range req.ServerIds {
+		progress(fmt.Sprintf("处理服务器 %d...", sid))
+		if !deployService.IsNginxInstalled(sid) {
+			progress("  安装 Nginx...")
+			if err := deployService.InstallNginxToServer(sid, func(msg string) {
+				progress(fmt.Sprintf("  %s", msg))
+			}); err != nil {
+				progress(fmt.Sprintf("  安装失败: %s", err))
+				continue
+			}
+		}
+		if deployService.IsNginxInstalled(sid) {
+			if err := deployService.UpdateGostServiceToLoopback(sid, filePort); err != nil {
+				progress(fmt.Sprintf("  GOST loopback 切换失败: %s", err))
+			} else if err := deployService.ConfigureNginxCacheForPort(sid, filePort); err != nil {
+				_ = deployService.RestoreGostServiceToPublic(sid, filePort)
+				progress(fmt.Sprintf("  缓存配置失败: %s", err))
+			} else {
+				progress(fmt.Sprintf("  文件缓存已启用 (端口 %d)", filePort))
+			}
+		}
+	}
+	result.GStreamEnd(ctx, true, "完成")
 }
 
 // deployGostServer 一键部署 GOST 转发服务器（流式API）
@@ -975,6 +1221,50 @@ func batchCommand(ctx *gin.Context) {
 		return
 	}
 
+	result.GOK(ctx, data)
+}
+
+// ========== 商户级批量操作 ==========
+
+func merchantBatchRestart(ctx *gin.Context) {
+	var req struct {
+		MerchantId  int    `json:"merchant_id" binding:"required"`
+		ServiceName string `json:"service_name" binding:"required"`
+	}
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+	operator := middleware.GetUsername(ctx)
+	if operator == "" {
+		operator = "admin"
+	}
+	data, err := deployService.MerchantBatchRestart(req.MerchantId, req.ServiceName, operator)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+	result.GOK(ctx, data)
+}
+
+func merchantBatchCommand(ctx *gin.Context) {
+	var req struct {
+		MerchantId int    `json:"merchant_id" binding:"required"`
+		Command    string `json:"command" binding:"required"`
+	}
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(ctx, err)
+		return
+	}
+	operator := middleware.GetUsername(ctx)
+	if operator == "" {
+		operator = "admin"
+	}
+	data, err := deployService.MerchantBatchCommand(req.MerchantId, req.Command, operator)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
 	result.GOK(ctx, data)
 }
 

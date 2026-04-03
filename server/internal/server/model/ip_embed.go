@@ -10,13 +10,20 @@ type GetSystemIPsResp struct {
 
 // SystemIPItem 系统服务器IP项
 type SystemIPItem struct {
-	ServerId     int    `json:"server_id"`
-	ServerName   string `json:"server_name"`
-	IP           string `json:"ip"`
-	AuxiliaryIP  string `json:"auxiliary_ip"`  // 辅助IP
-	Status       int    `json:"status"`
-	MerchantId   int    `json:"merchant_id"`   // 关联商户ID
-	MerchantName string `json:"merchant_name"` // 商户名称
+	ServerId     int                      `json:"server_id"`
+	ServerName   string                   `json:"server_name"`
+	IP           string                   `json:"ip"`
+	AuxiliaryIP  string                   `json:"auxiliary_ip"`  // 辅助IP
+	Status       int                      `json:"status"`
+	MerchantId   int                      `json:"merchant_id"`   // 主商户ID（兼容旧逻辑）
+	MerchantName string                   `json:"merchant_name"` // 主商户名称（兼容旧逻辑）
+	Merchants    []SystemIPMerchantItem   `json:"merchants"`     // 关联的所有商户
+}
+
+// SystemIPMerchantItem 服务器关联的商户信息
+type SystemIPMerchantItem struct {
+	MerchantId   int    `json:"merchant_id"`
+	MerchantName string `json:"merchant_name"`
 }
 
 // ========== 上传目标 ==========

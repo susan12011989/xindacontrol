@@ -37,8 +37,22 @@ func getServerById(serverId int) (*entity.Servers, error) {
 	return &server, nil
 }
 
-// ListGostServices 通过 GOST Web API 列出服务（内部分页）
-func ListGostServices(serverId int, page int, size int, port int) (*gostapi.ServiceList, error) {
+// GostServiceWithMerchant 带商户信息的服务配置
+type GostServiceWithMerchant struct {
+	gostapi.ServiceConfig
+	MerchantId   int    `json:"merchant_id,omitempty"`
+	MerchantName string `json:"merchant_name,omitempty"`
+	ChainTarget  string `json:"chain_target,omitempty"`
+}
+
+// GostServiceListWithMerchant 带商户信息的服务列表
+type GostServiceListWithMerchant struct {
+	Count int                       `json:"count"`
+	List  []GostServiceWithMerchant `json:"list"`
+}
+
+// ListGostServices 通过 GOST Web API 列出服务（内部分页），并附上商户和 chain 目标信息
+func ListGostServices(serverId int, page int, size int, port int) (*GostServiceListWithMerchant, error) {
 	host, err := getServerHostById(serverId)
 	if err != nil {
 		return nil, err
@@ -47,6 +61,41 @@ func ListGostServices(serverId int, page int, size int, port int) (*gostapi.Serv
 	if err != nil {
 		return nil, err
 	}
+
+	// 获取 chain 列表，构建 chain name → target 映射
+	chainTargetMap := make(map[string]string) // chain name → target IP:Port
+	chainData, chainErr := gostapi.GetChainList(host)
+	if chainErr == nil && chainData != nil {
+		for _, c := range chainData.List {
+			if len(c.Hops) > 0 && len(c.Hops[0].Nodes) > 0 {
+				chainTargetMap[c.Name] = c.Hops[0].Nodes[0].Addr
+			}
+		}
+	}
+
+	// 查询所有商户的 host → merchant 映射
+	type merchantInfo struct {
+		Id   int
+		Name string
+		Host string
+	}
+	var nodes []struct {
+		entity.MerchantServiceNodes `xorm:"extends"`
+		MerchantName                string `xorm:"'name'"`
+	}
+	_ = dbs.DBAdmin.Table("merchant_service_nodes").
+		Join("LEFT", "merchants", "merchants.id = merchant_service_nodes.merchant_id").
+		Cols("merchant_service_nodes.*", "merchants.name").
+		Find(&nodes)
+
+	// host/IP → merchant info
+	hostMerchantMap := make(map[string]merchantInfo)
+	for _, n := range nodes {
+		if n.Host != "" {
+			hostMerchantMap[n.Host] = merchantInfo{Id: n.MerchantId, Name: n.MerchantName, Host: n.Host}
+		}
+	}
+
 	// 内部分页：默认每页 20
 	if size <= 0 {
 		size = 20
@@ -68,17 +117,37 @@ func ListGostServices(serverId int, page int, size int, port int) (*gostapi.Serv
 	total := len(data.List)
 	start := (page - 1) * size
 	if start >= total {
-		// 超出范围返回空列表，但保留总数
-		return &gostapi.ServiceList{Count: total, List: []gostapi.ServiceConfig{}}, nil
+		return &GostServiceListWithMerchant{Count: total, List: []GostServiceWithMerchant{}}, nil
 	}
 	end := start + size
 	if end > total {
 		end = total
 	}
-	// 保留 Count 为总数，List 为分页数据
-	data.Count = total
-	data.List = data.List[start:end]
-	return data, nil
+	pageList := data.List[start:end]
+
+	// 组装带商户信息的结果
+	result := make([]GostServiceWithMerchant, 0, len(pageList))
+	for _, svc := range pageList {
+		item := GostServiceWithMerchant{ServiceConfig: svc}
+		// 通过 chain target IP 匹配商户
+		if svc.Handler != nil && svc.Handler.Chain != "" {
+			if target, ok := chainTargetMap[svc.Handler.Chain]; ok {
+				item.ChainTarget = target
+				// 提取 IP 部分匹配商户
+				targetIP := target
+				if idx := strings.Index(target, ":"); idx > 0 {
+					targetIP = target[:idx]
+				}
+				if mi, ok := hostMerchantMap[targetIP]; ok {
+					item.MerchantId = mi.Id
+					item.MerchantName = mi.Name
+				}
+			}
+		}
+		result = append(result, item)
+	}
+
+	return &GostServiceListWithMerchant{Count: total, List: result}, nil
 }
 
 // ListGostChains 通过 GOST Web API 列出链
@@ -340,7 +409,7 @@ func SetupGostForward(req model.SetupGostForwardReq) error {
 
 	// 自动为 HTTP 端口配置 Nginx 缓存（如果 Nginx 已安装）
 	httpPort := identifyHttpPort(req.Ports)
-	if httpPort > 0 && isNginxInstalled(req.ServerId) {
+	if httpPort > 0 && IsNginxInstalled(req.ServerId) {
 		// 1. 修改 GOST HTTP 服务为仅监听 loopback
 		if err := UpdateGostServiceToLoopback(req.ServerId, httpPort); err != nil {
 			logx.Errorf("设置 GOST loopback 失败 (端口 %d): %v", httpPort, err)
@@ -372,7 +441,7 @@ func ClearGostForward(req model.ClearGostForwardReq) error {
 	}
 
 	// 清理 Nginx 缓存配置（在删除 GOST 服务之前，先恢复公网监听）
-	if isNginxInstalled(req.ServerId) {
+	if IsNginxInstalled(req.ServerId) {
 		if len(req.Ports) > 0 {
 			httpPort := identifyHttpPort(req.Ports)
 			if httpPort > 0 {

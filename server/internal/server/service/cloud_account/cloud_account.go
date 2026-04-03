@@ -2,9 +2,13 @@ package cloud_account
 
 import (
 	"errors"
+	"fmt"
+	"server/internal/server/cloud/aliyun"
+	"server/internal/server/cloud/tencent"
 	"server/internal/server/model"
 	"server/pkg/dbs"
 	"server/pkg/entity"
+	"sync"
 	"time"
 
 	"github.com/zeromicro/go-zero/core/logx"
@@ -242,6 +246,87 @@ func DeleteCloudAccount(id int64) error {
 	}
 
 	return nil
+}
+
+// BatchQueryBalance 批量查询云账号余额
+func BatchQueryBalance(cloudType string) ([]model.BatchBalanceItem, error) {
+	// 查询所有启用的阿里云和腾讯云账号
+	session := dbs.DBAdmin.Where("status = 1")
+	if cloudType != "" {
+		session = session.Where("cloud_type = ?", cloudType)
+	} else {
+		session = session.In("cloud_type", []string{"aliyun", "tencent"})
+	}
+
+	var accounts []entity.CloudAccounts
+	err := session.Find(&accounts)
+	if err != nil {
+		logx.Errorf("batch query cloud accounts err: %+v", err)
+		return nil, err
+	}
+
+	// 收集商户ID，批量查询商户名称
+	merchantIds := make([]int, 0)
+	for _, a := range accounts {
+		if a.MerchantId > 0 {
+			merchantIds = append(merchantIds, a.MerchantId)
+		}
+	}
+	merchantNameMap := make(map[int]string)
+	if len(merchantIds) > 0 {
+		var merchants []entity.Merchants
+		_ = dbs.DBAdmin.In("id", merchantIds).Cols("id", "name").Find(&merchants)
+		for _, m := range merchants {
+			merchantNameMap[m.Id] = m.Name
+		}
+	}
+
+	// 并发查询余额
+	results := make([]model.BatchBalanceItem, len(accounts))
+	var wg sync.WaitGroup
+
+	for i, acc := range accounts {
+		wg.Add(1)
+		go func(idx int, a entity.CloudAccounts) {
+			defer wg.Done()
+			siteType := a.SiteType
+			if siteType == "" {
+				siteType = "cn"
+			}
+			item := model.BatchBalanceItem{
+				AccountId:    a.Id,
+				AccountName:  a.Name,
+				CloudType:    a.CloudType,
+				SiteType:     siteType,
+				MerchantName: merchantNameMap[a.MerchantId],
+			}
+
+			switch a.CloudType {
+			case "aliyun":
+				info, err := aliyun.BalanceDetailByCloudAccount(a.Id)
+				if err != nil {
+					item.Error = err.Error()
+				} else {
+					item.Balance = info.AvailableAmount
+					item.Currency = info.Currency
+					item.CreditAmount = info.CreditAmount
+				}
+			case "tencent":
+				info, err := tencent.GetAccountBalance(0, a.Id)
+				if err != nil {
+					item.Error = err.Error()
+				} else {
+					item.Balance = info.CashBalanceYuan
+					item.Currency = fmt.Sprintf("CNY(¥%s)", info.BalanceYuan)
+				}
+			}
+
+			results[idx] = item
+		}(i, acc)
+	}
+
+	wg.Wait()
+	return results, nil
 }
 
 // GetCloudAccountOptions 获取云账号选项列表（用于下拉框）

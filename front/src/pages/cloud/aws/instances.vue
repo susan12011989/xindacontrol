@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { AwsListReq, AwsModifyEc2InstanceReq, AwsOperateEc2Req } from "@@/apis/aws/type"
 import { merchantQueryApi } from "@/pages/dashboard/apis"
-import { listEc2Instances, listSecurityGroupOptions, listVolumes, listVolumeUsage, modifyEc2Instance, operateEc2Instance, resizeVolumeStream } from "@@/apis/aws"
+import { listEc2Instances, listInstanceTypes, listSecurityGroupOptions, listVolumes, listVolumeUsage, modifyEc2Instance, operateEc2Instance, resizeInstanceTypeStream, resizeVolumeStream } from "@@/apis/aws"
 import { getCloudAccountOptions } from "@@/apis/cloud_account"
 import { getAwsRegions } from "@@/constants/aws-regions"
 import { ArrowDown, Delete, Edit, RefreshRight, VideoPause, VideoPlay } from "@element-plus/icons-vue"
@@ -363,6 +363,90 @@ async function onSubmitResize() {
   )
 }
 
+// 变配实例类型对话框
+const changeTypeVisible = ref(false)
+const changeTypeForm = reactive<{ newInstanceType: string }>({ newInstanceType: "" })
+const changeTypeCtx = reactive<{ region: string, instanceId: string, currentType: string }>({ region: "", instanceId: "", currentType: "" })
+const changeTypeStreaming = ref(false)
+const changeTypeLogs = ref<string[]>([])
+const instanceTypeOptions = ref<Array<{ instance_type: string, vcpu: number, memory_mib: number }>>([])
+const instanceTypeLoading = ref(false)
+let cancelChangeTypeStream: (() => void) | null = null
+
+async function onShowChangeType(row: any) {
+  const region = (row.Placement?.AvailabilityZone || "").slice(0, -1)
+  if (!region) return
+  changeTypeCtx.region = region
+  changeTypeCtx.instanceId = row.InstanceId
+  changeTypeCtx.currentType = row.InstanceType || ""
+  changeTypeForm.newInstanceType = ""
+  changeTypeLogs.value = []
+  changeTypeVisible.value = true
+  // 加载可用实例类型
+  instanceTypeLoading.value = true
+  try {
+    const params: any = { region_id: region }
+    if (accountType.value === "system") params.cloud_account_id = selectedCloudAccount.value
+    else params.merchant_id = selectedMerchant.value
+    const { data } = await listInstanceTypes(params)
+    instanceTypeOptions.value = data.list || []
+  } catch {
+    instanceTypeOptions.value = []
+  } finally {
+    instanceTypeLoading.value = false
+  }
+}
+
+function onSubmitChangeType() {
+  if (!changeTypeForm.newInstanceType) {
+    return ElMessage.warning("请选择新的实例类型")
+  }
+  if (changeTypeForm.newInstanceType === changeTypeCtx.currentType) {
+    return ElMessage.warning("新类型与当前类型相同")
+  }
+  const data: any = {
+    region_id: changeTypeCtx.region,
+    instance_id: changeTypeCtx.instanceId,
+    new_instance_type: changeTypeForm.newInstanceType
+  }
+  if (accountType.value === "system") data.cloud_account_id = selectedCloudAccount.value
+  else data.merchant_id = selectedMerchant.value
+  changeTypeLogs.value = []
+  changeTypeStreaming.value = true
+  if (cancelChangeTypeStream) cancelChangeTypeStream()
+  cancelChangeTypeStream = resizeInstanceTypeStream(
+    data,
+    (chunk: any, isComplete?: boolean) => {
+      try {
+        if (isComplete) {
+          changeTypeStreaming.value = false
+          if (chunk && chunk.success) {
+            ElMessage.success(chunk.message || "变配完成")
+            changeTypeVisible.value = false
+            onQuery()
+          } else {
+            ElMessage.error((chunk && chunk.message) || "变配失败")
+          }
+          return
+        }
+        if (chunk && typeof chunk === "object") {
+          const line = JSON.stringify(chunk)
+          changeTypeLogs.value.push(line)
+        } else if (typeof chunk === "string") {
+          changeTypeLogs.value.push(chunk)
+        }
+      } catch {
+        // 忽略解析错误
+      }
+    },
+    (err: any) => {
+      console.error(err)
+      changeTypeStreaming.value = false
+      ElMessage.error("变配出错")
+    }
+  )
+}
+
 function formatBytes(bytes: number | undefined): string {
   if (!bytes && bytes !== 0) return "-"
   const units = ["B", "KB", "MB", "GB", "TB"]
@@ -536,6 +620,11 @@ async function onRefreshUsage(row: any) {
           </template>
         </el-table-column>
         <el-table-column prop="Placement.AvailabilityZone" label="可用区" min-width="140" />
+        <el-table-column label="创建时间" min-width="170" sortable :sort-method="(a: any, b: any) => new Date(a.LaunchTime).getTime() - new Date(b.LaunchTime).getTime()">
+          <template #default="{ row }">
+            {{ row.LaunchTime ? new Date(row.LaunchTime).toLocaleString("zh-CN", { hour12: false }) : "-" }}
+          </template>
+        </el-table-column>
         <el-table-column label="操作" fixed="right" min-width="140">
           <template #default="{ row }">
             <el-dropdown trigger="click">
@@ -549,6 +638,9 @@ async function onRefreshUsage(row: any) {
                   </el-dropdown-item>
                   <el-dropdown-item @click="onShowResize(row)">
                     <el-icon><Edit /></el-icon> 扩容磁盘
+                  </el-dropdown-item>
+                  <el-dropdown-item @click="onShowChangeType(row)">
+                    <el-icon><Edit /></el-icon> 变更规格
                   </el-dropdown-item>
                   <el-dropdown-item @click="onOperate(row, 'start')">
                     <el-icon><VideoPlay /></el-icon> 启动
@@ -632,6 +724,40 @@ async function onRefreshUsage(row: any) {
       <template #footer>
         <el-button :disabled="resizeStreaming" @click="resizeVisible = false">{{ resizeStreaming ? '执行中...' : '取消' }}</el-button>
         <el-button type="primary" :loading="resizeStreaming" :disabled="resizeStreaming" @click="onSubmitResize">提交</el-button>
+      </template>
+    </el-dialog>
+    <!-- 变更实例规格弹窗 -->
+    <el-dialog v-model="changeTypeVisible" title="变更实例规格" width="560px">
+      <el-form label-width="120px">
+        <el-form-item label="当前规格">
+          <el-tag>{{ changeTypeCtx.currentType }}</el-tag>
+        </el-form-item>
+        <el-form-item label="新规格">
+          <el-select v-model="changeTypeForm.newInstanceType" filterable placeholder="请选择实例类型" :loading="instanceTypeLoading" style="width: 100%">
+            <el-option
+              v-for="t in instanceTypeOptions"
+              :key="t.instance_type"
+              :label="`${t.instance_type} (${t.vcpu}vCPU / ${(t.memory_mib / 1024).toFixed(1)}GB)`"
+              :value="t.instance_type"
+              :disabled="t.instance_type === changeTypeCtx.currentType"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="执行日志" v-if="changeTypeLogs.length > 0 || changeTypeStreaming">
+          <el-scrollbar max-height="200" style="width: 100%">
+            <pre style="white-space: pre-wrap; word-break: break-all; margin: 0">{{ changeTypeLogs.join('\n') || '—' }}</pre>
+          </el-scrollbar>
+          <el-tag v-if="changeTypeStreaming" size="small" type="info" style="margin-left: 8px">执行中...</el-tag>
+        </el-form-item>
+        <el-alert type="warning" :closable="false">
+          <template #default>
+            <div>变更规格需要先停止实例，完成后自动重新启动，期间服务会短暂中断。</div>
+          </template>
+        </el-alert>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="changeTypeStreaming" @click="changeTypeVisible = false">{{ changeTypeStreaming ? '执行中...' : '取消' }}</el-button>
+        <el-button type="primary" :loading="changeTypeStreaming" :disabled="changeTypeStreaming" @click="onSubmitChangeType">确认变更</el-button>
       </template>
     </el-dialog>
   </div>

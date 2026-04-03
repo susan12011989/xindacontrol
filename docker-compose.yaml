@@ -60,8 +60,8 @@ services:
       - mysql-data:/var/lib/mysql
       # 初始化脚本（可选）
       # - ./server/migrations:/docker-entrypoint-initdb.d
-    ports:
-      - "3306:3306"
+    expose:
+      - "3306"
     networks:
       - control-network
     healthcheck:
@@ -79,8 +79,8 @@ services:
     command: redis-server --appendonly yes ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
     volumes:
       - redis-data:/data
-    ports:
-      - "6379:6379"
+    expose:
+      - "6379"
     networks:
       - control-network
     healthcheck:

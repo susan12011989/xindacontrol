@@ -1,0 +1,1 @@
+import{l as e}from"./index-BVnbCZ_8.js";function u(t){return e({url:"clients",method:"get",params:t})}function l(t){return e({url:"clients",method:"post",data:t})}function i(t,n){return e({url:`clients/${t}`,method:"put",data:n})}function o(t){return e({url:`clients/${t}`,method:"delete"})}export{l as c,o as d,u as g,i as u};

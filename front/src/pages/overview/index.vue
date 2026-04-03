@@ -32,8 +32,8 @@ const loadData = async () => {
       controlHealthCheckApi(),
       controlServerStatsApi()
     ])
-    services.value = healthRes.data || {}
-    serverStats.value = statsRes.data || null
+    services.value = (healthRes as any).data || {}
+    serverStats.value = (statsRes as any).data || null
   } catch (e: any) {
     console.error("加载失败", e)
   } finally {
@@ -57,8 +57,8 @@ const handleGostDeploy = async () => {
   deployLogs.value = []
 
   try {
-    const stream = await controlGostOneClickDeployApi()
-    const reader = stream.getReader()
+    const stream = await (controlGostOneClickDeployApi as any)()
+    const reader = (stream as any).getReader()
     const decoder = new TextDecoder()
 
     while (true) {
@@ -108,16 +108,16 @@ onMounted(loadData)
           </template>
           <el-row :gutter="20" v-if="serverStats">
             <el-col :span="6">
-              <el-statistic title="CPU 使用率" :value="serverStats.cpu_usage || 'N/A'" />
+              <el-statistic title="CPU 使用率" :value="(serverStats.cpu_usage || 'N/A') as any" />
             </el-col>
             <el-col :span="6">
-              <el-statistic title="内存" :value="`${serverStats.memory_usage || '?'} / ${serverStats.memory_total || '?'}`" />
+              <el-statistic title="内存" :value="(`${serverStats.memory_usage || '?'} / ${serverStats.memory_total || '?'}`) as any" />
             </el-col>
             <el-col :span="6">
-              <el-statistic title="磁盘" :value="`${serverStats.disk_usage || '?'} / ${serverStats.disk_total || '?'}`" />
+              <el-statistic title="磁盘" :value="(`${serverStats.disk_usage || '?'} / ${serverStats.disk_total || '?'}`) as any" />
             </el-col>
             <el-col :span="6">
-              <el-statistic title="负载" :value="serverStats.load_avg || 'N/A'" />
+              <el-statistic title="负载" :value="(serverStats.load_avg || 'N/A') as any" />
             </el-col>
           </el-row>
         </el-card>

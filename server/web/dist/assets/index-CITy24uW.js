@@ -1,0 +1,1 @@
+import{l as e}from"./index-BVnbCZ_8.js";function r(t){return e({url:"feature/flags",method:"get",params:{merchant_id:t}})}function u(t){return e({url:"feature/flags",method:"put",data:t})}function s(t){return e({url:"feature/flags/batch",method:"put",data:t})}export{s as b,r as g,u};

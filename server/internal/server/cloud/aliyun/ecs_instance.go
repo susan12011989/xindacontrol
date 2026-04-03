@@ -44,8 +44,9 @@ type CreateInstanceRequest struct {
 	UsePassword   bool   `json:"use_password"`    // 是否使用密码认证（true=密码认证，false=自动创建密钥对）
 	KeyPairName   string `json:"key_pair_name"`   // SSH密钥对名称（阿里云密钥对名称，可选）
 	SshPrivateKey string `json:"ssh_private_key"` // SSH私钥内容（PEM格式，用于保存到数据库）
-	AutoRenew     bool   `json:"auto_renew"`      // 是否自动续费（仅包年包月生效）
+	AutoRenew       bool `json:"auto_renew"`        // 是否自动续费（仅包年包月生效）
 	AutoRenewPeriod int32 `json:"auto_renew_period"` // 自动续费周期（月），默认与购买周期一致
+	SkipPostActions bool  `json:"-"`                 // 跳过异步后续处理（安全组、启动、注册），由调用方自行控制
 }
 
 // CreateInstanceResult 创建实例的结果
@@ -190,8 +191,10 @@ func CreateInstance(req *CreateInstanceRequest) (*CreateInstanceResult, error) {
 		KeyPairName:  authInfo.KeyName,
 	}
 
-	// 异步处理：授权安全组 + 注册服务器到数据库
-	go createAfterAuthorizeSecurityGroupAndRegister(req.MerchantId, req.CloudAccountId, req.Region, instanceId, instanceName, authInfo, cloud)
+	// 异步处理：授权安全组 + 注册服务器到数据库（tunnel_deploy 等场景自行控制，跳过此步骤）
+	if !req.SkipPostActions {
+		go createAfterAuthorizeSecurityGroupAndRegister(req.MerchantId, req.CloudAccountId, req.Region, instanceId, instanceName, authInfo, cloud)
+	}
 	return result, nil
 }
 
@@ -1353,6 +1356,11 @@ const (
 	GostAPIUser  = "tsdd"
 	GostAPIPass  = "Oa21isSdaiuwhq"
 )
+
+// AutoInstallGost 自动安装 GOST 服务（导出供 tunnel_deploy 调用）
+func AutoInstallGost(host string, authInfo *ServerAuthInfo) error {
+	return autoInstallGost(host, authInfo)
+}
 
 // autoInstallGost 自动安装 GOST 服务
 func autoInstallGost(host string, authInfo *ServerAuthInfo) error {

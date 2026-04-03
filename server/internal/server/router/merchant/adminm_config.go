@@ -134,12 +134,13 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 		result.GOK(c, gin.H{"updated": successCount, "count": len(contents), "total": len(req.MerchantNos)})
 	})
 
-	// 保存系统用户昵称（users.id=777000 的 first_name）：支持单个、批量或全部
+	// 保存系统用户昵称和头像（u_10000 的 name + app_logo）：支持单个、批量或全部
 	type nicknameSaveReq struct {
 		MerchantNo  string   `json:"merchant_no"`
 		MerchantNos []string `json:"merchant_nos"`
 		Broadcast   bool     `json:"broadcast"`
 		FirstName   string   `json:"first_name"`
+		AvatarUrl   string   `json:"avatar_url"` // 系统账号头像URL
 	}
 	group.POST("system_user_nickname", func(c *gin.Context) {
 		var req nicknameSaveReq
@@ -147,8 +148,8 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 			result.GParamErr(c, err)
 			return
 		}
-		if req.FirstName == "" {
-			result.GResult(c, 601, nil, "first_name不能为空")
+		if req.FirstName == "" && req.AvatarUrl == "" {
+			result.GResult(c, 601, nil, "first_name或avatar_url至少提供一个")
 			return
 		}
 		// 目标判断：三选一
@@ -175,8 +176,8 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 			}
 			successCount := 0
 			for _, m := range merchants {
-				if err := merchantService.SaveAdminmSystemNickname(m.No, req.FirstName); err != nil {
-					logx.Errorf("广播系统昵称失败: merchant=%s, err=%v", m.No, err)
+				if err := merchantService.SaveAdminmSystemProfile(m.No, req.FirstName, req.AvatarUrl); err != nil {
+					logx.Errorf("广播系统资料失败: merchant=%s, err=%v", m.No, err)
 				} else {
 					successCount++
 				}
@@ -186,7 +187,7 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 		}
 
 		if req.MerchantNo != "" {
-			if err := merchantService.SaveAdminmSystemNickname(req.MerchantNo, req.FirstName); err != nil {
+			if err := merchantService.SaveAdminmSystemProfile(req.MerchantNo, req.FirstName, req.AvatarUrl); err != nil {
 				result.GResult(c, 500, nil, err.Error())
 				return
 			}
@@ -201,8 +202,8 @@ func RoutesAdminmConfig(gi gin.IRouter) {
 			if no == "" {
 				continue
 			}
-			if err := merchantService.SaveAdminmSystemNickname(no, req.FirstName); err != nil {
-				logx.Errorf("批量保存系统昵称失败: merchant=%s, err=%v", no, err)
+			if err := merchantService.SaveAdminmSystemProfile(no, req.FirstName, req.AvatarUrl); err != nil {
+				logx.Errorf("批量保存系统资料失败: merchant=%s, err=%v", no, err)
 			} else {
 				successCount++
 			}

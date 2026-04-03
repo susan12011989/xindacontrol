@@ -40,8 +40,8 @@ export function controlServerStatsApi(serverId?: number) {
 }
 
 // GOST 一键部署（流式）
-export function controlGostOneClickDeployApi(data?: any) {
-  return createStreamRequest("control/gost/one-click-deploy", data || {})
+export function controlGostOneClickDeployApi(data?: any, onData?: (data: any, isComplete?: boolean) => void, onError?: (error: any) => void) {
+  return createStreamRequest({ url: "control/gost/one-click-deploy", method: "post", data: data || {} }, onData || (() => {}), onError)
 }
 
 // 获取服务端点

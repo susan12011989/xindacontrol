@@ -14,6 +14,10 @@ const SUPPORTED_SERVICES: ServiceName[] = ["server", "wukongim", "gost"]
 // 支持上传的服务
 const UPLOADABLE_SERVICES: ServiceName[] = ["server", "wukongim"]
 
+// 移动端判断
+const windowWidth = ref(window.innerWidth)
+const isMobile = computed(() => windowWidth.value < 768)
+
 // 从路由获取服务器ID
 const route = useRoute()
 const router = useRouter()
@@ -497,6 +501,11 @@ function handleCwResize() {
   latencyChart?.resize()
 }
 
+function onResize() {
+  windowWidth.value = window.innerWidth
+  handleCwResize()
+}
+
 // 初始化
 onMounted(() => {
   if (serverId.value) {
@@ -507,11 +516,11 @@ onMounted(() => {
     ElMessage.warning("请先选择服务器")
   }
   fetchServerOptions("")
-  window.addEventListener("resize", handleCwResize)
+  window.addEventListener("resize", onResize)
 })
 
 onUnmounted(() => {
-  window.removeEventListener("resize", handleCwResize)
+  window.removeEventListener("resize", onResize)
   cpuChart?.dispose()
   iopsChart?.dispose()
   queueChart?.dispose()
@@ -536,7 +545,7 @@ watch(() => route.query.server_id, (val) => {
   <div class="app-container">
     <!-- 顶部：服务器信息 + 全局操作 -->
     <el-card class="mb-4">
-      <div class="flex justify-between items-center">
+      <div class="flex flex-col gap-3 md:flex-row md:justify-between md:items-center">
         <div>
           <span class="text-lg font-bold mr-4">{{ serverInfo.name || '未选择服务器' }}</span>
           <span v-if="serverInfo.host" class="text-gray-600">{{ serverInfo.host }}:{{ serverInfo.port }}</span>
@@ -551,7 +560,7 @@ watch(() => route.query.server_id, (val) => {
             placeholder="切换服务器"
             :remote-method="remoteSearchServers"
             :loading="serverSelectLoading"
-            style="width: 300px"
+            class="w-full md:w-75"
             @change="onServerChange as any"
           >
             <el-option
@@ -577,7 +586,7 @@ watch(() => route.query.server_id, (val) => {
       <template #header>
         <span class="text-base font-bold">服务器资源</span>
       </template>
-      <div class="grid grid-cols-4 gap-4">
+      <div class="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
         <div class="stat-item">
           <div class="stat-label">CPU 使用率</div>
           <div class="stat-value">{{ serverStats.cpu_usage || "-" }}</div>
@@ -600,9 +609,9 @@ watch(() => route.query.server_id, (val) => {
     <!-- CloudWatch 监控 -->
     <el-card v-if="cwAvailable" v-loading="cwLoading" class="mb-4">
       <template #header>
-        <div class="flex justify-between items-center">
+        <div class="flex flex-col gap-2 md:flex-row md:justify-between md:items-center">
           <span class="text-base font-bold">CloudWatch 监控</span>
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
             <el-radio-group v-model="cwPeriod" size="small" @change="onCwPeriodChange">
               <el-radio-button value="1h">1小时</el-radio-button>
               <el-radio-button value="6h">6小时</el-radio-button>
@@ -620,11 +629,11 @@ watch(() => route.query.server_id, (val) => {
       </template>
 
       <div v-if="cwData">
-        <div class="grid grid-cols-2 gap-4">
-          <div ref="cpuChartRef" style="height: 280px" />
-          <div ref="iopsChartRef" style="height: 280px" />
-          <div ref="queueChartRef" style="height: 280px" />
-          <div ref="latencyChartRef" style="height: 280px" />
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div ref="cpuChartRef" class="h-55 md:h-70" />
+          <div ref="iopsChartRef" class="h-55 md:h-70" />
+          <div ref="queueChartRef" class="h-55 md:h-70" />
+          <div ref="latencyChartRef" class="h-55 md:h-70" />
         </div>
         <div class="text-xs text-gray-400 mt-2 text-right">
           Instance: {{ cwData.instance_id }} | Region: {{ cwData.region_id }} | Volumes: {{ cwData.volume_ids?.join(", ") }}
@@ -766,7 +775,7 @@ watch(() => route.query.server_id, (val) => {
     </el-card>
 
     <!-- 配置查看/编辑 -->
-    <el-dialog v-model="configDialogVisible" :title="`配置 - ${configServiceName}`" width="70%" destroy-on-close>
+    <el-dialog v-model="configDialogVisible" :title="`配置 - ${configServiceName}`" :width="isMobile ? '95%' : '70%'" destroy-on-close>
       <div v-loading="configLoading">
         <div class="mb-2 text-gray-500">路径：{{ configPath || '-' }}</div>
         <el-input v-model="configContent" type="textarea" :rows="20" placeholder="配置内容" />
@@ -778,7 +787,7 @@ watch(() => route.query.server_id, (val) => {
     </el-dialog>
 
     <!-- 日志查看弹窗 -->
-    <el-dialog v-model="logDialogVisible" :title="`服务日志 - ${currentService}`" width="80%" destroy-on-close>
+    <el-dialog v-model="logDialogVisible" :title="`服务日志 - ${currentService}`" :width="isMobile ? '95%' : '80%'" destroy-on-close>
       <div class="log-viewer-container">
         <div class="log-toolbar mb-4">
           <el-form inline>
@@ -848,6 +857,26 @@ watch(() => route.query.server_id, (val) => {
       white-space: pre-wrap;
       word-wrap: break-word;
     }
+  }
+}
+
+// 移动端适配
+@media (max-width: 767px) {
+  .app-container {
+    padding: 12px;
+  }
+
+  .stat-item {
+    padding: 10px;
+
+    .stat-value {
+      font-size: 16px;
+    }
+  }
+
+  .log-viewer-container .log-content {
+    max-height: 400px;
+    font-size: 11px;
   }
 }
 </style>

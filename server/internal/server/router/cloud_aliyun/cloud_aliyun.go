@@ -35,6 +35,7 @@ func Routes(ge gin.IRouter) {
 	cloudGroup.POST("/ecs/instance/bind-merchant", bindInstanceMerchant)                   // 绑定商户
 	cloudGroup.POST("/ecs/instance/unbind-merchant", unbindInstanceMerchant)               // 解绑商户
 	cloudGroup.POST("/ecs/instance/bindings", getInstanceBindings)                         // 批量查询绑定
+	cloudGroup.POST("/ecs/instance/deploy-tunnel", deployTunnelServer)                   // 一键部署隧道服务器 流式api
 
 	// 镜像管理
 	cloudGroup.GET("/ecs/image", listImage)
@@ -136,6 +137,63 @@ func createSecondaryNetworkInterface(c *gin.Context) {
 		result.GStreamEnd(c, true, err.Error())
 	} else {
 		result.GStreamEnd(c, true, "辅助网卡创建和绑定任务完成")
+	}
+}
+
+// deployTunnelServer 一键部署隧道服务器（流式API）
+func deployTunnelServer(c *gin.Context) {
+	var req model.DeployTunnelServerReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.GStreamEnd(c, false, err.Error())
+		return
+	}
+
+	result.GStream(c)
+
+	// 使用 channel 传递进度消息，避免前端断开时 write 报错导致流程中断
+	progressCh := make(chan string, 100)
+	doneCh := make(chan struct{})
+
+	// 后台执行部署（即使前端断开也继续）
+	var deployResults []cloud_aliyun.DeployTunnelServerResult
+	var deployErr error
+	go func() {
+		defer close(doneCh)
+		deployResults, deployErr = cloud_aliyun.DeployTunnelServers(&req, func(message string) {
+			msg := fmt.Sprintf("%s %s", time.Now().Format(time.DateTime), message)
+			select {
+			case progressCh <- msg:
+			default:
+				// channel 满了就跳过，不阻塞部署流程
+			}
+		})
+		close(progressCh)
+	}()
+
+	// 持续向前端推送进度，检测客户端断开
+	clientGone := c.Request.Context().Done()
+	for {
+		select {
+		case msg, ok := <-progressCh:
+			if !ok {
+				// 部署完成，发送结果
+				goto done
+			}
+			result.GStreamData(c, gin.H{"message": msg})
+		case <-clientGone:
+			// 前端断开了，等待后台部署完成（不再推送）
+			<-doneCh
+			return
+		}
+	}
+
+done:
+	<-doneCh
+	if deployErr != nil {
+		result.GStreamEnd(c, false, deployErr.Error())
+	} else {
+		result.GStreamData(c, gin.H{"results": deployResults})
+		result.GStreamEnd(c, true, fmt.Sprintf("部署完成，共 %d 台服务器", len(deployResults)))
 	}
 }
 
@@ -1472,12 +1530,12 @@ func getAliyunAccountBalance(c *gin.Context) {
 		result.GErr(c, fmt.Errorf("merchant_id或cloud_account_id必须提供一个"))
 		return
 	}
-	bal, err := cloud_aliyun.GetAccountBalance(req.MerchantId, req.CloudAccountId)
+	bal, err := cloud_aliyun.GetAccountBalanceDetail(req.MerchantId, req.CloudAccountId)
 	if err != nil {
 		result.GErr(c, err)
 		return
 	}
-	result.GOK(c, gin.H{"balance": bal})
+	result.GOK(c, bal)
 }
 
 // ========== 镜像管理相关 ==========

@@ -145,3 +145,48 @@ export function clearMerchantDataApi(merchant_no: string, password?: string, tot
     timeout: 120000 // 2分钟超时（包含SSH清理）
   })
 }
+
+// ========== 商户服务节点（单机/多机部署） ==========
+
+/** 获取商户服务节点列表 */
+export function listServiceNodesApi(merchantId: number) {
+  return request<Types.ServiceNodeListResponseData>({
+    url: `merchant/${merchantId}/service-nodes`,
+    method: "get"
+  })
+}
+
+/** 创建商户服务节点 */
+export function createServiceNodeApi(merchantId: number, data: Types.ServiceNodeReq) {
+  return request<Types.ServiceNodeCreateResponseData>({
+    url: `merchant/${merchantId}/service-nodes`,
+    method: "post",
+    data
+  })
+}
+
+/** 更新商户服务节点 */
+export function updateServiceNodeApi(nodeId: number, data: Types.ServiceNodeReq) {
+  return request({
+    url: `merchant/service-nodes/${nodeId}`,
+    method: "put",
+    data
+  })
+}
+
+/** 删除商户服务节点 */
+export function deleteServiceNodeApi(nodeId: number) {
+  return request({
+    url: `merchant/service-nodes/${nodeId}`,
+    method: "delete"
+  })
+}
+
+/** 切换到多机模式 */
+export function switchToClusterModeApi(merchantId: number, data: Types.SwitchClusterReq) {
+  return request({
+    url: `merchant/${merchantId}/switch-cluster`,
+    method: "post",
+    data
+  })
+}

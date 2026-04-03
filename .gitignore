@@ -20,3 +20,5 @@ server/logs/
 
 # OS
 .DS_Store
+control-server-linux
+server/bin/

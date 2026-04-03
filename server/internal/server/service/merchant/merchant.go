@@ -2,9 +2,11 @@ package merchant
 
 import (
 	"fmt"
+	"net"
 	"server/internal/dbhelper"
 	"server/internal/server/model"
 	utilSvc "server/internal/server/service/utils"
+	"server/internal/server/utils"
 	"server/pkg/consts"
 	"server/pkg/dbs"
 	"server/pkg/entity"
@@ -41,13 +43,22 @@ func ListMerchant(page, size int, name, orderBy string, expiringSoon int, mercha
 	// 4. 批量查询 GOST 服务器数量
 	gostCountMap := getMerchantGostServerCounts(merchantIds)
 
-	// 5. 构建返回结果
+	// 5. 批量查询服务节点信息（数量 + 是否多机模式）
+	nodeInfoMap := getMerchantServiceNodeInfo(merchantIds)
+
+	// 6. 构建返回结果
 	merchantList := make([]*model.Merchant, len(merchants))
 	for i, m := range merchants {
 		val := &model.Merchant{}
 		val.Init(&m)
 		val.OssConfigCount = ossCountMap[m.Id]
 		val.GostServerCount = gostCountMap[m.Id]
+		if info, ok := nodeInfoMap[m.Id]; ok {
+			val.ServiceNodeCount = info.count
+			val.DeployMode = info.mode
+		} else {
+			val.DeployMode = "single"
+		}
 		merchantList[i] = val
 	}
 
@@ -116,26 +127,76 @@ func getMerchantGostServerCounts(merchantIds []int) map[int]int {
 	return result
 }
 
+// serviceNodeInfo 服务节点统计信息
+type serviceNodeInfo struct {
+	count int
+	mode  string // "single" or "cluster"
+}
+
+// getMerchantServiceNodeInfo 批量获取商户服务节点信息
+func getMerchantServiceNodeInfo(merchantIds []int) map[int]*serviceNodeInfo {
+	result := make(map[int]*serviceNodeInfo)
+	if len(merchantIds) == 0 {
+		return result
+	}
+
+	type nodeRow struct {
+		MerchantId int    `xorm:"merchant_id"`
+		Role       string `xorm:"role"`
+		Count      int    `xorm:"cnt"`
+	}
+	var rows []nodeRow
+
+	err := dbs.DBAdmin.Table("merchant_service_nodes").
+		Select("merchant_id, role, COUNT(*) as cnt").
+		In("merchant_id", merchantIds).
+		Where("status = 1").
+		GroupBy("merchant_id, role").
+		Find(&rows)
+
+	if err != nil {
+		logx.Errorf("get merchant service node info error: %v", err)
+		return result
+	}
+
+	// 汇总每个商户的节点数和模式
+	for _, r := range rows {
+		info, ok := result[r.MerchantId]
+		if !ok {
+			info = &serviceNodeInfo{mode: "single"}
+			result[r.MerchantId] = info
+		}
+		info.count += r.Count
+		if r.Role != entity.ServiceNodeRoleAll {
+			info.mode = "cluster"
+		}
+	}
+
+	return result
+}
+
 // CreateMerchant 创建商户，返回商户ID
 func CreateMerchant(req *model.CreateOrEditMerchantReq) (int, error) {
-	// 1) 校验端口 ,10000是属于测试服的
-	if req.Port < 10000 {
-		return 0, fmt.Errorf("port 不能小于10000")
-	}
-	if req.Port > 65535 {
-		return 0, fmt.Errorf("port 不能大于65535")
-	}
+	// 1) 端口固定 80（每个商户独立服务器，端口不再由用户指定）
+	req.Port = 80
 	// 1.1) 校验 server_ip 必填
 	serverIP := strings.TrimSpace(req.ServerIP)
 	if serverIP == "" {
 		return 0, fmt.Errorf("server_ip 为必填")
 	}
+	// 1.2) 校验商户服务器连通性（AMI 部署模式下跳过，因为服务器尚未创建）
+	if serverIP != "pending-ami-deploy" {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", serverIP, req.Port), 5*time.Second)
+		if err != nil {
+			return 0, fmt.Errorf("商户服务器不可达 (%s:%d): %v", serverIP, req.Port, err)
+		}
+		conn.Close()
+	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
 		return 0, fmt.Errorf("name 为必填")
 	}
-	// 2) 实时计算 No
-	req.No = utilSvc.Port2Enterprise(uint16(req.Port))
+	// 2) No 在 Insert 后根据自增 ID 生成（见事务内）
 	// 3) 端口占用检查已移除：每个商户配独立系统服务器+隧道，端口可复用
 	if req.Status == 0 {
 		req.Status = 1 // 默认状态为正常
@@ -178,7 +239,6 @@ func CreateMerchant(req *model.CreateOrEditMerchantReq) (int, error) {
 		req.PackageConfiguration.ExpiredAt = expiredAt.Unix()
 	}
 	merchant := &entity.Merchants{
-		No:                   req.No,
 		ServerIP:             serverIP,
 		Port:                 req.Port,
 		Name:                 name,
@@ -197,6 +257,12 @@ func CreateMerchant(req *model.CreateOrEditMerchantReq) (int, error) {
 
 		if _, err = session.Insert(merchant); err != nil {
 			return err
+		}
+
+		// Insert 后根据自增 ID 生成企业号并回写
+		merchant.No = utilSvc.Id2Enterprise(merchant.Id)
+		if _, err = session.Where("id = ?", merchant.Id).Cols("no").Update(merchant); err != nil {
+			return fmt.Errorf("回写企业号失败: %v", err)
 		}
 
 		// 商户创建成功后：自动创建商户服务器记录
@@ -276,61 +342,63 @@ func CreateMerchant(req *model.CreateOrEditMerchantReq) (int, error) {
 		return 0, err
 	}
 
+	// 初始化 merchant_service_nodes（单机模式: role=all）
+	if err := EnsureServiceNodeForMerchant(merchant.Id, serverIP); err != nil {
+		logx.Errorf("初始化商户服务节点失败: merchantId=%d, err=%v", merchant.Id, err)
+	}
+
 	// 为商户服务器创建本地 Gost 转发服务（通过任务队列，支持重试）
 	if err := gostapi.EnqueueCreateMerchantLocalForwards(req.ServerIP); err != nil {
 		logx.Errorf("enqueue create merchant local forwards task failed: %+v", err)
 	}
 
-	// 为系统服务器创建 Gost 服务（通过任务队列，支持重试）
-	enqueueGostServicesForServers(req.Port, req.ServerIP, merchant.TunnelIP)
+	// 为该商户关联的系统服务器创建 Gost 服务（通过任务队列，支持重试）
+	enqueueGostServicesForMerchantServers(merchant.Id, req.Port, req.ServerIP)
 
 	return merchant.Id, nil
 }
 
-// enqueueGostServicesForServers 为所有系统服务器入队创建商户转发任务
-// 根据每个系统服务器的 forward_type 选择加密或直连转发
-// tunnelIP: 商户在系统服务器上分配的隧道 IP（多商户隔离）
-func enqueueGostServicesForServers(listenPort int, forwardHost string, tunnelIP string) {
+// enqueueGostServicesForMerchantServers 只在该商户关联的系统服务器上创建 GOST 转发
+// 一个商户一套 GOST，绝不碰其他商户的服务器
+func enqueueGostServicesForMerchantServers(merchantId int, listenPort int, forwardHost string) {
+	// 查 merchant_gost_servers 关联表，只取该商户的系统服务器
+	var relations []entity.MerchantGostServers
+	if err := dbs.DBAdmin.Where("merchant_id = ? AND status = 1", merchantId).Find(&relations); err != nil {
+		logx.Errorf("query merchant_gost_servers for merchant %d err: %+v", merchantId, err)
+		return
+	}
+
+	if len(relations) == 0 {
+		logx.Infof("merchant %d has no associated gost servers, skip gost creation", merchantId)
+		return
+	}
+
+	// 获取关联的服务器详情
+	serverIds := make([]int, 0, len(relations))
+	for _, r := range relations {
+		serverIds = append(serverIds, r.ServerId)
+	}
 	var servers []entity.Servers
-	if err := dbs.DBAdmin.Where("server_type = ? AND status = 1", 2).Find(&servers); err != nil {
-		logx.Errorf("query selected servers err: %+v", err)
+	if err := dbs.DBAdmin.In("id", serverIds).Where("server_type = 2 AND status = 1").Find(&servers); err != nil {
+		logx.Errorf("query servers for merchant %d err: %+v", merchantId, err)
 		return
 	}
 
-	if len(servers) == 0 {
-		logx.Infof("no valid system servers found for gost service creation")
-		return
-	}
-
-	encryptedCount := 0
-	directCount := 0
 	for _, s := range servers {
 		var err error
 		tlsEnabled := s.TlsEnabled == 1
-		if s.ForwardType == entity.ForwardTypeDirect {
-			// 直连转发：直接转发到商户业务程序 10000/10001/10002
-			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(s.Host, listenPort, forwardHost, tunnelIP)
-			} else {
-				err = gostapi.EnqueueCreateMerchantDirectForwards(s.Host, listenPort, forwardHost, tunnelIP)
-			}
-			directCount++
+		// 统一用 relay+tls 模式（TLS listener + relay chain）
+		if tlsEnabled {
+			err = gostapi.EnqueueCreateMerchantForwardsWithTls(s.Host, listenPort, forwardHost)
 		} else {
-			// 加密转发（默认）：通过 relay+tls 转发到商户 GOST (V2: 10443+10010)
-			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantForwardsWithTls(s.Host, listenPort, forwardHost, tunnelIP)
-			} else {
-				err = gostapi.EnqueueCreateMerchantForwards(s.Host, listenPort, forwardHost, tunnelIP)
-			}
-			encryptedCount++
+			err = gostapi.EnqueueCreateMerchantForwards(s.Host, listenPort, forwardHost)
 		}
 		if err != nil {
-			logx.Errorf("enqueue create merchant forwards task for server %d (%s, forward_type=%d) failed: %+v",
-				s.Id, s.Host, s.ForwardType, err)
+			logx.Errorf("enqueue gost forwards for merchant %d on server %d (%s) failed: %+v",
+				merchantId, s.Id, s.Host, err)
 		}
 	}
-	logx.Infof("enqueued create merchant forwards tasks for %d servers (encrypted: %d, direct: %d), port %d",
-		len(servers), encryptedCount, directCount, listenPort)
+	logx.Infof("enqueued gost forwards for merchant %d on %d servers, port %d", merchantId, len(servers), listenPort)
 }
 
 // UpdateMerchant 更新商户
@@ -439,6 +507,14 @@ func DeleteMerchant(idStr string) (string, error) {
 		return "", err
 	}
 
+	// 在事务删除前，先获取商户服务器 SSH 信息（事务会删掉 servers 记录）
+	var merchantServer *entity.Servers
+	var server entity.Servers
+	has, _ := dbs.DBAdmin.Where("merchant_id = ? AND server_type = 1", id).Get(&server)
+	if has {
+		merchantServer = &server
+	}
+
 	// 事务：删除商户及其关联的服务器和云账号
 	if err := dbs.DBAdmin.WithTx(func(session *xorm.Session) error {
 		// 1. 删除商户记录
@@ -456,6 +532,11 @@ func DeleteMerchant(idStr string) (string, error) {
 			return fmt.Errorf("删除云账号失败: %v", err)
 		}
 
+		// 4. 删除服务节点
+		if _, err := session.Where("merchant_id = ?", id).Delete(&entity.MerchantServiceNodes{}); err != nil {
+			return fmt.Errorf("删除服务节点失败: %v", err)
+		}
+
 		return nil
 	}); err != nil {
 		return "", err
@@ -469,7 +550,44 @@ func DeleteMerchant(idStr string) (string, error) {
 
 	// 删除所有系统服务器上的 gost 转发服务（通过任务队列）
 	enqueueDeleteGostServicesOnAllSystemServers(merchant.Port)
+
+	// 异步清理商户服务器上的在线连接和缓存（Redis + WuKongIM + tsdd-server）
+	if merchantServer != nil {
+		go cleanupMerchantServer(merchant.Name, merchantServer)
+	}
+
 	return merchant.Name, nil
+}
+
+// cleanupMerchantServer SSH 到商户服务器清理 Redis 缓存并重启 WuKongIM，确保在线用户被踢下线
+func cleanupMerchantServer(merchantName string, server *entity.Servers) {
+	sshClient := &utils.SSHClient{
+		Host:       server.Host,
+		Port:       server.Port,
+		Username:   server.Username,
+		Password:   server.Password,
+		PrivateKey: server.PrivateKey,
+	}
+
+	cleanScript := `
+set -e
+echo "=== Flushing Redis ==="
+docker exec tsdd-redis redis-cli FLUSHALL 2>/dev/null || echo "Redis flush skipped"
+
+echo "=== Restarting WuKongIM ==="
+docker restart tsdd-wukongim 2>/dev/null || echo "WuKongIM restart skipped"
+
+echo "=== Restarting TSDD server ==="
+docker restart tsdd-server 2>/dev/null || echo "TSDD server restart skipped"
+
+echo "=== Cleanup done ==="
+`
+	output, err := sshClient.ExecuteCommandWithTimeout(cleanScript, 60*time.Second)
+	if err != nil {
+		logx.Errorf("删除商户[%s]后清理服务器失败: host=%s, err=%v, output=%s", merchantName, server.Host, err, output)
+	} else {
+		logx.Infof("删除商户[%s]服务器清理完成: host=%s, output=%s", merchantName, server.Host, output)
+	}
 }
 
 // enqueueDeleteGostServicesOnAllSystemServers 入队删除系统服务器上的商户转发任务
@@ -505,7 +623,8 @@ func enqueueDeleteGostServicesOnAllSystemServers(port int) {
 
 // onMerchantServerIPChanged 商户 server_ip 变更后的联动：
 // 1) 同步 servers 表中该商户服务器记录的 host 为新 IP
-// 2) 更新所有系统服务器上的 gost 转发目标（使用固定端口 10000/10001/10002）
+// 2) 同步 merchant_service_nodes 中的地址
+// 3) 更新所有系统服务器上的 gost 转发目标
 func onMerchantServerIPChanged(merchantId int, port int, newServerIP string) {
 	// 1) 同步 servers.host（商户服务器）
 	_, err := dbs.DBAdmin.Table("servers").
@@ -518,7 +637,44 @@ func onMerchantServerIPChanged(merchantId int, port int, newServerIP string) {
 		logx.Errorf("sync servers host failed for merchant %d: %+v", merchantId, err)
 	}
 
-	// 2) 查询商户 tunnelIP 并更新所有系统服务器上的 GOST 转发配置
+	// 2) 同步 merchant_service_nodes
+	// 获取旧 IP 用于多机模式匹配
+	var mInfo entity.Merchants
+	oldIP := ""
+	if has, gerr := dbs.DBAdmin.Where("id = ?", merchantId).Get(&mInfo); gerr == nil && has {
+		oldIP = mInfo.ServerIP
+	}
+
+	var nodes []entity.MerchantServiceNodes
+	_ = dbs.DBAdmin.Where("merchant_id = ?", merchantId).Find(&nodes)
+
+	if len(nodes) == 0 || (len(nodes) == 1 && nodes[0].Role == entity.ServiceNodeRoleAll) {
+		// 单机模式或无节点：直接更新 role=all
+		_, err = dbs.DBAdmin.Table("merchant_service_nodes").
+			Where("merchant_id = ? AND role = ?", merchantId, entity.ServiceNodeRoleAll).
+			Update(map[string]any{
+				"host":       newServerIP,
+				"updated_at": time.Now(),
+			})
+		if err != nil {
+			logx.Errorf("sync service node host failed for merchant %d: %+v", merchantId, err)
+		}
+	} else if oldIP != "" {
+		// 多机模式：更新 host 等于旧 IP 的节点
+		affected, err2 := dbs.DBAdmin.Table("merchant_service_nodes").
+			Where("merchant_id = ? AND host = ?", merchantId, oldIP).
+			Update(map[string]any{
+				"host":       newServerIP,
+				"updated_at": time.Now(),
+			})
+		if err2 != nil {
+			logx.Errorf("sync multi-machine service node host failed for merchant %d: %+v", merchantId, err2)
+		} else if affected > 0 {
+			logx.Infof("updated %d merchant_service_nodes for merchant %d: %s -> %s", affected, merchantId, oldIP, newServerIP)
+		}
+	}
+
+	// 3) 查询商户 tunnelIP 并更新所有系统服务器上的 GOST 转发配置
 	var merchant entity.Merchants
 	tunnelIP := ""
 	if has, err := dbs.DBAdmin.Where("id = ?", merchantId).Get(&merchant); err == nil && has {

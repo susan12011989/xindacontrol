@@ -56,9 +56,8 @@ func DeployTSDD(req model.DeployTSDDReq, operator string) (model.DeployTSDDResp,
 		resp.WebUrl = fmt.Sprintf("http://%s:%d", server.Host, config.WebPort)
 		resp.AdminUrl = fmt.Sprintf("http://%s:%d", server.Host, config.ManagerPort)
 
-		// 更新服务器端口信息
-		dbs.DBAdmin.Where("id = ?", req.ServerId).Cols("port", "updated_at").Update(&entity.Servers{
-			Port:      config.APIPort,
+		// 更新部署时间（不更新 port，port 始终为 SSH 端口）
+		dbs.DBAdmin.Where("id = ?", req.ServerId).Cols("updated_at").Update(&entity.Servers{
 			UpdatedAt: time.Now(),
 		})
 	}
@@ -257,7 +256,7 @@ docker --version
 	return step
 }
 
-// cleanupExisting 清理现有容器和数据
+// cleanupExisting 清理现有容器（保留数据卷）
 func cleanupExisting(client *utils.SSHClient) model.DeployStep {
 	step := model.DeployStep{
 		Name:   "清理现有部署",
@@ -266,7 +265,7 @@ func cleanupExisting(client *utils.SSHClient) model.DeployStep {
 
 	cleanupScript := `
 cd /opt/tsdd 2>/dev/null || true
-docker-compose down -v 2>/dev/null || true
+docker-compose down 2>/dev/null || docker compose down 2>/dev/null || true
 docker stop $(docker ps -aq --filter "name=tsdd") 2>/dev/null || true
 docker rm $(docker ps -aq --filter "name=tsdd") 2>/dev/null || true
 echo "cleanup done"
@@ -512,6 +511,14 @@ func pullAndStartServices(client *utils.SSHClient) model.DeployStep {
 	// 使用docker compose启动（新版命令）
 	startCmd := `
 cd /opt/tsdd
+
+# 确保 Docker 已启用（AMI 清理后可能被禁用）
+sudo systemctl enable docker.socket docker.service 2>/dev/null || true
+sudo systemctl start docker 2>/dev/null || true
+
+# 清理 AMI 残留的同名容器（防止 name conflict）
+docker compose down --remove-orphans 2>/dev/null || docker-compose down --remove-orphans 2>/dev/null || true
+docker ps -a --format '{{.Names}}' | grep -E '^(tsdd|imchat)-' | xargs -r docker rm -f 2>/dev/null || true
 
 # 拉取镜像
 echo ">>> 拉取镜像..."
@@ -917,13 +924,13 @@ updateServerRecord:
 			var m entity.Merchants
 			if has, _ := dbs.DBAdmin.Where("id = ?", req.MerchantId).Get(&m); has && m.Port > 0 {
 				var sysServers []entity.Servers
-				if err := dbs.DBAdmin.Where("server_type = ?", 2).Find(&sysServers); err == nil {
+				if err := dbs.DBAdmin.Where("id IN (SELECT server_id FROM merchant_gost_servers WHERE merchant_id = ? AND status = 1)", req.MerchantId).Where("server_type = 2 AND status = 1").Find(&sysServers); err == nil {
 					for _, s := range sysServers {
 						tlsEnabled := s.TlsEnabled == 1
 						if s.ForwardType == entity.ForwardTypeDirect {
-							gostapi.EnqueueUpdateMerchantDirectForwards(s.Host, m.Port, publicIP)
+							gostapi.EnqueueUpdateMerchantDirectForwards(s.Host, m.Port, publicIP, m.TunnelIP)
 						} else {
-							gostapi.EnqueueUpdateMerchantForwards(s.Host, m.Port, publicIP, tlsEnabled)
+							gostapi.EnqueueUpdateMerchantForwards(s.Host, m.Port, publicIP, tlsEnabled, m.TunnelIP)
 						}
 					}
 					logx.Infof("AMI 部署完成，已触发 GOST 转发更新: merchant=%d, ip=%s, port=%d, servers=%d", m.Id, publicIP, m.Port, len(sysServers))
@@ -1115,6 +1122,12 @@ func updateCustomAMIConfig(client *utils.SSHClient, newIP string, schemaDump str
 set -euo pipefail
 cd /opt/tsdd
 
+# 0. 先停掉所有运行中的容器（防止用旧配置连错库）
+sudo systemctl enable docker.socket docker.service 2>/dev/null || true
+sudo systemctl start docker 2>/dev/null || true
+docker compose down --remove-orphans 2>/dev/null || docker-compose down --remove-orphans 2>/dev/null || true
+echo "已停止旧容器"
+
 # 1. 从 .env 中提取旧 IP
 OLD_IP=""
 if [ -f .env ]; then
@@ -1129,10 +1142,16 @@ NEW_IP="%s"
 echo "IP 替换: $OLD_IP -> $NEW_IP"
 
 if [ -n "$OLD_IP" ] && [ "$OLD_IP" != "$NEW_IP" ]; then
-    for f in .env docker-compose.yml configs/hxd.yaml; do
+    for f in .env docker-compose.yml configs/hxd.yaml web/tsdd-config.js nginx/default.conf configs/tsdd.yaml; do
         if [ -f "$f" ]; then
             sed -i "s|$OLD_IP|$NEW_IP|g" "$f"
             echo "Updated: $f"
+        fi
+    done
+    # 处理 prepare-ami.sh 留下的占位符
+    for f in web/tsdd-config.js; do
+        if [ -f "$f" ]; then
+            sed -i "s|PLACEHOLDER_IP|$NEW_IP|g" "$f"
         fi
     done
 else

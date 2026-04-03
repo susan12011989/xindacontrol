@@ -20,21 +20,39 @@ import (
 )
 
 // getMerchantAPIURL 获取商户API地址
+// 多机模式下使用 API 节点地址，单机模式回退到 merchants.server_ip
+// 端口从商户配置读取，默认 80
 func getMerchantAPIURL(merchantNo string, path string) (string, error) {
 	merchant, err := dbhelper.GetMerchantByNo(merchantNo)
 	if err != nil {
 		return "", err
 	}
+
+	port := merchant.Port
+	if port == 0 {
+		port = 80
+	}
+
+	// 优先从 service_nodes 获取 API 节点地址
+	hosts, hostsErr := GetMerchantServiceHosts(merchant.Id)
+	if hostsErr == nil && hosts.APIHost != "" {
+		return fmt.Sprintf("http://%s:%d%s", hosts.APIHost, port, path), nil
+	}
+
+	// 回退到 merchants.server_ip
 	if merchant.ServerIP == "" {
 		return "", fmt.Errorf("商户服务器IP为空")
 	}
-	// 使用商户 tsdd-server API 端口（默认5003）
-	port := 5003
 	return fmt.Sprintf("http://%s:%d%s", merchant.ServerIP, port, path), nil
 }
 
 // doMerchantRequest 向商户发起HTTP请求
 func doMerchantRequest(method, url string, body interface{}) (*http.Response, error) {
+	return doMerchantRequestWithTimeout(method, url, body, 15*time.Second)
+}
+
+// doMerchantRequestWithTimeout 向商户发起HTTP请求（自定义超时）
+func doMerchantRequestWithTimeout(method, url string, body interface{}, timeout time.Duration) (*http.Response, error) {
 	if cfg.C.MerchantAPI == nil {
 		return nil, fmt.Errorf("MerchantAPI配置未设置")
 	}
@@ -58,7 +76,7 @@ func doMerchantRequest(method, url string, body interface{}) (*http.Response, er
 	req.SetBasicAuth(cfg.C.MerchantAPI.Username, cfg.C.MerchantAPI.Password)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: timeout}
 	return client.Do(req)
 }
 
@@ -174,6 +192,58 @@ func SaveAdminmSystemNickname(merchantNo string, firstName string) error {
 	return nil
 }
 
+// SaveAdminmSystemProfile 保存系统用户昵称和头像到商户
+func SaveAdminmSystemProfile(merchantNo string, firstName string, avatarUrl string) error {
+	// 1. 更新昵称（通过已有的 system_user_nickname 接口）
+	if firstName != "" {
+		if err := SaveAdminmSystemNickname(merchantNo, firstName); err != nil {
+			return fmt.Errorf("更新昵称失败: %v", err)
+		}
+	}
+
+	// 2. 更新头像（通过已有的 config/update 接口推送 logo_url，商户端会自动写入 app.app_logo）
+	if avatarUrl != "" {
+		// 如果是相对路径（/assets/...），拼上 control 外网地址
+		if strings.HasPrefix(avatarUrl, "/") {
+			avatarUrl = resolveControlAssetURL(avatarUrl)
+		}
+
+		url, err := getMerchantAPIURL(merchantNo, "/v1/control/config/update")
+		if err != nil {
+			return err
+		}
+
+		payload := map[string]interface{}{
+			"logo_url": avatarUrl,
+		}
+
+		resp, err := doMerchantRequest("POST", url, payload)
+		if err != nil {
+			logx.Errorf("更新商户系统头像失败: merchant=%s, err=%v", merchantNo, err)
+			return fmt.Errorf("更新头像失败: %v", err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != 200 {
+			return fmt.Errorf("更新头像失败，状态码: %d", resp.StatusCode)
+		}
+		logx.Infof("系统头像已更新: merchant=%s, avatarUrl=%s", merchantNo, avatarUrl)
+	}
+
+	return nil
+}
+
+// resolveControlAssetURL 将 control 本地相对路径转为完整的外网可访问 URL
+// 例如 /assets/logo/xxx.png -> http://16.163.223.214:58181/assets/logo/xxx.png
+func resolveControlAssetURL(path string) string {
+	externalURL := cfg.C.ExternalURL
+	if externalURL == "" {
+		logx.Errorf("resolveControlAssetURL: ExternalURL 未配置，返回原路径: %s", path)
+		return path
+	}
+	return strings.TrimRight(externalURL, "/") + path
+}
+
 // ============ Export Database ============
 
 // GetMerchantSSHClient 获取商户服务器的 SSH 客户端
@@ -199,6 +269,75 @@ func GetMerchantSSHClient(merchantNo string) (*utils.SSHClient, error) {
 		Password:   server.Password,
 		PrivateKey: server.PrivateKey,
 	}, nil
+}
+
+// GetMerchantWebSSHClient 获取运行 Web(nginx) 的商户服务器 SSH 客户端（返回第一个匹配的）
+// 多机部署时 web 可能在独立的 app 节点上，不能用 GetMerchantSSHClient（可能连到 DB/MinIO 节点）
+func GetMerchantWebSSHClient(merchantNo string) (*utils.SSHClient, error) {
+	clients, err := GetAllMerchantWebSSHClients(merchantNo)
+	if err != nil {
+		return nil, err
+	}
+	if len(clients) == 0 {
+		return nil, fmt.Errorf("未找到商户Web服务器")
+	}
+	return clients[0], nil
+}
+
+// GetAllMerchantWebSSHClients 获取商户所有运行 Web(nginx) 的服务器 SSH 客户端
+// 多节点部署时返回所有 app/web/all 节点，用于批量推送资源
+func GetAllMerchantWebSSHClients(merchantNo string) ([]*utils.SSHClient, error) {
+	merchant, err := dbhelper.GetMerchantByNo(merchantNo)
+	if err != nil {
+		return nil, fmt.Errorf("获取商户信息失败: %v", err)
+	}
+
+	// 从 MerchantServiceNodes 查找所有 web/app/all 角色的节点
+	var nodes []entity.MerchantServiceNodes
+	if err := dbs.DBAdmin.Where("merchant_id = ? AND status = 1", merchant.Id).Find(&nodes); err != nil {
+		return nil, fmt.Errorf("查询服务节点失败: %v", err)
+	}
+
+	webRoles := map[string]bool{entity.ServiceNodeRoleWeb: true, "app": true, entity.ServiceNodeRoleAll: true, entity.ServiceNodeRoleAPI: true}
+	var serverIds []int
+	for _, n := range nodes {
+		if webRoles[n.Role] && n.ServerId > 0 {
+			serverIds = append(serverIds, n.ServerId)
+		}
+	}
+
+	if len(serverIds) == 0 {
+		// 没有 service_nodes 记录，回退到旧逻辑
+		var server entity.Servers
+		has, err := dbs.DBAdmin.Where("merchant_id = ? AND server_type = 1 AND status = 1", merchant.Id).Get(&server)
+		if err != nil {
+			return nil, fmt.Errorf("查询服务器失败: %v", err)
+		}
+		if !has {
+			return nil, fmt.Errorf("未找到商户Web服务器")
+		}
+		return []*utils.SSHClient{{
+			Host: server.Host, Port: server.Port,
+			Username: server.Username, Password: server.Password, PrivateKey: server.PrivateKey,
+		}}, nil
+	}
+
+	var servers []entity.Servers
+	if err := dbs.DBAdmin.In("id", serverIds).Where("status = 1").Find(&servers); err != nil {
+		return nil, fmt.Errorf("查询服务器失败: %v", err)
+	}
+	if len(servers) == 0 {
+		return nil, fmt.Errorf("未找到商户Web服务器")
+	}
+
+	clients := make([]*utils.SSHClient, 0, len(servers))
+	for _, s := range servers {
+		clients = append(clients, &utils.SSHClient{
+			Host: s.Host, Port: s.Port,
+			Username: s.Username, Password: s.Password, PrivateKey: s.PrivateKey,
+		})
+	}
+	return clients, nil
 }
 
 // ============ Clear Data ============
@@ -308,7 +447,7 @@ echo "=== All clear done ==="
 	return nil
 }
 
-// PushWebLogo 推送 Logo + 应用名称到商户的 tsdd-web 容器
+// PushWebLogo 推送 Logo + 应用名称到商户所有 Web 节点
 // logoPath 为 Control 服务器上 logo 原图的本地路径（空则不推 logo），appName 为应用显示名称（空则不改名称）
 func PushWebLogo(merchantNo string, logoPath string, appName string) error {
 	// 生成 logo 文件（如果有 logoPath）
@@ -325,15 +464,29 @@ func PushWebLogo(merchantNo string, logoPath string, appName string) error {
 		return nil
 	}
 
-	sshClient, err := GetMerchantSSHClient(merchantNo)
+	clients, err := GetAllMerchantWebSSHClients(merchantNo)
 	if err != nil {
-		return fmt.Errorf("获取SSH连接失败: %v", err)
+		return fmt.Errorf("获取Web服务器SSH连接失败: %v", err)
 	}
+
+	var lastErr error
+	for _, sshClient := range clients {
+		if err := pushWebLogoToNode(sshClient, merchantNo, files, appName); err != nil {
+			logx.Errorf("PushWebLogo: 推送到 %s 失败: %v", sshClient.Host, err)
+			lastErr = err
+		}
+	}
+	return lastErr
+}
+
+// pushWebLogoToNode 推送 Logo 到单个节点
+func pushWebLogoToNode(sshClient *utils.SSHClient, merchantNo string, files map[string][]byte, appName string) error {
 	defer sshClient.Close()
 
 	if err := sshClient.Connect(); err != nil {
 		return fmt.Errorf("SSH连接失败: %v", err)
 	}
+	logx.Infof("PushWebLogo: 连接到Web服务器 %s, merchant=%s", sshClient.Host, merchantNo)
 
 	tmpDir := "/tmp/tsdd-logo"
 	hasLogoFiles := len(files) > 0
@@ -349,47 +502,109 @@ func PushWebLogo(merchantNo string, logoPath string, appName string) error {
 		}
 	}
 
-	appNameScript := ""
+	escapedName := ""
 	if appName != "" {
-		escapedName := strings.ReplaceAll(appName, `/`, `\/`)
+		escapedName = strings.ReplaceAll(appName, `/`, `\/`)
 		escapedName = strings.ReplaceAll(escapedName, `&`, `\&`)
-		appNameScript = fmt.Sprintf(`
-WEB_TARGET="$WEB_DIR"
-[ -d "$WEB_TARGET" ] || WEB_TARGET=""
-if [ -n "$WEB_TARGET" ]; then
-    sudo sed -i 's|<title>[^<]*</title>|<title>%s</title>|' "$WEB_TARGET/index.html" 2>/dev/null || true
-    sudo sed -i 's|"name": "[^"]*"|"name": "%s"|' "$WEB_TARGET/manifest.json" 2>/dev/null || true
-    sudo sed -i 's|"short_name": "[^"]*"|"short_name": "%s"|' "$WEB_TARGET/manifest.json" 2>/dev/null || true
-fi
-`, escapedName, escapedName, escapedName)
 	}
 
-	logoCopyScript := ""
-	cleanupScript := ""
-	if hasLogoFiles {
-		logoCopyScript = fmt.Sprintf(`
-if [ -d "$WEB_DIR" ]; then
-    sudo cp %s/* "$WEB_DIR/"
-else
-    WEB_ROOT="/usr/share/nginx/html"
-    for f in %s/*; do
-        fname=$(basename "$f")
-        docker cp "$f" tsdd-web:${WEB_ROOT}/${fname}
-    done
-fi
-`, tmpDir, tmpDir)
-		cleanupScript = fmt.Sprintf("rm -rf %s", tmpDir)
-	}
-
+	// 构建统一脚本：先探测 web 文件位置，再执行所有操作
 	script := fmt.Sprintf(`
 set -e
 WEB_DIR="/opt/tsdd/web"
-%s
-%s
-docker exec tsdd-web nginx -s reload
-%s
-echo "OK"
-`, logoCopyScript, appNameScript, cleanupScript)
+FOUND_DIR=""
+
+# 第一步：探测 index.html 实际所在位置
+# 优先：宿主机 /opt/tsdd/web
+if [ -f "$WEB_DIR/index.html" ]; then
+    FOUND_DIR="$WEB_DIR"
+    MODE="host"
+    echo "MODE=host, dir=$FOUND_DIR"
+fi
+
+# 如果宿主机没有 index.html，尝试 docker 容器
+if [ -z "$FOUND_DIR" ]; then
+    NGINX_CONTAINER=""
+    if docker ps --format '{{.Names}}' | grep -q '^tsdd-web$'; then
+        NGINX_CONTAINER="tsdd-web"
+    elif docker ps --format '{{.Names}}' | grep -q '^tsdd-nginx$'; then
+        NGINX_CONTAINER="tsdd-nginx"
+    fi
+    if [ -n "$NGINX_CONTAINER" ]; then
+        # tsdd-nginx 的 web root 是 /usr/share/nginx/html/web
+        # tsdd-web 的 web root 是 /usr/share/nginx/html
+        if docker exec "$NGINX_CONTAINER" test -f /usr/share/nginx/html/web/index.html 2>/dev/null; then
+            CONTAINER_WEB_ROOT="/usr/share/nginx/html/web"
+        elif docker exec "$NGINX_CONTAINER" test -f /usr/share/nginx/html/index.html 2>/dev/null; then
+            CONTAINER_WEB_ROOT="/usr/share/nginx/html"
+        fi
+        if [ -n "$CONTAINER_WEB_ROOT" ]; then
+            MODE="docker"
+            echo "MODE=docker, container=$NGINX_CONTAINER, root=$CONTAINER_WEB_ROOT"
+        fi
+    fi
+fi
+
+if [ -z "$MODE" ]; then
+    echo "ERROR: 未找到 web index.html（宿主机 $WEB_DIR 和 docker 容器均无）"
+    exit 1
+fi
+`)
+
+	// Logo 文件复制
+	if hasLogoFiles {
+		script += fmt.Sprintf(`
+# 第二步：复制 Logo 文件
+if [ "$MODE" = "host" ]; then
+    sudo cp %s/* "$FOUND_DIR/"
+    echo "Logo files copied to host: $FOUND_DIR"
+else
+    for f in %s/*; do
+        fname=$(basename "$f")
+        docker cp "$f" "${NGINX_CONTAINER}:${CONTAINER_WEB_ROOT}/${fname}"
+    done
+    echo "Logo files copied to container: $NGINX_CONTAINER:$CONTAINER_WEB_ROOT"
+fi
+`, tmpDir, tmpDir)
+	}
+
+	// 应用名称修改
+	if appName != "" {
+		script += fmt.Sprintf(`
+# 第三步：修改应用名称
+if [ "$MODE" = "host" ]; then
+    echo "Before: $(grep '<title>' "$FOUND_DIR/index.html" 2>/dev/null || echo 'no title found')"
+    sudo sed -i 's|<title>[^<]*</title>|<title>%s</title>|' "$FOUND_DIR/index.html"
+    sudo sed -i 's|"name": "[^"]*"|"name": "%s"|' "$FOUND_DIR/manifest.json"
+    sudo sed -i 's|"short_name": "[^"]*"|"short_name": "%s"|' "$FOUND_DIR/manifest.json"
+    echo "After:  $(grep '<title>' "$FOUND_DIR/index.html" 2>/dev/null || echo 'no title found')"
+else
+    echo "Before: $(docker exec "$NGINX_CONTAINER" grep '<title>' "${CONTAINER_WEB_ROOT}/index.html" 2>/dev/null || echo 'no title found')"
+    docker exec "$NGINX_CONTAINER" sed -i 's|<title>[^<]*</title>|<title>%s</title>|' "${CONTAINER_WEB_ROOT}/index.html"
+    docker exec "$NGINX_CONTAINER" sed -i 's|"name": "[^"]*"|"name": "%s"|' "${CONTAINER_WEB_ROOT}/manifest.json"
+    docker exec "$NGINX_CONTAINER" sed -i 's|"short_name": "[^"]*"|"short_name": "%s"|' "${CONTAINER_WEB_ROOT}/manifest.json"
+    echo "After:  $(docker exec "$NGINX_CONTAINER" grep '<title>' "${CONTAINER_WEB_ROOT}/index.html" 2>/dev/null || echo 'no title found')"
+fi
+`, escapedName, escapedName, escapedName, escapedName, escapedName, escapedName)
+	}
+
+	// Nginx reload + 清理
+	script += `
+# 第四步：Reload nginx
+if [ -n "$NGINX_CONTAINER" ]; then
+    docker exec "$NGINX_CONTAINER" nginx -s reload 2>/dev/null && echo "nginx reloaded: $NGINX_CONTAINER" || echo "WARN: nginx reload failed"
+elif docker ps --format '{{.Names}}' | grep -q '^tsdd-web$'; then
+    docker exec tsdd-web nginx -s reload 2>/dev/null && echo "nginx reloaded: tsdd-web" || echo "WARN: nginx reload failed"
+elif docker ps --format '{{.Names}}' | grep -q '^tsdd-nginx$'; then
+    docker exec tsdd-nginx nginx -s reload 2>/dev/null && echo "nginx reloaded: tsdd-nginx" || echo "WARN: nginx reload failed"
+else
+    echo "WARN: no nginx container found, skip reload"
+fi
+`
+	if hasLogoFiles {
+		script += fmt.Sprintf("rm -rf %s\n", tmpDir)
+	}
+	script += `echo "OK"`
 
 	out, err := sshClient.ExecuteCommandWithTimeout(script, 60*time.Second)
 	if err != nil {
@@ -400,7 +615,7 @@ echo "OK"
 		return fmt.Errorf("推送Logo失败: %v", err)
 	}
 
-	logx.Infof("Logo已推送: merchant=%s, files=%d, appName=%s", merchantNo, len(files), appName)
+	logx.Infof("Logo已推送: merchant=%s, files=%d, appName=%s, output=%s", merchantNo, len(files), appName, out)
 	return nil
 }
 

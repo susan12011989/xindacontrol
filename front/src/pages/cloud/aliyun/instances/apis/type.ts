@@ -210,6 +210,18 @@ export interface ModifyImageShareRequestData {
   remove_accounts?: string[] // 要取消共享的阿里云账号ID列表
 }
 
+// ========== 一键部署隧道服务器 ==========
+
+export interface DeployTunnelServerRequestData {
+  cloud_account_id: number
+  region_id: string
+  server_name: string
+  server_count: number
+  instance_type: string
+  bandwidth: string
+  eip_count: number
+}
+
 // ========== 注册实例到服务器管理（自动创建SSH密钥） ==========
 
 // 注册实例请求

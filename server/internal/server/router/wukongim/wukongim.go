@@ -14,6 +14,9 @@ func Routes(gi gin.IRouter) {
 	group := gi.Group("wukongim")
 	group.Use(middleware.Authorization)
 
+	// 节点列表
+	group.GET("nodes", listNodes) // 可用的 WuKongIM 节点列表
+
 	// 服务器状态
 	group.GET("varz", getVarz)     // 系统变量（连接数/CPU/内存/消息量）
 	group.GET("connz", getConnz)   // 连接详情（支持过滤/排序/分页）
@@ -75,6 +78,16 @@ func getOnlineStatus(ctx *gin.Context) {
 		return
 	}
 
+	result.GOK(ctx, data)
+}
+
+// listNodes 返回可用的 WuKongIM 节点
+func listNodes(ctx *gin.Context) {
+	data, err := wukongimService.ListWuKongIMNodes()
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
 	result.GOK(ctx, data)
 }
 

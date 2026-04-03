@@ -55,6 +55,7 @@ type TokenInfo struct {
 	TokenID   string    `json:"token_id"`
 	UserID    int64     `json:"user_id"`
 	Username  string    `json:"username"`
+	Role      string    `json:"role"`
 	IP        string    `json:"ip"`
 	Device    string    `json:"device"`
 	ExpiresAt time.Time `json:"expires_at"`
@@ -62,13 +63,13 @@ type TokenInfo struct {
 	TwoFA     bool      `json:"two_fa"` // 是否启用了2FA
 }
 
-func GenerateToken(userID int, username, ip, device string, twoFA bool) (string, error) {
-	return def.GenerateToken(userID, username, ip, device, twoFA)
+func GenerateToken(userID int, username, role, ip, device string, twoFA bool) (string, error) {
+	return def.GenerateToken(userID, username, role, ip, device, twoFA)
 }
 func BuildTokenID(userID int, uuid string) string {
 	return fmt.Sprintf("%d:%s", userID, uuid)
 }
-func (tm *TokenInstance) GenerateToken(userID int, username, ip, device string, twoFA bool) (string, error) {
+func (tm *TokenInstance) GenerateToken(userID int, username, role, ip, device string, twoFA bool) (string, error) {
 	// tokenID := fmt.Sprintf("%s:%d:%s", accountPrefix, userID, strings.ReplaceAll(uuid.New().String(), "-", ""))
 	tokenID := BuildTokenID(userID, strings.ReplaceAll(uuid.New().String(), "-", ""))
 	expiresAt := time.Now().Add(tm.defaultExpire)
@@ -88,6 +89,7 @@ func (tm *TokenInstance) GenerateToken(userID int, username, ip, device string, 
 		TokenID:   tokenID,
 		UserID:    int64(userID),
 		Username:  username,
+		Role:      role,
 		IP:        ip,
 		Device:    device,
 		ExpiresAt: expiresAt,

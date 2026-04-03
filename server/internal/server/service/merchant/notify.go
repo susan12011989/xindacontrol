@@ -14,18 +14,24 @@ import (
 
 // NotifyConfigUpdate 向商户服务推送配置更新
 // 推送 control 数据库中存储的商户配置
+// 多机模式下使用 API 节点地址
 func NotifyConfigUpdate(merchant *entity.Merchants) error {
-	if merchant.ServerIP == "" {
-		return fmt.Errorf("商户服务器IP为空")
-	}
-
 	if cfg.C.MerchantAPI == nil {
 		logx.Errorf("MerchantAPI配置未设置，无法推送配置更新")
 		return fmt.Errorf("MerchantAPI配置未设置")
 	}
 
+	// 优先从 service_nodes 获取 API 节点地址
+	apiHost := merchant.ServerIP
+	if hosts, err := GetMerchantServiceHosts(merchant.Id); err == nil && hosts.APIHost != "" {
+		apiHost = hosts.APIHost
+	}
+	if apiHost == "" {
+		return fmt.Errorf("商户服务器IP为空")
+	}
+
 	// 构建商户服务的回调地址（默认端口10002）
-	url := fmt.Sprintf("http://%s:10002/v1/control/config/update", merchant.ServerIP)
+	url := fmt.Sprintf("http://%s:10002/v1/control/config/update", apiHost)
 
 	// 推送 control 数据库中存储的配置
 	payload := map[string]interface{}{

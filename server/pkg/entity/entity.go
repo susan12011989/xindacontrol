@@ -26,6 +26,8 @@ type PackageConfiguration struct {
 	ExpiredAt        int64    `json:"expired_at"`         // 套餐到期时间(秒级时间戳)
 	AppPackages      []string `json:"app_packages"`       // 套餐内可用应用列表
 	TurnServer       string   `json:"turn_server"`        // TURN服务器地址 (格式: ip:port)
+	TurnUsername     string   `json:"turn_username"`      // TURN用户名
+	TurnCredential   string   `json:"turn_credential"`    // TURN密码
 }
 
 type CloudAccountDetail struct {
@@ -697,6 +699,59 @@ const (
 // 审计日志目标类型 - 存储配置
 const (
 	AuditTargetStorageConfig = "storage_config"
+)
+
+// ========== 商户服务节点（单机/多机部署） ==========
+
+// MerchantServiceNodes 商户服务节点
+// 单机商户: 一条 role='all' 记录
+// 多机商户: 多条记录（im, api, minio, web）
+type MerchantServiceNodes struct {
+	Id         int       `xorm:"not null pk autoincr INT"`
+	MerchantId int       `xorm:"not null comment('商户ID') index INT"`
+	Role       string    `xorm:"not null comment('服务角色: all, im, api, minio, web') VARCHAR(32)"`
+	Host       string    `xorm:"not null comment('服务器地址') VARCHAR(128)"`
+	ServerId   int       `xorm:"not null default 0 comment('关联servers表ID') INT"`
+	IsPrimary  int       `xorm:"not null default 0 comment('是否主节点') TINYINT"`
+	Status       int        `xorm:"not null default 1 comment('状态:0-停用 1-启用') TINYINT"`
+	Remark       string     `xorm:"default '' comment('备注') VARCHAR(255)"`
+	WkNodeId     int        `xorm:"default 0 comment('WuKongIM节点ID') INT"`
+	DbHost       string     `xorm:"default '' comment('DB节点内网IP') VARCHAR(128)"`
+	MinioHost    string     `xorm:"default '' comment('MinIO节点内网IP') VARCHAR(128)"`
+	DeployStatus string     `xorm:"default '' comment('部署状态') VARCHAR(32)"`
+	DeployError  string     `xorm:"default '' comment('部署错误信息') TEXT"`
+	DeployOutput string     `xorm:"default '' comment('部署输出摘要') TEXT"`
+	LastDeployAt *time.Time `xorm:"comment('最近部署时间') DATETIME"`
+	CreatedAt    time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+	UpdatedAt    time.Time  `xorm:"default CURRENT_TIMESTAMP DATETIME"`
+}
+
+// 部署状态常量
+const (
+	DeployStatusPending   = "pending"
+	DeployStatusDeploying = "deploying"
+	DeployStatusSuccess   = "success"
+	DeployStatusFailed    = "failed"
+)
+
+// 服务节点角色常量
+const (
+	ServiceNodeRoleAll   = "all"   // 单机模式：所有服务在一台机器
+	ServiceNodeRoleIM    = "im"    // WuKongIM 服务器
+	ServiceNodeRoleAPI   = "api"   // tsdd-server API 服务器
+	ServiceNodeRoleMinio = "minio" // MinIO 存储服务器
+	ServiceNodeRoleWeb   = "web"   // tsdd-web 前端服务器
+)
+
+// 审计日志 - 服务节点操作
+const (
+	AuditActionCreateServiceNode = "create_service_node"
+	AuditActionUpdateServiceNode = "update_service_node"
+	AuditActionDeleteServiceNode = "delete_service_node"
+)
+
+const (
+	AuditTargetServiceNode = "service_node"
 )
 
 // ========== 云实例商户绑定 ==========

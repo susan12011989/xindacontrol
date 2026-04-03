@@ -9,6 +9,7 @@ import (
 	"server/internal/server/model"
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // ListOssObjects 列举 OSS 对象
@@ -191,7 +192,8 @@ func SetBucketPublicAccess(req model.OssSetBucketPublicReq) error {
 		region = region[4:]
 	}
 	endpoint := "oss-" + region + ".aliyuncs.com"
-	client, err := oss.New(endpoint, cloudCred.AccessKey, cloudCred.AccessSecret)
+	// 使用 V2 签名，因为 publicAccessBlock 不在 V1 的 signKeyList 中，V1 签名会导致 SignatureDoesNotMatch
+	client, err := oss.New(endpoint, cloudCred.AccessKey, cloudCred.AccessSecret, oss.AuthVersion(oss.AuthV2))
 	if err != nil {
 		return err
 	}
@@ -300,6 +302,13 @@ func ListBuckets(req model.OssListBucketsReq) (model.OssListBucketsResponse, err
 		}
 		endpoint = "oss-" + region + ".aliyuncs.com"
 	}
+	akPrefix := cloudCred.AccessKey
+	if len(akPrefix) > 8 {
+		akPrefix = akPrefix[:8]
+	}
+	logx.Infof("[OSS] ListBuckets cloudAccountId=%d, merchantId=%d, regionId=%s, endpoint=%s, AK=%s..., SiteType=%s",
+		req.CloudAccountId, req.MerchantId, req.RegionId, endpoint, akPrefix, cloudCred.SiteType)
+
 	client, err := oss.New(endpoint, cloudCred.AccessKey, cloudCred.AccessSecret)
 	if err != nil {
 		return resp, err
@@ -317,8 +326,10 @@ func ListBuckets(req model.OssListBucketsReq) (model.OssListBucketsResponse, err
 	}
 	res, err := client.ListBuckets(opts...)
 	if err != nil {
+		logx.Errorf("[OSS] ListBuckets failed: endpoint=%s, AK=%s..., err=%v", endpoint, akPrefix, err)
 		return resp, err
 	}
+	logx.Infof("[OSS] ListBuckets success: %d buckets", len(res.Buckets))
 	for _, b := range res.Buckets {
 		resp.List = append(resp.List, model.OssBucketItem{
 			Name:         b.Name,

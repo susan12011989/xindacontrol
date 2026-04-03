@@ -2,6 +2,14 @@ import type { ApiResponseData } from "@/common/apis/type"
 
 // ========== WuKongIM 监控 ==========
 
+// WuKongIM 节点信息
+export interface WuKongIMNode {
+  server_id: number
+  host: string
+  merchant_no: string
+  merchant_name: string
+}
+
 // 系统变量响应（/varz）
 export interface WuKongIMVarzResp {
   server_id: string

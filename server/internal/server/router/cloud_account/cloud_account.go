@@ -20,7 +20,8 @@ func Routes(gi gin.IRouter) {
 	group.POST("", createCloudAccount)           // POST /cloud_account - 创建云账号
 	group.PUT(":id", updateCloudAccount)         // PUT /cloud_account/:id - 更新云账号
 	group.DELETE(":id", deleteCloudAccount)      // DELETE /cloud_account/:id - 删除云账号
-	group.GET("options", getCloudAccountOptions) // GET /cloud_account/options - 获取云账号选项（下拉框）
+	group.GET("options", getCloudAccountOptions)       // GET /cloud_account/options - 获取云账号选项（下拉框）
+	group.GET("batch_balance", batchQueryBalance)       // GET /cloud_account/batch_balance - 批量查询余额
 }
 
 // 查询云账号列表
@@ -123,6 +124,19 @@ func deleteCloudAccount(ctx *gin.Context) {
 	}
 
 	result.GOK(ctx, nil)
+}
+
+// 批量查询云账号余额
+func batchQueryBalance(ctx *gin.Context) {
+	cloudType := ctx.Query("cloud_type")
+
+	data, err := cloudAccountService.BatchQueryBalance(cloudType)
+	if err != nil {
+		result.GErr(ctx, err)
+		return
+	}
+
+	result.GOK(ctx, data)
 }
 
 // 获取云账号选项（用于下拉框）

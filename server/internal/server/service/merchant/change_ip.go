@@ -293,8 +293,8 @@ func ChangeMerchantGostPort(merchantId int, newPort int) (model.ChangeGostPortRe
 		return resp, errors.New("商户当前IP为空")
 	}
 
-	// 旧端口使用默认值（标准化后固定为 10000/10001/10002）
-	oldPort := gostapi.MerchantGostPortTCP
+	// V3: 固定端口，不再使用动态端口
+	oldPort := gostapi.MerchantGostPortIM
 
 	// 第一步：AWS 安全组全端口放行，确保不会被拦截
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

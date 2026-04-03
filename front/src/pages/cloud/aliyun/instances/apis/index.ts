@@ -121,6 +121,23 @@ export function registerInstanceWithSSHKey(data: Types.RegisterInstanceWithSSHKe
   })
 }
 
+// 一键部署隧道服务器 (流式API)
+export function deployTunnelServer(data: Types.DeployTunnelServerRequestData, onData: (output: string, isComplete?: boolean, results?: any) => void, onError?: (error: any) => void) {
+  return createStreamRequest(
+    {
+      url: "/cloud/ecs/instance/deploy-tunnel",
+      method: "post",
+      data
+    },
+    (chunk, isComplete) => {
+      const message = chunk.message as string
+      const shouldComplete = isComplete === true || chunk.success === true
+      onData(message, shouldComplete, chunk.results)
+    },
+    onError
+  )
+}
+
 // ========== 实例商户绑定 ==========
 
 // 绑定商户

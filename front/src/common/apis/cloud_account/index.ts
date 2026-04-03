@@ -65,6 +65,15 @@ export function getAliyunBalance(params: { merchant_id?: number, cloud_account_i
   })
 }
 
+/** 批量查询云账号余额 */
+export function getBatchBalance(params?: { cloud_type?: string }) {
+  return request<{ code: number, data: CloudAccount.BatchBalanceItem[], message: string }>({
+    url: "cloud_account/batch_balance",
+    method: "get",
+    params
+  })
+}
+
 /** 查询腾讯云账户余额 */
 export function getTencentBalance(params: { merchant_id?: number, cloud_account_id?: number }) {
   return request<{ code: number, data: CloudAccount.TencentBalanceResp, message: string }>({

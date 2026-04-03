@@ -5,6 +5,8 @@ export interface PackageConfiguration {
   group_member_limit: number // 群人数限制
   app_packages?: string[] // 套餐内可用应用列表（客户端包名）
   turn_server?: string // TURN服务器地址 (格式: ip:port)
+  turn_username?: string // TURN用户名
+  turn_credential?: string // TURN密码
 }
 
 // 商户区域信息
@@ -30,6 +32,40 @@ export interface Merchant {
   package_configuration?: PackageConfiguration // 套餐配置
   expiring_soon: number // 2:已过期 1:即将过期 0:正常
   regions?: MerchantRegions[] // 商户区域信息
+  service_node_count?: number // 服务节点数量
+  deploy_mode?: string // 部署模式: single(单机), cluster(多机)
+}
+
+// ========== 商户服务节点（单机/多机部署） ==========
+
+export type ServiceNodeRole = "all" | "im" | "api" | "minio" | "web"
+
+export interface ServiceNode {
+  id: number
+  merchant_id: number
+  role: ServiceNodeRole
+  host: string
+  server_id: number
+  is_primary: number
+  status: number
+  remark: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ServiceNodeReq {
+  role: ServiceNodeRole
+  host: string
+  server_id?: number
+  is_primary?: number
+  remark?: string
+}
+
+export type ServiceNodeListResponseData = ApiResponseData<ServiceNode[]>
+export type ServiceNodeCreateResponseData = ApiResponseData<{ id: number }>
+
+export interface SwitchClusterReq {
+  nodes: ServiceNodeReq[]
 }
 
 export interface MerchantQueryRequestData {
@@ -166,12 +202,13 @@ export interface AdminmSensitiveSaveReq {
 
 export type AdminmSaveResponseData = ApiResponseData<any>
 
-// 系统用户昵称保存
+// 系统用户昵称/头像保存
 export interface AdminmNicknameSaveReq {
   merchant_no?: string
   merchant_nos?: string[]
   broadcast?: boolean
-  first_name: string
+  first_name?: string
+  avatar_url?: string
 }
 
 // ========== 隧道统计 ==========

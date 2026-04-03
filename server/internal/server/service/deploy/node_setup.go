@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"server/internal/server/model"
 	"server/internal/server/utils"
+	"server/pkg/gostapi"
 	"time"
+
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // SetupNode 初始化节点：安装 Docker、挂载磁盘、创建目录
@@ -231,7 +234,7 @@ func createDirectories(client *utils.SSHClient, config model.DeployConfig) model
 	case "minio":
 		dirs = "mkdir -p /opt/tsdd /data/minio"
 	case "app":
-		dirs = "mkdir -p /opt/tsdd /opt/tsdd/assets /opt/tsdd/ssl /opt/tsdd/web /data/db/wukongim"
+		dirs = "mkdir -p /opt/tsdd /opt/tsdd/assets /opt/tsdd/ssl /opt/tsdd/web /opt/tsdd/tsdddata /opt/tsdd/configs /opt/tsdd/nginx /opt/tsdd/manager /data/db/wukongim && chown -R 1000:1000 /opt/tsdd/tsdddata"
 	default:
 		dirs = "mkdir -p /opt/tsdd /opt/tsdd/assets /opt/tsdd/ssl /opt/tsdd/web /data/db/mysql /data/db/redis /data/db/wukongim /data/minio"
 	}
@@ -287,6 +290,28 @@ ENV_EOF
 echo "配置文件已写入"
 `, composeContent, envContent)
 
+	// App 节点额外写入 nginx.conf + tsdd-config.js + hxd-config.js
+	if config.NodeRole == "app" || config.NodeRole == "allinone" {
+		nginxConf := generateNginxConf(config)
+		webConfig := generateWebConfig(config)
+		managerConfig := generateManagerConfig()
+		writeCmd += fmt.Sprintf(`
+mkdir -p /opt/tsdd/manager
+cat > /opt/tsdd/nginx.conf << 'NGINX_EOF'
+%s
+NGINX_EOF
+
+cat > /opt/tsdd/web/tsdd-config.js << 'WEBCONF_EOF'
+%s
+WEBCONF_EOF
+
+cat > /opt/tsdd/manager/hxd-config.js << 'MGRCONF_EOF'
+%s
+MGRCONF_EOF
+echo "nginx.conf + tsdd-config.js + hxd-config.js 已写入"
+`, nginxConf, webConfig, managerConfig)
+	}
+
 	output, err := client.ExecuteCommand(writeCmd)
 	configStep := model.DeployStep{
 		Name:   "生成配置文件",
@@ -317,13 +342,23 @@ echo "配置文件已写入"
 	healthStep := checkNodeHealth(client, config)
 	resp.Steps = append(resp.Steps, healthStep)
 
+	// Step 8: App 节点自动安装商户端 GOST（与单机模式统一）
+	if config.NodeRole == "app" {
+		gostStep := installMerchantGost(client, config)
+		resp.Steps = append(resp.Steps, gostStep)
+		if gostStep.Status == "failed" {
+			// GOST 安装失败不阻塞整体部署，只记录警告
+			logx.Errorf("[DeployNode] 商户端 GOST 安装失败: %s", gostStep.Message)
+		}
+	}
+
 	resp.Success = true
 	resp.Message = fmt.Sprintf("%s 节点部署完成", config.NodeRole)
 
 	if config.NodeRole != "db" && config.NodeRole != "minio" {
-		resp.APIUrl = fmt.Sprintf("http://%s:%d", config.ExternalIP, config.APIPort)
-		resp.WebUrl = fmt.Sprintf("http://%s:%d", config.ExternalIP, config.WebPort)
-		resp.AdminUrl = fmt.Sprintf("http://%s:%d", config.ExternalIP, config.ManagerPort)
+		resp.APIUrl = fmt.Sprintf("http://%s/api/", config.ExternalIP)
+		resp.WebUrl = fmt.Sprintf("http://%s", config.ExternalIP)
+		resp.AdminUrl = fmt.Sprintf("http://%s/hxdadmin/", config.ExternalIP)
 	}
 
 	return resp
@@ -412,4 +447,139 @@ func containsAny(s string, substrs ...string) bool {
 		}
 	}
 	return false
+}
+
+// installMerchantGost 在 App 节点安装商户端 GOST 并配置本地转发
+// 与单机模式统一：GOST 监听 10443/10080/10800，转发到本地业务端口
+func installMerchantGost(client *utils.SSHClient, config model.DeployConfig) model.DeployStep {
+	step := model.DeployStep{
+		Name:   "安装商户端 GOST",
+		Status: "running",
+	}
+
+	// 1. 检查是否已安装
+	output, _ := client.ExecuteCommand("which gost 2>/dev/null || echo ''")
+	gostInstalled := len(output) > 0 && output != "\n"
+
+	if !gostInstalled {
+		// 尝试使用预存二进制上传
+		if err := uploadGostBinary(client.Client, func(msg string) {}); err != nil {
+			// 回退：从 GitHub 下载
+			downloadCmd := `
+GOST_VERSION="3.0.0-rc10"
+cd /tmp
+wget -q --timeout=60 "https://github.com/go-gost/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_amd64.tar.gz" -O gost.tar.gz
+tar -xzf gost.tar.gz
+sudo mv gost /usr/local/bin/ && sudo chmod +x /usr/local/bin/gost
+rm -f gost.tar.gz
+`
+			if out, err := client.ExecuteCommand(downloadCmd); err != nil {
+				step.Status = "failed"
+				step.Message = fmt.Sprintf("GOST 安装失败: %v, %s", err, out)
+				return step
+			}
+		} else {
+			// 上传成功，移动到 /usr/local/bin
+			if out, err := client.ExecuteCommand("sudo mv /tmp/gost /usr/local/bin/ && sudo chmod +x /usr/local/bin/gost"); err != nil {
+				step.Status = "failed"
+				step.Message = fmt.Sprintf("GOST 移动失败: %v, %s", err, out)
+				return step
+			}
+		}
+	}
+
+	// 2. 创建配置和 systemd 服务（与单机模式统一）
+	// MinIO 地址：多机模式从 config.MinioHost 获取，单机默认 127.0.0.1
+	minioAddr := fmt.Sprintf("127.0.0.1:%d", gostapi.MerchantAppPortMinIO)
+	if config.MinioHost != "" && config.MinioHost != "127.0.0.1" {
+		minioAddr = fmt.Sprintf("%s:%d", config.MinioHost, gostapi.MerchantAppPortMinIO)
+	}
+
+	setupCmd := fmt.Sprintf(`
+sudo mkdir -p /etc/gost /var/log/gost
+
+sudo tee /etc/gost/config.yaml > /dev/null << 'EOF'
+api:
+  addr: ":%d"
+  auth:
+    username: %s
+    password: %s
+log:
+  level: info
+  format: json
+  output: /var/log/gost/gost.log
+services:
+  - name: local-tcp-%d
+    addr: ":%d"
+    handler:
+      type: tcp
+    listener:
+      type: tcp
+    forwarder:
+      nodes:
+        - name: wukongim
+          addr: 127.0.0.1:%d
+  - name: local-http-%d
+    addr: ":%d"
+    handler:
+      type: tcp
+    listener:
+      type: tcp
+    forwarder:
+      nodes:
+        - name: tsdd-server
+          addr: 127.0.0.1:%d
+  - name: local-file-%d
+    addr: ":%d"
+    handler:
+      type: tcp
+    listener:
+      type: tcp
+    forwarder:
+      nodes:
+        - name: minio
+          addr: %s
+chains: []
+EOF
+
+sudo tee /etc/systemd/system/gost.service > /dev/null << 'EOF'
+[Unit]
+Description=GOST
+After=network.target
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gost -C /etc/gost/config.yaml
+Restart=always
+LimitNOFILE=1048576
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable gost --now
+`,
+		gostapi.GostAPIPortInt,
+		gostapi.GostAPIUsername,
+		gostapi.GostAPIPassword,
+		gostapi.MerchantGostPortIM, gostapi.MerchantGostPortIM, gostapi.MerchantAppPortIM,
+		gostapi.MerchantGostPortHTTP, gostapi.MerchantGostPortHTTP, gostapi.MerchantAppPortHTTP,
+		gostapi.MerchantGostPortFile, gostapi.MerchantGostPortFile, minioAddr,
+	)
+
+	out, err := client.ExecuteCommand(setupCmd)
+	if err != nil {
+		step.Status = "failed"
+		step.Message = fmt.Sprintf("GOST 配置失败: %v, %s", err, out)
+		return step
+	}
+
+	// 3. 等待并验证
+	time.Sleep(2 * time.Second)
+	verifyOut, _ := client.ExecuteCommand("systemctl is-active gost 2>/dev/null && ss -tlnp | grep -c gost")
+	step.Status = "success"
+	step.Message = fmt.Sprintf("商户端 GOST 已安装 (10443→%d, 10080→%d, 10800→%s)",
+		gostapi.MerchantAppPortIM, gostapi.MerchantAppPortHTTP, minioAddr)
+	step.Output = verifyOut
+
+	return step
 }

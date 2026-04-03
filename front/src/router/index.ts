@@ -106,6 +106,22 @@ export const constantRoutes: RouteRecordRaw[] = [
     ]
   },
   {
+    path: "/merchant/create-cluster",
+    component: Layouts,
+    meta: { hidden: true, mode: "cluster" },
+    children: [
+      {
+        path: "",
+        component: () => import("@/pages/dashboard/cluster-wizard.vue"),
+        name: "MerchantCreateCluster",
+        meta: {
+          title: "集群商户向导",
+          keepAlive: false
+        }
+      }
+    ]
+  },
+  {
     path: "/merchant/edit/:id",
     component: Layouts,
     meta: { hidden: true, mode: "cluster" },
@@ -250,6 +266,17 @@ export const constantRoutes: RouteRecordRaw[] = [
         }
       },
       {
+        path: "cluster",
+        component: () => import("@/pages/deploy/cluster.vue"),
+        name: "DeployCluster",
+        meta: {
+          title: "集群部署",
+          elIcon: "Grape",
+          keepAlive: false,
+          mode: "cluster"
+        }
+      },
+      {
         path: "control",
         component: () => import("@/pages/deploy/control.vue"),
         name: "DeployControl",
@@ -336,12 +363,12 @@ export const constantRoutes: RouteRecordRaw[] = [
       },
       {
         path: "tls",
-        component: () => import("@/pages/deploy/tls.vue"),
+        redirect: "/deploy/gost",
         name: "DeployTls",
         meta: {
           title: "TLS证书",
           elIcon: "Lock",
-          keepAlive: false
+          hidden: true
         }
       },
       {

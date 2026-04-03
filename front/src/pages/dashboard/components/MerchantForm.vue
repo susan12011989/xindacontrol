@@ -3,7 +3,6 @@ import type { FormInstance, FormRules } from "element-plus"
 import type { CreateOrEditMerchantRequestData, Merchant } from "../apis/type"
 import { request } from "@/http/axios"
 import { getCloudAccountList } from "@@/apis/cloud_account"
-import { checkPortAvailable, port2Enterprise } from "@@/apis/utils"
 import { cloneDeep } from "lodash-es"
 
 const props = defineProps<{
@@ -148,7 +147,6 @@ watch([
 // 表单校验规则
 const formRules: FormRules = {
   name: [{ required: true, message: "请输入商户名称", trigger: "blur" }],
-  port: [{ required: !props.merchant, message: "请输入端口", trigger: "blur" }],
   server_ip: [{ required: !props.merchant, message: "请输入服务器IP", trigger: "blur" }],
   expired_at: [{ required: true, message: "请选择服务过期时间", trigger: "blur" }]
 }
@@ -267,6 +265,40 @@ function updateTurnServer(val: string) {
   }
 }
 
+// 更新套餐配置 - TURN用户名
+function updateTurnUsername(val: string) {
+  if (localFormData.value) {
+    if (!localFormData.value.package_configuration) {
+      localFormData.value.package_configuration = {
+        dau_limit: 0,
+        register_limit: 0,
+        group_member_limit: 0,
+        turn_username: val
+      }
+    } else {
+      localFormData.value.package_configuration.turn_username = val
+    }
+    emit("update:formData", localFormData.value)
+  }
+}
+
+// 更新套餐配置 - TURN密码
+function updateTurnCredential(val: string) {
+  if (localFormData.value) {
+    if (!localFormData.value.package_configuration) {
+      localFormData.value.package_configuration = {
+        dau_limit: 0,
+        register_limit: 0,
+        group_member_limit: 0,
+        turn_credential: val
+      }
+    } else {
+      localFormData.value.package_configuration.turn_credential = val
+    }
+    emit("update:formData", localFormData.value)
+  }
+}
+
 // eslint-disable-next-line unused-imports/no-unused-vars
 function updateStatus(val: string | number | boolean | undefined) {
   if (localFormData.value && typeof val === "number") {
@@ -301,18 +333,6 @@ function updateAwsAccessKeySecret(val: string) {
   emit("update:formData", localFormData.value)
 }
 
-function updatePort(val: number | undefined) {
-  if (localFormData.value && typeof val === "number") {
-    localFormData.value.port = val
-    emit("update:formData", localFormData.value)
-    // 实时计算企业号
-    port2Enterprise({ port: val }).then(({ data }) => {
-      localFormData.value.no = data.enterprise
-      emit("update:formData", localFormData.value)
-    })
-    // 聚焦期间不校验；失焦后由 @blur 钩子校验
-  }
-}
 </script>
 
 <template>
@@ -332,18 +352,6 @@ function updatePort(val: number | undefined) {
     >
       <el-form-item label="商户名称" prop="name">
         <el-input v-model="localFormData.name" placeholder="请输入商户名称" @update:model-value="updateName" />
-      </el-form-item>
-
-      <el-form-item label="端口" prop="port">
-        <el-input-number
-          :model-value="localFormData.port || 0"
-          :min="1"
-          :max="65535"
-          :disabled="!!merchant"
-          @update:model-value="val => { if (!merchant) updatePort(val) }"
-          @blur="() => { if (!merchant) { const p = Number(localFormData.port || 0); if (p > 0) checkPortAvailable({ port: p }).catch(() => $message?.error(`端口 ${p - 1}/${p}/${p + 1} 已被占用`)) } }"
-        />
-        <span class="ml-2 text-gray-500">{{ merchant ? '编辑时不可修改端口' : '创建时将自动生成企业号' }}</span>
       </el-form-item>
 
       <el-form-item label="服务器IP" prop="server_ip">
@@ -424,6 +432,23 @@ function updatePort(val: number | undefined) {
         <div class="text-gray-500" style="font-size: 12px; margin-top: 4px;">
           用于音视频通话的TURN服务器，格式如：192.168.1.100:3478
         </div>
+      </el-form-item>
+
+      <el-form-item label="TURN用户名" prop="package_configuration.turn_username">
+        <el-input
+          :model-value="localFormData.package_configuration?.turn_username || ''"
+          placeholder="TURN服务器用户名"
+          @update:model-value="updateTurnUsername"
+        />
+      </el-form-item>
+
+      <el-form-item label="TURN密码" prop="package_configuration.turn_credential">
+        <el-input
+          :model-value="localFormData.package_configuration?.turn_credential || ''"
+          placeholder="TURN服务器密码"
+          show-password
+          @update:model-value="updateTurnCredential"
+        />
       </el-form-item>
 
       <el-divider content-position="left">

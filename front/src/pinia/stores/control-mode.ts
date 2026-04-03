@@ -17,7 +17,7 @@ export const useControlModeStore = defineStore("control-mode", () => {
         url: "control/mode",
         method: "get"
       })
-      mode.value = res.data.mode || "cluster"
+      mode.value = (res as any).data?.mode || res.mode || "cluster"
     } catch {
       // 接口不可用时默认多机模式（兼容旧版后端）
       mode.value = "cluster"

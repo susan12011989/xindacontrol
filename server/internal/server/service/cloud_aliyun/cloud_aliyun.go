@@ -26,6 +26,17 @@ func GetAccountBalance(merchantId int, cloudAccountId int64) (string, error) {
 	return "", errors.New("merchant_id或cloud_account_id必须提供一个")
 }
 
+// GetAccountBalanceDetail 查询阿里云账户余额详情
+func GetAccountBalanceDetail(merchantId int, cloudAccountId int64) (*aliyun.BalanceInfo, error) {
+	if cloudAccountId > 0 {
+		return aliyun.BalanceDetailByCloudAccount(cloudAccountId)
+	}
+	if merchantId > 0 {
+		return aliyun.BalanceDetail(merchantId)
+	}
+	return nil, errors.New("merchant_id或cloud_account_id必须提供一个")
+}
+
 // ECS实例相关服务
 
 // CreateEcsInstance 创建ECS实例

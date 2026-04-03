@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/aliyun/aliyun-oss-go-sdk/oss"
+	"github.com/zeromicro/go-zero/core/logx"
 )
 
 // NewOssClient 根据访问密钥创建 OSS 客户端
@@ -15,6 +16,11 @@ func NewOssClient(cloud *CloudAccountInfo, regionId string) (*oss.Client, error)
 		region = region[4:]
 	}
 	endpoint := fmt.Sprintf("oss-%s.aliyuncs.com", region)
+	akPrefix := cloud.AccessKey
+	if len(akPrefix) > 8 {
+		akPrefix = akPrefix[:8]
+	}
+	logx.Infof("[OSS] NewOssClient endpoint=%s, AK=%s..., SiteType=%s", endpoint, akPrefix, cloud.SiteType)
 	return oss.New(endpoint, cloud.AccessKey, cloud.AccessSecret)
 }
 
@@ -41,14 +47,17 @@ func GetOssBucket(merchantId int, cloudAccountId int64, regionId, bucket string)
 	if cloudAccountId > 0 {
 		cred, err = GetSystemCloudAccount(cloudAccountId)
 		if err != nil {
+			logx.Errorf("[OSS] GetOssBucket GetSystemCloudAccount(%d) err: %v", cloudAccountId, err)
 			return nil, err
 		}
 	} else {
 		cred, err = GetMerchantCloud(merchantId)
 		if err != nil {
+			logx.Errorf("[OSS] GetOssBucket GetMerchantCloud(%d) err: %v", merchantId, err)
 			return nil, err
 		}
 	}
+	logx.Infof("[OSS] GetOssBucket cloudAccountId=%d, merchantId=%d, regionId=%s, bucket=%s", cloudAccountId, merchantId, regionId, bucket)
 	client, err := NewOssClient(cred, regionId)
 	if err != nil {
 		return nil, err

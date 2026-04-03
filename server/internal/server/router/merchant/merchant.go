@@ -42,12 +42,21 @@ func Routes(ge gin.IRouter) {
 	merchantGroup.PUT("/oss-configs/:config_id", updateMerchantOssConfig)
 	merchantGroup.DELETE("/oss-configs/:config_id", deleteMerchantOssConfig)
 	merchantGroup.POST("/:id/check-oss-health", checkMerchantOssHealth)
+	merchantGroup.POST("/:id/oss-configs/import-from-targets", importOssFromTargets)
 
 	// 商户 GOST 服务器管理
 	merchantGroup.GET("/:id/gost-servers", listMerchantGostServers)
 	merchantGroup.POST("/:id/gost-servers", createMerchantGostServer)
 	merchantGroup.PUT("/gost-servers/:relation_id", updateMerchantGostServer)
 	merchantGroup.DELETE("/gost-servers/:relation_id", deleteMerchantGostServer)
+	merchantGroup.POST("/:id/gost-servers/reorder", reorderMerchantGostServers)
+
+	// 商户服务节点管理（单机/多机部署）
+	merchantGroup.GET("/:id/service-nodes", listServiceNodes)
+	merchantGroup.POST("/:id/service-nodes", createServiceNode)
+	merchantGroup.PUT("/service-nodes/:node_id", updateServiceNode)
+	merchantGroup.DELETE("/service-nodes/:node_id", deleteServiceNode)
+	merchantGroup.POST("/:id/switch-cluster", switchToClusterMode)
 
 	// 商户 GOST IP 同步到 OSS
 	merchantGroup.GET("/:id/gost-sync-status", getMerchantGostSyncStatus)
@@ -503,6 +512,40 @@ func deleteMerchantGostServer(c *gin.Context) {
 		return
 	}
 	result.GOK(c, nil)
+}
+
+// reorderMerchantGostServers 批量更新 GOST 服务器排序
+func reorderMerchantGostServers(c *gin.Context) {
+	var req struct {
+		// relation_id 列表，按优先级从高到低排列
+		Ids []int `json:"ids" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+	err := merchant.ReorderMerchantGostServers(req.Ids)
+	if err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, nil)
+}
+
+// importOssFromTargets 从工具页上传目标导入 OSS 配置
+func importOssFromTargets(c *gin.Context) {
+	merchantIdStr := c.Param("id")
+	merchantId, err := strconv.Atoi(merchantIdStr)
+	if err != nil {
+		result.GParamErr(c, err)
+		return
+	}
+	imported, err := merchant.ImportOssFromTargets(merchantId)
+	if err != nil {
+		result.GErr(c, err)
+		return
+	}
+	result.GOK(c, gin.H{"imported": imported})
 }
 
 // ========== 商户 GOST IP 同步 ==========

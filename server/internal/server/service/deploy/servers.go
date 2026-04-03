@@ -3,6 +3,7 @@ package deploy
 import (
 	"errors"
 	"fmt"
+	"server/internal/dbhelper"
 	"server/internal/server/model"
 	"server/internal/server/utils"
 	"server/pkg/dbs"
@@ -240,12 +241,27 @@ func CreateServer(req model.CreateServerReq) (int, error) {
 	return server.Id, nil
 }
 
-// enqueueGostServicesForMerchants 为指定系统服务器入队创建所有商户的转发任务
+// EnqueueGostServicesForMerchants 为指定系统服务器入队创建所有商户的转发任务（导出供 tunnel_deploy 调用）
 // forwardType: 1-加密转发 2-直连转发
+func EnqueueGostServicesForMerchants(serverHost string, forwardType int) {
+	enqueueGostServicesForMerchants(serverHost, forwardType)
+}
+
+// enqueueGostServicesForMerchants 为指定系统服务器入队创建关联商户的转发任务
+// 只处理通过 merchant_gost_servers 关联到该服务器的商户，不碰其他商户
 func enqueueGostServicesForMerchants(serverHost string, forwardType int) {
-	// 查询所有有效商户
+	// 先查出该服务器 ID
+	var server entity.Servers
+	has, err := dbs.DBAdmin.Where("host = ? AND server_type = 2", serverHost).Get(&server)
+	if err != nil || !has {
+		logx.Errorf("query server by host %s failed or not found", serverHost)
+		return
+	}
+
+	// 只查关联到该服务器的商户
 	var merchants []entity.Merchants
-	if err := dbs.DBAdmin.Where("status = 1 AND expired_at > ?", time.Now()).Find(&merchants); err != nil {
+	if err := dbs.DBAdmin.Where("status = 1 AND expired_at > ? AND id IN (SELECT merchant_id FROM merchant_gost_servers WHERE server_id = ? AND status = 1)",
+		time.Now(), server.Id).Find(&merchants); err != nil {
 		logx.Errorf("query merchants for gost service creation err: %+v", err)
 		return
 	}
@@ -255,13 +271,8 @@ func enqueueGostServicesForMerchants(serverHost string, forwardType int) {
 		return
 	}
 
-	// 检查该服务器是否启用了 TLS
-	var server entity.Servers
-	tlsEnabled := false
-	has, err := dbs.DBAdmin.Where("host = ? AND server_type = 2", serverHost).Get(&server)
-	if err == nil && has && server.TlsEnabled == 1 {
-		tlsEnabled = true
-	}
+	// 用已查到的 server 检查 TLS
+	tlsEnabled := server.TlsEnabled == 1
 
 	forwardTypeName := "encrypted"
 	if forwardType == entity.ForwardTypeDirect {
@@ -272,18 +283,29 @@ func enqueueGostServicesForMerchants(serverHost string, forwardType int) {
 	}
 
 	for _, m := range merchants {
+		tunnelIP := m.TunnelIP
+		// 如果商户没有 TunnelIP，尝试自动分配
+		if tunnelIP == "" {
+			allocated, allocErr := dbhelper.AllocateTunnelIPForMerchant(m.Id, server.Id)
+			if allocErr != nil {
+				logx.Errorf("auto allocate tunnel IP for merchant %d failed: %v", m.Id, allocErr)
+			} else {
+				tunnelIP = allocated
+			}
+		}
+
 		var err error
 		if forwardType == entity.ForwardTypeDirect {
 			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(serverHost, m.Port, m.ServerIP, m.TunnelIP)
+				err = gostapi.EnqueueCreateMerchantDirectForwardsWithTls(serverHost, m.Port, m.ServerIP, tunnelIP)
 			} else {
-				err = gostapi.EnqueueCreateMerchantDirectForwards(serverHost, m.Port, m.ServerIP, m.TunnelIP)
+				err = gostapi.EnqueueCreateMerchantDirectForwards(serverHost, m.Port, m.ServerIP, tunnelIP)
 			}
 		} else {
 			if tlsEnabled {
-				err = gostapi.EnqueueCreateMerchantForwardsWithTls(serverHost, m.Port, m.ServerIP, m.TunnelIP)
+				err = gostapi.EnqueueCreateMerchantForwardsWithTls(serverHost, m.Port, m.ServerIP, tunnelIP)
 			} else {
-				err = gostapi.EnqueueCreateMerchantForwards(serverHost, m.Port, m.ServerIP, m.TunnelIP)
+				err = gostapi.EnqueueCreateMerchantForwards(serverHost, m.Port, m.ServerIP, tunnelIP)
 			}
 		}
 		if err != nil {

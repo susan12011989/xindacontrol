@@ -194,6 +194,14 @@ export interface AwsModifyEc2InstanceReq {
   security_group_ids?: string[]
 }
 
+export interface AwsResizeEc2InstanceReq {
+  merchant_id?: number
+  cloud_account_id?: number
+  region_id: string
+  instance_id: string
+  new_instance_type: string
+}
+
 export interface AwsResizeVolumeReq {
   merchant_id?: number
   cloud_account_id?: number

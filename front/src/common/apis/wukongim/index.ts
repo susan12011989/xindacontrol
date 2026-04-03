@@ -4,6 +4,14 @@ import { request } from "@/http/axios"
 
 // ========== WuKongIM 监控 ==========
 
+/** 获取可用的 WuKongIM 节点列表 */
+export function getWuKongIMNodes() {
+  return request<ApiResponseData<WuKongIM.WuKongIMNode[]>>({
+    url: "wukongim/nodes",
+    method: "get"
+  })
+}
+
 /** 获取系统变量（连接数/CPU/内存/消息量） */
 export function getWuKongIMVarz(server_id: number) {
   return request<WuKongIM.WuKongIMVarzResponseData>({

@@ -57,6 +57,7 @@ type AwsAllocateEipReq struct {
 	MerchantId     int    `json:"merchant_id"`
 	CloudAccountId int64  `json:"cloud_account_id"`
 	RegionId       string `json:"region_id" binding:"required"`
+	Address        string `json:"address"` // 可选：指定要恢复的 IP 地址
 }
 
 // EC2 实例详情
@@ -200,6 +201,15 @@ type AwsModifyEc2InstanceReq struct {
 	Description      string            `json:"description"`
 	Tags             map[string]string `json:"tags"`
 	SecurityGroupIds []string          `json:"security_group_ids"`
+}
+
+// EC2 实例变配（修改实例类型）
+type AwsResizeEc2InstanceReq struct {
+	MerchantId      int    `json:"merchant_id"`
+	CloudAccountId  int64  `json:"cloud_account_id"`
+	RegionId        string `json:"region_id" binding:"required"`
+	InstanceId      string `json:"instance_id" binding:"required"`
+	NewInstanceType string `json:"new_instance_type" binding:"required"`
 }
 
 // 扩容（修改）EBS 卷容量并可选在实例内扩展文件系统

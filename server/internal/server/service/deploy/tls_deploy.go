@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"strings"
 	"server/internal/server/model"
 	"server/pkg/dbs"
 	"server/pkg/entity"
@@ -135,6 +136,11 @@ func pushCertsToServer(server entity.Servers, caCert, serverCert entity.TlsCerti
 	}
 	defer client.Close()
 
+	// 修复 PEM 内容：DB 中可能存储了字面 \n 转义符，需要转为真实换行
+	fixPem := func(s string) string {
+		return strings.ReplaceAll(s, `\n`, "\n")
+	}
+
 	// 创建目录 + 写入证书文件
 	script := fmt.Sprintf(`#!/bin/bash
 set -e
@@ -156,9 +162,9 @@ CERTEOF
 $SUDO chmod 600 %s/server.key
 echo "证书部署完成"
 `, certRemotePath,
-		certRemotePath, caCert.CertPem,
-		certRemotePath, serverCert.CertPem,
-		certRemotePath, serverCert.KeyPem,
+		certRemotePath, fixPem(caCert.CertPem),
+		certRemotePath, fixPem(serverCert.CertPem),
+		certRemotePath, fixPem(serverCert.KeyPem),
 		certRemotePath)
 
 	session, err := client.NewSession()
@@ -178,15 +184,16 @@ echo "证书部署完成"
 // upgradeGostListenerToTls 通过 GOST API 将所有 tcp listener 改为 tls，
 // 同时修复已经是 tls 但缺少证书路径的 listener
 func upgradeGostListenerToTls(serverIP string) error {
-	config, err := gostapi.GetConfig(serverIP, "")
+	// 用 GetServiceList 获取完整服务列表（含动态创建的）
+	svcList, err := gostapi.GetServiceList(serverIP)
 	if err != nil {
-		return fmt.Errorf("获取 GOST 配置失败: %v", err)
+		return fmt.Errorf("获取 GOST 服务列表失败: %v", err)
 	}
 
 	expectedCert := certRemotePath + "/server.crt"
 	expectedKey := certRemotePath + "/server.key"
 
-	for _, svc := range config.Services {
+	for _, svc := range svcList.List {
 		if svc.Listener == nil || svc.Handler == nil {
 			continue
 		}

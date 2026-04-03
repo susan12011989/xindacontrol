@@ -4,7 +4,7 @@ import type { Instance, InstanceBindingResp, InstanceItem } from "@/pages/cloud/
 import type { Merchant, MerchantRegions } from "@/pages/dashboard/apis/type"
 import type { CloudAccountOption } from "@@/apis/cloud_account/type"
 import { regionListApi } from "@/pages/cloud/aliyun/apis"
-import { bindInstanceMerchant, createSecondaryNic, getInstanceList, modifyInstanceAttribute, modifyInstanceChargeTypePostPaid, operateInstance, registerInstanceWithSSHKey, unbindInstanceMerchant } from "@/pages/cloud/aliyun/instances/apis"
+import { bindInstanceMerchant, createSecondaryNic, deployTunnelServer, getInstanceList, modifyInstanceAttribute, modifyInstanceChargeTypePostPaid, operateInstance, registerInstanceWithSSHKey, unbindInstanceMerchant } from "@/pages/cloud/aliyun/instances/apis"
 import { getSecurityGroupList } from "@/pages/cloud/aliyun/securitygroup/apis"
 import { merchantQueryApi } from "@/pages/dashboard/apis"
 import { getCloudAccountOptions } from "@@/apis/cloud_account"
@@ -68,6 +68,20 @@ const allMerchantList = ref<Merchant[]>([])
 const createNicDialogVisible = ref(false)
 const createNicLoading = ref(false)
 const createNicOutput = ref("")
+
+// 一键部署隧道服务器
+const tunnelDeployDialogVisible = ref(false)
+const tunnelDeployFormVisible = ref(true)
+const tunnelDeployLoading = ref(false)
+const tunnelDeployOutput = ref("")
+const tunnelDeployResults = ref<any[]>([])
+const tunnelDeployForm = reactive({
+  server_name: "",
+  server_count: 1,
+  instance_type: "ecs.t5.large",
+  bandwidth: "10",
+  eip_count: 4
+})
 
 // 修改表单规则
 const modifyFormRules = {
@@ -744,6 +758,72 @@ function handleCreateSecondaryNic() {
   )
 }
 
+// ========== 一键部署隧道服务器 ==========
+function openTunnelDeployDialog() {
+  if (!selectedCloudAccount.value) {
+    ElMessage.warning("请先选择云账号")
+    return
+  }
+  if (selectedRegions.value.length === 0) {
+    ElMessage.warning("请先选择地域")
+    return
+  }
+  tunnelDeployDialogVisible.value = true
+  tunnelDeployFormVisible.value = true
+  tunnelDeployOutput.value = ""
+  tunnelDeployResults.value = []
+}
+
+function handleTunnelDeploy() {
+  if (!tunnelDeployForm.server_name) {
+    ElMessage.warning("请填写服务器名称")
+    return
+  }
+  tunnelDeployFormVisible.value = false
+  tunnelDeployLoading.value = true
+  tunnelDeployOutput.value = "开始部署隧道服务器...\n"
+
+  deployTunnelServer(
+    {
+      cloud_account_id: selectedCloudAccount.value!,
+      region_id: selectedRegions.value[0],
+      server_name: tunnelDeployForm.server_name,
+      server_count: tunnelDeployForm.server_count,
+      instance_type: tunnelDeployForm.instance_type,
+      bandwidth: tunnelDeployForm.bandwidth,
+      eip_count: tunnelDeployForm.eip_count
+    },
+    (output, isComplete, results) => {
+      if (output) {
+        tunnelDeployOutput.value += `${output}\n`
+      }
+      if (results) {
+        tunnelDeployResults.value = results
+      }
+      if (isComplete) {
+        tunnelDeployLoading.value = false
+        ElMessage.success("隧道服务器部署完成")
+        setTimeout(() => fetchInstanceList(), 1000)
+      }
+    },
+    (error) => {
+      tunnelDeployOutput.value += `部署失败: ${error.message || JSON.stringify(error)}\n`
+      tunnelDeployLoading.value = false
+      ElMessage.error("部署失败")
+    }
+  )
+}
+
+function downloadPrivateKey(serverName: string, privateKey: string) {
+  const blob = new Blob([privateKey], { type: "text/plain" })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `${serverName}.pem`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 // 创建服务器
 async function handleCreateServer(instance: Instance) {
   // 收集所有公网IP
@@ -1102,6 +1182,13 @@ onMounted(() => {
           @click="goToCreatePage"
         >
           创建实例
+        </el-button>
+        <el-button
+          type="warning"
+          :disabled="!selectedCloudAccount || selectedRegions.length === 0"
+          @click="openTunnelDeployDialog"
+        >
+          一键部署隧道
         </el-button>
       </div>
     </el-card>
@@ -1483,6 +1570,65 @@ onMounted(() => {
         <el-button type="primary" :loading="bindMerchantLoading" @click="handleBindMerchant">
           确定
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 一键部署隧道服务器对话框 -->
+    <el-dialog
+      v-model="tunnelDeployDialogVisible"
+      title="一键部署隧道服务器"
+      width="650px"
+      destroy-on-close
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+    >
+      <!-- 表单 -->
+      <el-form v-if="tunnelDeployFormVisible" label-width="120px">
+        <el-form-item label="服务器名称">
+          <el-input v-model="tunnelDeployForm.server_name" placeholder="如: gost-hk" />
+        </el-form-item>
+        <el-form-item label="服务器数量">
+          <el-input-number v-model="tunnelDeployForm.server_count" :min="1" :max="10" />
+        </el-form-item>
+        <el-form-item label="实例规格">
+          <el-input v-model="tunnelDeployForm.instance_type" placeholder="ecs.t5.large" />
+        </el-form-item>
+        <el-form-item label="EIP 带宽(Mbps)">
+          <el-input v-model="tunnelDeployForm.bandwidth" placeholder="10" />
+        </el-form-item>
+        <el-form-item label="每台 EIP 数量">
+          <el-input-number v-model="tunnelDeployForm.eip_count" :min="1" :max="10" />
+        </el-form-item>
+        <el-form-item label="地域">
+          <span>{{ selectedRegions[0] }}</span>
+        </el-form-item>
+        <el-form-item label="计费方式">
+          <span>按量付费</span>
+        </el-form-item>
+      </el-form>
+
+      <!-- 进度输出 -->
+      <div v-if="!tunnelDeployFormVisible" v-loading="tunnelDeployLoading" class="output-container">
+        <pre>{{ tunnelDeployOutput }}</pre>
+      </div>
+
+      <!-- 部署结果：SSH 私钥下载 -->
+      <div v-if="tunnelDeployResults.length > 0" style="margin-top: 12px;">
+        <el-alert type="warning" :closable="false" style="margin-bottom: 8px;">
+          <template #title>请立即下载 SSH 私钥，关闭后无法再次获取</template>
+        </el-alert>
+        <div v-for="r in tunnelDeployResults" :key="r.instance_id" style="margin-bottom: 8px;">
+          <el-button type="primary" size="small" @click="downloadPrivateKey(r.server_name, r.private_key)">
+            下载 {{ r.server_name }}.pem
+          </el-button>
+          <span style="margin-left: 8px; color: #999;">IP: {{ r.public_ip }}, EIPs: {{ r.eips?.join(', ') }}</span>
+        </div>
+      </div>
+
+      <template #footer>
+        <el-button v-if="tunnelDeployFormVisible" @click="tunnelDeployDialogVisible = false">取消</el-button>
+        <el-button v-if="tunnelDeployFormVisible" type="primary" @click="handleTunnelDeploy">开始部署</el-button>
+        <el-button v-if="!tunnelDeployFormVisible" :disabled="tunnelDeployLoading" @click="tunnelDeployDialogVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 

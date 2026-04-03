@@ -68,30 +68,41 @@ func Serve(ctx context.Context) {
 	gostMonitor.Start()
 	defer gostMonitor.Stop()
 
-	// 自动创建表：公告发送日志
-	_ = dbs.DBAdmin.Sync2(new(entity.AnnouncementLogs))
-	// 自动创建表：功能开关
-	_ = dbs.DBAdmin.Sync2(new(entity.FeatureFlags))
-	// 自动创建表：IP嵌入上传目标
-	_ = dbs.DBAdmin.Sync2(new(entity.IpEmbedTargets))
-	// 自动创建表：IP嵌入选择记录
-	_ = dbs.DBAdmin.Sync2(new(entity.IpEmbedSelections))
-	// 自动创建表：客户端管理
-	_ = dbs.DBAdmin.Sync2(new(entity.Clients))
-	// 自动创建表：操作审计日志
-	_ = dbs.DBAdmin.Sync2(new(entity.AuditLogs))
-	// 自动创建表：告警规则和日志
-	_ = dbs.DBAdmin.Sync2(new(entity.AlertRules))
-	_ = dbs.DBAdmin.Sync2(new(entity.AlertLogs))
-	// 自动创建表：资源标签
-	_ = dbs.DBAdmin.Sync2(new(entity.ResourceTags))
-	_ = dbs.DBAdmin.Sync2(new(entity.ResourceTagRelations))
-	// 自动创建表：资源分组
-	_ = dbs.DBAdmin.Sync2(new(entity.ResourceGroups))
-	// 同步 Servers 表结构（新增字段自动加列）
-	_ = dbs.DBAdmin.Sync2(new(entity.Servers))
-	// 自动创建表：隧道连接统计记录
-	_ = dbs.DBAdmin.Sync2(new(entity.TunnelStatsRecord))
+	// 自动同步所有数据库表（不存在则创建，字段变更则自动加列）
+	autoSyncTables := []interface{}{
+		new(entity.AdminUsers),
+		new(entity.Merchants),
+		new(entity.Servers),
+		new(entity.CloudAccounts),
+		new(entity.TlsCertificates),
+		new(entity.DeployConfigs),
+		new(entity.DeployHistory),
+		new(entity.DockerOperationHistory),
+		new(entity.AnnouncementLogs),
+		new(entity.TunnelStatsRecord),
+		new(entity.GlobalOssUrl),
+		new(entity.Clients),
+		new(entity.IpEmbedSelections),
+		new(entity.IpEmbedTargets),
+		new(entity.FeatureFlags),
+		new(entity.MerchantOssConfigs),
+		new(entity.MerchantGostServers),
+		new(entity.AuditLogs),
+		new(entity.AlertRules),
+		new(entity.AlertLogs),
+		new(entity.Projects),
+		new(entity.ProjectGostServers),
+		new(entity.MerchantStorageConfigs),
+		new(entity.ResourceTags),
+		new(entity.ResourceTagRelations),
+		new(entity.ResourceGroups),
+		new(entity.CloudInstanceBindings),
+	}
+	for _, table := range autoSyncTables {
+		if err := dbs.DBAdmin.Sync2(table); err != nil {
+			logx.Errorf("Sync table failed: %v", err)
+		}
+	}
 	// http api
 	ge := gin.Default()
 

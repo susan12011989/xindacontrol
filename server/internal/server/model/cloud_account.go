@@ -58,6 +58,24 @@ type QueryCloudAccountsResponse struct {
 	Total int                `json:"total"`
 }
 
+// 批量查询余额请求
+type BatchBalanceReq struct {
+	CloudType string `json:"cloud_type" form:"cloud_type"` // 云类型: aliyun, tencent（不传则查全部）
+}
+
+// 批量查询余额 - 单条结果
+type BatchBalanceItem struct {
+	AccountId    int64  `json:"account_id"`
+	AccountName  string `json:"account_name"`
+	CloudType    string `json:"cloud_type"`
+	SiteType     string `json:"site_type"`
+	MerchantName string `json:"merchant_name"`
+	Balance      string `json:"balance"`      // 统一显示的余额金额（现金余额）
+	Currency     string `json:"currency"`      // 币种
+	CreditAmount string `json:"credit_amount"` // 信用额度（阿里云有）
+	Error        string `json:"error"`         // 查询失败时的错误信息
+}
+
 // 云账号选项（用于下拉框）
 type CloudAccountOption struct {
 	Value int64  `json:"value"` // id

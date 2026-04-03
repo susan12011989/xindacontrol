@@ -1,8 +1,8 @@
 <script lang="ts" setup>
-import type { CloudAccountResp } from "@@/apis/cloud_account/type"
+import type { BatchBalanceItem, CloudAccountResp } from "@@/apis/cloud_account/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
 import { getBillingCostUsage } from "@@/apis/aws"
-import { createCloudAccount, deleteCloudAccount, getAliyunBalance, getCloudAccountList, getTencentBalance, updateCloudAccount } from "@@/apis/cloud_account"
+import { createCloudAccount, deleteCloudAccount, getAliyunBalance, getBatchBalance, getCloudAccountList, getTencentBalance, updateCloudAccount } from "@@/apis/cloud_account"
 import { getMerchantList } from "@@/apis/merchant"
 import { getAwsRegions } from "@@/constants/aws-regions"
 
@@ -396,7 +396,7 @@ const crudStore = reactive({
 // 余额弹窗状态（阿里云）
 const balanceDialogVisible = ref(false)
 const balanceDialogLoading = ref(false)
-const balanceDialogValue = ref<string>("")
+const balanceDialogData = ref<any>(null)
 
 // 腾讯云余额弹窗
 const tencentBalanceDialog = reactive({
@@ -406,17 +406,16 @@ const tencentBalanceDialog = reactive({
 })
 
 function buildBalanceParams(row: CloudAccountResp) {
-  return row.account_type === "merchant" && row.merchant_id
-    ? { merchant_id: row.merchant_id }
-    : { cloud_account_id: row.id }
+  return { cloud_account_id: row.id }
 }
 
 function onShowBalance(row: CloudAccountResp) {
   if (row.cloud_type === "aliyun") {
     balanceDialogVisible.value = true
     balanceDialogLoading.value = true
+    balanceDialogData.value = null
     getAliyunBalance(buildBalanceParams(row)).then((res) => {
-      balanceDialogValue.value = res.data.balance
+      balanceDialogData.value = res.data
     }).finally(() => {
       balanceDialogLoading.value = false
     })
@@ -589,6 +588,53 @@ function getCloudTypeText(type: string) {
   }
   return map[type] || type
 }
+
+// ========== 批量查余额 ==========
+const batchBalanceDialog = reactive({
+  visible: false,
+  loading: false,
+  cloudType: "", // 筛选：云类型
+  balanceThreshold: undefined as number | undefined, // 筛选：余额低于
+  allData: [] as BatchBalanceItem[],
+})
+
+// 计算属性：根据阈值过滤后的数据
+const batchBalanceFilteredData = computed(() => {
+  let data = batchBalanceDialog.allData
+  if (batchBalanceDialog.balanceThreshold !== undefined && batchBalanceDialog.balanceThreshold !== undefined) {
+    data = data.filter((item) => {
+      if (item.error) return true // 有错误的始终显示
+      const bal = Number.parseFloat(item.balance)
+      return !Number.isNaN(bal) && bal < batchBalanceDialog.balanceThreshold!
+    })
+  }
+  return data
+})
+
+function onOpenBatchBalance() {
+  batchBalanceDialog.visible = true
+  batchBalanceDialog.balanceThreshold = undefined
+  onFetchBatchBalance()
+}
+
+async function onFetchBatchBalance() {
+  batchBalanceDialog.loading = true
+  batchBalanceDialog.allData = []
+  try {
+    const { data } = await getBatchBalance({
+      cloud_type: batchBalanceDialog.cloudType || undefined
+    })
+    batchBalanceDialog.allData = data || []
+  } finally {
+    batchBalanceDialog.loading = false
+  }
+}
+
+function getSiteTypeText(cloudType: string, siteType: string) {
+  if (cloudType === "aliyun") return siteType === "intl" ? "国际站" : "国内站"
+  if (cloudType === "tencent") return siteType === "intl" ? "国际站" : "国内站"
+  return "-"
+}
 </script>
 
 <template>
@@ -599,6 +645,9 @@ function getCloudTypeText(type: string) {
       <template #toolbar-btns>
         <vxe-button status="primary" icon="vxe-icon-add" @click="crudStore.onShowModal()">
           新增云账号
+        </vxe-button>
+        <vxe-button status="warning" @click="onOpenBatchBalance">
+          批量查余额
         </vxe-button>
       </template>
 
@@ -663,11 +712,20 @@ function getCloudTypeText(type: string) {
     </vxe-modal>
 
     <!-- 阿里云余额弹窗 -->
-    <el-dialog v-model="balanceDialogVisible" title="阿里云账户余额" width="360px">
-      <div style="min-height: 60px; display: flex; align-items: center;">
-        <el-skeleton v-if="balanceDialogLoading" :rows="1" animated />
-        <div v-else>余额：<b>{{ balanceDialogValue || '-' }}</b></div>
+    <el-dialog v-model="balanceDialogVisible" title="阿里云账户余额" width="450px">
+      <div v-if="balanceDialogLoading" style="min-height: 120px">
+        <el-skeleton :rows="3" animated />
       </div>
+      <div v-else-if="balanceDialogData">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="现金余额">
+            <span style="font-size: 18px; font-weight: bold; color: #409eff">{{ balanceDialogData.available_cash_amount || '0' }} {{ balanceDialogData.currency || '' }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="信用额度">{{ balanceDialogData.credit_amount || '0' }} {{ balanceDialogData.currency || '' }}</el-descriptions-item>
+          <el-descriptions-item label="可用额度（含信用）">{{ balanceDialogData.available_amount || '0' }} {{ balanceDialogData.currency || '' }}</el-descriptions-item>
+        </el-descriptions>
+      </div>
+      <div v-else>查询失败</div>
       <template #footer>
         <el-button @click="balanceDialogVisible = false">关闭</el-button>
       </template>
@@ -788,6 +846,85 @@ function getCloudTypeText(type: string) {
       </div>
       <template #footer>
         <el-button @click="awsBillingDialog.visible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量查余额弹窗 -->
+    <el-dialog v-model="batchBalanceDialog.visible" title="批量查询云账号余额" width="980px">
+      <div class="mb-3 flex gap-2 items-center flex-wrap">
+        <el-select v-model="batchBalanceDialog.cloudType" placeholder="全部云类型" clearable style="width: 160px" @change="onFetchBatchBalance">
+          <el-option label="阿里云" value="aliyun" />
+          <el-option label="腾讯云" value="tencent" />
+        </el-select>
+        <el-input-number
+          v-model="batchBalanceDialog.balanceThreshold"
+          :precision="2"
+          placeholder="余额低于..."
+          :controls="false"
+          style="width: 180px"
+        />
+        <span v-if="batchBalanceDialog.balanceThreshold !== undefined" class="text-sm text-gray-500">
+          筛选余额低于 {{ batchBalanceDialog.balanceThreshold }} 的账号
+        </span>
+        <el-button type="primary" :loading="batchBalanceDialog.loading" @click="onFetchBatchBalance">刷新</el-button>
+      </div>
+      <div v-if="batchBalanceDialog.loading" style="min-height: 200px">
+        <el-skeleton :rows="6" animated />
+      </div>
+      <div v-else>
+        <div class="mb-2 text-sm text-gray-500">
+          共 {{ batchBalanceDialog.allData.length }} 个账号，当前显示 {{ batchBalanceFilteredData.length }} 条
+        </div>
+        <el-table :data="batchBalanceFilteredData" height="520" border>
+          <el-table-column prop="account_name" label="账号名称" min-width="160" />
+          <el-table-column label="云类型" width="100">
+            <template #default="{ row }">
+              <el-tag :type="getCloudTypeTag(row.cloud_type)" size="small">{{ getCloudTypeText(row.cloud_type) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="站点" width="90">
+            <template #default="{ row }">
+              <el-tag :type="row.site_type === 'intl' ? 'warning' : 'success'" size="small">{{ getSiteTypeText(row.cloud_type, row.site_type) }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="商户" width="140">
+            <template #default="{ row }">
+              <span v-if="row.merchant_name">{{ row.merchant_name }}</span>
+              <el-tag v-else type="info" size="small">系统</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="可用余额" width="160" sortable :sort-method="(a: any, b: any) => parseFloat(a.balance || '0') - parseFloat(b.balance || '0')">
+            <template #default="{ row }">
+              <span v-if="row.error" class="text-red-500">查询失败</span>
+              <span v-else style="font-weight: bold" :style="{ color: parseFloat(row.balance) < 100 ? '#f56c6c' : '#409eff' }">
+                {{ row.balance || '0' }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="信用额度" width="120">
+            <template #default="{ row }">
+              {{ row.credit_amount || '-' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="币种" width="120">
+            <template #default="{ row }">
+              {{ row.currency || '-' }}
+            </template>
+          </el-table-column>
+          <el-table-column label="状态" width="120">
+            <template #default="{ row }">
+              <el-tag v-if="row.error" type="danger" size="small">
+                <el-tooltip :content="row.error" placement="top">
+                  <span>失败</span>
+                </el-tooltip>
+              </el-tag>
+              <el-tag v-else type="success" size="small">正常</el-tag>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+      <template #footer>
+        <el-button @click="batchBalanceDialog.visible = false">关闭</el-button>
       </template>
     </el-dialog>
   </div>

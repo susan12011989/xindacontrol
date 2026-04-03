@@ -361,21 +361,30 @@ func OperateAddress(acc *entity.CloudAccounts, req model.AwsOperateEipReq) error
 	return err
 }
 
-func AllocateAddress(acc *entity.CloudAccounts, region string) (string, error) {
+func AllocateAddress(acc *entity.CloudAccounts, region string, address string) (string, string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cli, err := awscloud.NewEc2Client(ctx, acc, region)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	out, err := cli.AllocateAddress(ctx, &ec2.AllocateAddressInput{Domain: ec2types.DomainTypeVpc})
+	input := &ec2.AllocateAddressInput{Domain: ec2types.DomainTypeVpc}
+	if address != "" {
+		input.Address = &address
+	}
+	out, err := cli.AllocateAddress(ctx, input)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	if out.AllocationId == nil {
-		return "", nil
+	allocId := ""
+	publicIp := ""
+	if out.AllocationId != nil {
+		allocId = *out.AllocationId
 	}
-	return *out.AllocationId, nil
+	if out.PublicIp != nil {
+		publicIp = *out.PublicIp
+	}
+	return allocId, publicIp, nil
 }
 
 // DescribeInstance 返回单个实例的核心详情（用于 EIP 详情展示）
@@ -1089,7 +1098,8 @@ func OpenRequiredPortsForSecurityGroups(ctx context.Context, cli *ec2.Client, se
 		requiredPorts = append(requiredPorts, PortRange{port, port}) // 指定端口
 	} else {
 		requiredPorts = append(requiredPorts, PortRange{22, 22})       // SSH
-		requiredPorts = append(requiredPorts, PortRange{82, 82})       // Web 前端
+		requiredPorts = append(requiredPorts, PortRange{80, 80})       // HTTP（nginx 统一入口，host 网络模式必需）
+		requiredPorts = append(requiredPorts, PortRange{82, 82})       // Web 前端（旧端口，兼容）
 		requiredPorts = append(requiredPorts, PortRange{8090, 8090})   // TSDD API
 		requiredPorts = append(requiredPorts, PortRange{6979, 6979})   // TSDD gRPC
 		requiredPorts = append(requiredPorts, PortRange{5001, 5002})   // WuKongIM API + tsdd-server HTTP
@@ -1098,7 +1108,9 @@ func OpenRequiredPortsForSecurityGroups(ctx context.Context, cli *ec2.Client, se
 		requiredPorts = append(requiredPorts, PortRange{5300, 5300})   // WuKongIM Manager
 		requiredPorts = append(requiredPorts, PortRange{8080, 8080})   // nginx 路径分发 (V2)
 		requiredPorts = append(requiredPorts, PortRange{10010, 10010}) // GOST TCP relay (V2)
-		requiredPorts = append(requiredPorts, PortRange{10443, 10443}) // GOST 统一入口 relay (V2)
+		requiredPorts = append(requiredPorts, PortRange{10443, 10443}) // GOST IM relay (V3)
+		requiredPorts = append(requiredPorts, PortRange{10080, 10080}) // GOST HTTP relay (V3)
+		requiredPorts = append(requiredPorts, PortRange{10800, 10800}) // GOST File relay (V3)
 		requiredPorts = append(requiredPorts, PortRange{9394, 9394})   // GOST API
 		requiredPorts = append(requiredPorts, PortRange{9000, 9000})   // MinIO S3
 		requiredPorts = append(requiredPorts, PortRange{443, 443})     // TLS 统一入口 (V2)
@@ -1686,6 +1698,29 @@ func GetInstancePublicIP(acc *entity.CloudAccounts, region, instanceId string) (
 		}
 	}
 	return ip, nil
+}
+
+// GetInstancePrivateIP 获取实例内网 IP
+func GetInstancePrivateIP(acc *entity.CloudAccounts, region, instanceId string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cli, err := awscloud.NewEc2Client(ctx, acc, region)
+	if err != nil {
+		return "", err
+	}
+
+	out, err := cli.DescribeInstances(ctx, &ec2.DescribeInstancesInput{InstanceIds: []string{instanceId}})
+	if err != nil {
+		return "", err
+	}
+
+	if len(out.Reservations) == 0 || len(out.Reservations[0].Instances) == 0 {
+		return "", errors.New("实例不存在")
+	}
+
+	ins := out.Reservations[0].Instances[0]
+	return deref(ins.PrivateIpAddress), nil
 }
 
 // WaitForInstanceRunning 等待实例变为 running 状态

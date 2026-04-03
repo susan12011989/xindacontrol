@@ -70,6 +70,7 @@ func Authorization(ctx *gin.Context) {
 	ctx.Set("uid", tokenInfo.UserID)
 	ctx.Set("tid", tokenInfo.TokenID)
 	ctx.Set("username", tokenInfo.Username)
+	ctx.Set("role", tokenInfo.Role)
 	ctx.Set("prefix", tokenInfo.Prefix)
 	ctx.Set("two_fa", tokenInfo.TwoFA)
 }
@@ -107,9 +108,21 @@ func SuperAdminOnly(ctx *gin.Context) {
 // NoDestructiveOps 禁止删除/销毁类操作（用于 maintainer 角色）
 // maintainer 可以查看和修改，但不能删除
 func NoDestructiveOps(ctx *gin.Context) {
-	uid := ctx.GetInt64("uid")
-	// 超管不受限制
-	if uid == 1 {
+	// 此中间件在 Authorization 之前执行，需要先解析 token 获取用户信息
+	parts := strings.Split(ctx.GetHeader("Authorization"), " ")
+	if len(parts) != 2 || parts[1] == "" {
+		// 未认证请求，跳过（由各路由的 Authorization 中间件处理）
+		ctx.Next()
+		return
+	}
+	tokenInfo, err := token_manager.ValidateToken(parts[1])
+	if err != nil {
+		// token 无效，跳过（由各路由的 Authorization 中间件处理）
+		ctx.Next()
+		return
+	}
+	// 超管或 admin 角色不受限制
+	if tokenInfo.UserID == 1 || tokenInfo.Role == "admin" {
 		ctx.Next()
 		return
 	}

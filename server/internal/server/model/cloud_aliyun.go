@@ -267,6 +267,19 @@ type OssSetBucketPublicReq struct {
 	Public         bool   `json:"public"` // true=公开读，false=私有
 }
 
+// ========== 一键部署隧道服务器 ==========
+
+// DeployTunnelServerReq 一键部署隧道服务器请求
+type DeployTunnelServerReq struct {
+	CloudAccountId int64  `json:"cloud_account_id" binding:"required"` // 云账号ID
+	RegionId       string `json:"region_id" binding:"required"`        // 地域
+	ServerName     string `json:"server_name" binding:"required"`      // 服务器名称
+	ServerCount    int    `json:"server_count" binding:"required"`     // 服务器数量
+	InstanceType   string `json:"instance_type" binding:"required"`    // 实例规格
+	Bandwidth      string `json:"bandwidth" binding:"required"`        // EIP 带宽 (Mbps)
+	EipCount       int    `json:"eip_count" binding:"required"`        // 每台服务器的 EIP 数量
+}
+
 // OSS 删除对象请求
 type OssDeleteObjectReq struct {
 	MerchantId     int    `json:"merchant_id"`

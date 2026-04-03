@@ -31,6 +31,7 @@ const filterByMode = (routes: any[]) => {
   return routes.filter(item => {
     if (item.meta?.hidden) return false
     if (item.meta?.mode === "cluster" && controlModeStore.isLocal) return false
+    if (item.meta?.mode === "local" && controlModeStore.isCluster) return false
     // 递归过滤子路由
     if (item.children) {
       item.children = filterByMode(item.children)

@@ -18,49 +18,38 @@ const (
 	// GostAPIPort GOST API 端口
 	GostAPIPort = "9394"
 
-	// ========== V2 端口架构 ==========
-	// 设计原则：443 为核心入口，nginx 路径分发，每商户最少端口
+	// ========== V3 端口架构 ==========
+	// 设计原则：每商户独占一台 GOST 系统服务器，固定 3 端口直转，无 nginx
 	//
 	// 完整链路：
-	//   App → 系统服务器:443 (TLS) → relay+tls → 商户:10443 → nginx:8080 → 业务程序
-	//   PC  → 系统服务器:BASE_PORT (TCP) → relay+tls → 商户:10010 → WuKongIM:5110
+	//   App → GOST系统服务器:443  → relay+tls → 商户GOST:10443 → WuKongIM TCP:5100 (TCP+TLS)
+	//   App → GOST系统服务器:80   → relay+tls → 商户GOST:10080 → tsdd-server:8090 (HTTP API)
+	//   App → GOST系统服务器:8080 → relay+tls → 商户GOST:10800 → MinIO:9000 (文件)
 	//
-	// 商户服务器只暴露 2 个端口：10443(统一入口) + 10010(TCP长连接)
-	// 系统服务器每商户只需 1 个端口(TCP) + 443 共享
+	// 商户服务器暴露 3 个 GOST 端口：10443 + 10080 + 10800
+	// 系统服务器固定 3 个端口：443 + 80 + 8080（每商户独占一台，不需要 bindIP）
 
-	// --- 系统服务器端口 ---
+	// --- 系统服务器端口（客户端连接的端口） ---
 
-	// SystemUnifiedPort 系统服务器统一入口（TLS，所有客户端共享）
-	// nginx TLS 终结后按路径分发：/ws → WuKongIM, /api/ → tsdd-server, /s3/ → MinIO
-	SystemUnifiedPort = 443
+	SystemPortIM   = 443  // IM TCP+TLS 长连接
+	SystemPortHTTP = 80   // HTTP API（登录/好友/群组等）
+	SystemPortFile = 8080 // 文件上传下载
 
 	// --- 商户服务器 GOST 监听端口（接收系统服务器转发） ---
 
-	// MerchantUnifiedPort 商户统一入口（relay+tls → nginx 路径分发）
-	// 承载 WebSocket + HTTP API + MinIO S3 三合一
-	MerchantUnifiedPort = 10443
+	MerchantGostPortIM   = 10443 // → WuKongIM TCP:5100
+	MerchantGostPortHTTP = 10080 // → tsdd-server:8090 (HTTP API)
+	MerchantGostPortFile = 10800 // → MinIO:9000 (文件)
 
-	// MerchantTCPPort 商户 TCP 长连接入口（relay+tls → WuKongIM TCP）
-	// PC 桌面端 TCP 直连用
-	MerchantTCPPort = 10010
+	// --- 商户服务器业务程序端口（Docker 映射到宿主机） ---
 
-	// MerchantNginxPort 商户本地 nginx 监听端口（GOST → nginx → 业务程序）
-	MerchantNginxPort = 8080
-
-	// --- 商户服务器业务程序端口（nginx 转发到本地业务，不对外暴露） ---
-
-	MerchantAppPortTCP   = 5110 // WuKongIM TCP 长连接
-	MerchantAppPortWS    = 5200 // WuKongIM WebSocket
-	MerchantAppPortHTTP  = 5002 // tsdd-server HTTP API
-	MerchantAppPortMinIO = 9000 // MinIO S3 API
-	MerchantAppPortWKAPI = 5001 // WuKongIM HTTP API（内部）
-	MerchantAppPortWKMgr = 5300 // WuKongIM Manager（可选）
-
-	// --- 系统服务器每商户端口偏移（仅 TCP 端口需要） ---
-	// 新架构：443 共享 + 每商户 1 个 TCP 端口(BASE_PORT)
-	// 比旧架构(6端口/商户)大幅减少
-
-	PortOffsetTCP = 0 // BASE_PORT + 0 → 商户:10010 (TCP)
+	MerchantAppPortIM      = 5100 // WuKongIM TCP（手机端 TCP+TLS）
+	MerchantAppPortWS      = 5200 // WuKongIM WebSocket（Web 端保留）
+	MerchantAppPortHTTP    = 8090 // tsdd-server HTTP API
+	MerchantAppPortMinIO   = 9000 // MinIO S3 API
+	MerchantAppPortWKAPI   = 5001 // WuKongIM HTTP API（内部）
+	MerchantAppPortWKMgr   = 5300 // WuKongIM Manager（可选）
+	MerchantAppPortTCP     = 5110 // WuKongIM TCP（保留兼容）
 
 	// --- GOST API ---
 
@@ -68,57 +57,44 @@ const (
 
 	// --- 兼容旧代码的别名（逐步移除） ---
 
-	// Deprecated: 使用 MerchantTCPPort 替代
-	MerchantGostPortTCP = MerchantTCPPort
-	// Deprecated: 使用 MerchantUnifiedPort 替代（WS 已合入统一入口）
-	MerchantGostPortWS = MerchantUnifiedPort
-	// Deprecated: 使用 MerchantUnifiedPort 替代（HTTP 已合入统一入口）
-	MerchantGostPortHTTP = MerchantUnifiedPort
-	// Deprecated: 使用 MerchantUnifiedPort 替代（MinIO 已合入统一入口）
-	MerchantGostPortMinIO = MerchantUnifiedPort
-
-	// Deprecated: 旧偏移量，新架构不再使用多端口偏移
-	PortOffsetWS    = 0 // 已废弃，WS 走 443 统一入口
-	PortOffsetHTTP  = 0 // 已废弃，HTTP 走 443 统一入口
-	PortOffsetMinIO = 0 // 已废弃，MinIO 走 443 统一入口
-
-	// Deprecated: PC 直连端口，新架构 PC 走 BASE_PORT TCP
+	// Deprecated: V2 遗留
+	SystemUnifiedPort    = SystemPortIM  // Deprecated: use SystemPortIM
+	SystemWSSListenPort  = SystemPortIM  // Deprecated: use SystemPortIM
+	MerchantUnifiedPort  = MerchantGostPortIM // Deprecated: use MerchantGostPortIM
+	MerchantTCPPort      = 10010
+	MerchantNginxPort    = 8080
+	PortOffsetTCP        = 0
+	PortOffsetWS         = 0
+	PortOffsetHTTP       = 0
+	PortOffsetMinIO      = 0
 	MerchantDirectPortTCP  = MerchantTCPPort
 	MerchantDirectPortHTTP = MerchantUnifiedPort
-
-	// Deprecated: WSS 代理端口，新架构 WSS 走 443 统一入口
-	MerchantWSSProxyPort    = MerchantUnifiedPort
-	MerchantWSSProxyAppPort = MerchantAppPortWS
-
-	// Deprecated: 使用 SystemUnifiedPort 替代
-	SystemWSSListenPort = SystemUnifiedPort
-
-	// Deprecated: 旧别名
+	MerchantWSSProxyPort    = MerchantUnifiedPort    // Deprecated
+	MerchantWSSProxyAppPort = MerchantAppPortIM      // Deprecated
 	TargetPortTCP  = MerchantTCPPort
 	TargetPortWS   = MerchantUnifiedPort
 	TargetPortHTTP = MerchantUnifiedPort
-
-	// Deprecated: 旧业务端口别名（V1 用 5002 做 TCP，V2 改为 5110）
 	MerchantAppPortTCPLegacy = 5002
 )
 
-// ========== V2 端口转发配置 ==========
+// ========== V3 端口转发配置 ==========
 
 // ForwardPorts 系统服务器 → 商户服务器的转发端口列表
-// V2: 只需要转发 2 个端口（统一入口 + TCP）
-var ForwardPorts = []int{MerchantUnifiedPort, MerchantTCPPort}
+var ForwardPorts = []int{MerchantGostPortIM, MerchantGostPortHTTP, MerchantGostPortFile}
 
 // MerchantPortConfig 商户端口配置（用于系统服务器转发）
 type MerchantPortConfig struct {
-	Offset     int
-	TargetPort int
-	Name       string
+	SystemPort   int    // 系统服务器监听端口（客户端连接）
+	MerchantPort int    // 商户服务器 GOST 端口（转发目标）
+	Name         string // 协议名称
 }
 
-// MerchantPortConfigs 系统服务器转发配置
-// V2: 443 共享 → 商户:10443 (统一入口), BASE_PORT → 商户:10010 (TCP)
+// MerchantPortConfigs 系统服务器 → 商户服务器转发配置
+// V3: 每商户独占一台 GOST，固定 3 端口直转
 var MerchantPortConfigs = []MerchantPortConfig{
-	{PortOffsetTCP, MerchantTCPPort, "tcp"}, // BASE_PORT → merchant:10010 → WuKongIM TCP:5110
+	{SystemPortIM, MerchantGostPortIM, "tcp"},       // 443 → merchant:10443 → WuKongIM TCP:5100
+	{SystemPortHTTP, MerchantGostPortHTTP, "http"},  // 80 → merchant:10080 → tsdd-server:8090
+	{SystemPortFile, MerchantGostPortFile, "file"},  // 8080 → merchant:10800 → MinIO:9000
 }
 
 // MerchantLocalForwardConfig 商户服务器本地转发配置（GOST → 本地服务）
@@ -129,14 +105,14 @@ type MerchantLocalForwardConfig struct {
 }
 
 // MerchantLocalForwardConfigs 商户服务器 GOST 本地转发列表
-// V2: 统一入口(10443) → nginx(8080) 路径分发, TCP(10010) → WuKongIM(5110)
+// V3: GOST 直转到业务程序，不经过 nginx
 var MerchantLocalForwardConfigs = []MerchantLocalForwardConfig{
-	{MerchantUnifiedPort, MerchantNginxPort, "unified"}, // 10443 → nginx:8080 (路径分发 WS/HTTP/S3)
-	{MerchantTCPPort, MerchantAppPortTCP, "tcp"},         // 10010 → WuKongIM:5110 (TCP 长连接)
+	{MerchantGostPortIM, MerchantAppPortIM, "tcp"},       // 10443 → WuKongIM TCP:5100
+	{MerchantGostPortHTTP, MerchantAppPortHTTP, "http"},  // 10080 → tsdd-server:8090 (HTTP API)
+	{MerchantGostPortFile, MerchantAppPortMinIO, "file"}, // 10800 → MinIO:9000 (文件)
 }
 
 // MerchantPCDirectConfigs PC 直连端口配置
-// V2: PC 走 BASE_PORT TCP 长连接 + 443 共享 HTTP，无需额外直连端口
 // Deprecated: 保留空列表兼容旧代码
 var MerchantPCDirectConfigs = []MerchantLocalForwardConfig{}
 
@@ -149,7 +125,7 @@ type MerchantNginxConfig struct {
 
 // MerchantNginxConfigs 商户 nginx 路径 → 业务端口映射
 var MerchantNginxConfigs = []MerchantNginxConfig{
-	{"/ws", MerchantAppPortWS, "WuKongIM WebSocket"},    // /ws → 5200
+	{"/ws", MerchantAppPortWS, "WuKongIM WebSocket"},    // /ws → 5200（Web 端仍走 WS）
 	{"/api/", MerchantAppPortHTTP, "tsdd-server HTTP"},   // /api/ → 5002
 	{"/s3/", MerchantAppPortMinIO, "MinIO S3"},           // /s3/ → 9000
 	{"/manager/", MerchantAppPortWKMgr, "WuKongIM 管理"}, // /manager/ → 5300
@@ -271,20 +247,24 @@ func (c *Client) SaveConfig(ip string, format string, path string) (*Response, e
 	return &resp, nil
 }
 
-// GetServiceList 获取服务列表
-// GOST v3 不支持 GET /config/services，改为从 /config 获取并提取 services
+// GetServiceList 获取服务列表（含动态创建的）
 func (c *Client) GetServiceList(ip string) (*ServiceList, error) {
-	// 从 /config 获取完整配置
-	config, err := c.GetConfig(ip, "")
+	url := buildURL(ip, "/config/services")
+	respBody, err := c.doRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		// fallback: 从 /config 获取（兼容旧版本）
+		config, err2 := c.GetConfig(ip, "")
+		if err2 != nil {
+			return nil, err
+		}
+		return &ServiceList{Count: len(config.Services), List: config.Services}, nil
 	}
 
-	// 从配置中提取服务列表
-	return &ServiceList{
-		Count: len(config.Services),
-		List:  config.Services,
-	}, nil
+	var list []ServiceConfig
+	if err := json.Unmarshal(respBody, &list); err != nil {
+		return nil, fmt.Errorf("解析服务列表失败: %w", err)
+	}
+	return &ServiceList{Count: len(list), List: list}, nil
 }
 
 // GetService 获取服务详情
@@ -355,20 +335,24 @@ func (c *Client) DeleteService(ip string, serviceName string) (*Response, error)
 	return &resp, nil
 }
 
-// GetChainList 获取链列表
-// GOST v3 不支持 GET /config/chains，改为从 /config 获取并提取 chains
+// GetChainList 获取链列表（含动态创建的）
 func (c *Client) GetChainList(ip string) (*ChainList, error) {
-	// 从 /config 获取完整配置
-	config, err := c.GetConfig(ip, "")
+	url := buildURL(ip, "/config/chains")
+	respBody, err := c.doRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		// fallback: 从 /config 获取（兼容旧版本）
+		config, err2 := c.GetConfig(ip, "")
+		if err2 != nil {
+			return nil, err
+		}
+		return &ChainList{Count: len(config.Chains), List: config.Chains}, nil
 	}
 
-	// 从配置中提取链列表
-	return &ChainList{
-		Count: len(config.Chains),
-		List:  config.Chains,
-	}, nil
+	var list []ChainConfig
+	if err := json.Unmarshal(respBody, &list); err != nil {
+		return nil, fmt.Errorf("解析链列表失败: %w", err)
+	}
+	return &ChainList{Count: len(list), List: list}, nil
 }
 
 // GetChain 获取链详情
@@ -645,7 +629,7 @@ func isAlreadyExistsError(err error) bool {
 		return false
 	}
 	errStr := err.Error()
-	return strings.Contains(errStr, "already exists") || strings.Contains(errStr, "40002")
+	return strings.Contains(errStr, "already exists") || strings.Contains(errStr, "40002") || strings.Contains(errStr, "40003")
 }
 
 // isNotFoundError 检查是否是 "not found" 错误（删除时不存在）
@@ -664,12 +648,12 @@ func sanitizeIP(ip string) string {
 	return strings.ReplaceAll(ip, ".", "-")
 }
 
-// buildServiceName 根据是否有 bindIP 生成服务名
-// 有 bindIP: "tcp-relay-47-242-71-251-10000"（多商户隔离）
-// 无 bindIP: "tcp-relay-10000"（兼容旧格式）
-func buildServiceName(protocolName string, suffix string, listenPort int, bindIP string) string {
-	if bindIP != "" {
-		return fmt.Sprintf("%s-%s-%s-%d", protocolName, suffix, sanitizeIP(bindIP), listenPort)
+// buildServiceName 根据 isolationIP 生成唯一服务名
+// isolationIP 优先用 bindIP（tunnelIP），没有则用 targetIP 做隔离
+// 确保同一台 GOST 服务器上不同商户的服务名不冲突
+func buildServiceName(protocolName string, suffix string, listenPort int, isolationIP string) string {
+	if isolationIP != "" {
+		return fmt.Sprintf("%s-%s-%s-%d", protocolName, suffix, sanitizeIP(isolationIP), listenPort)
 	}
 	return fmt.Sprintf("%s-%s-%d", protocolName, suffix, listenPort)
 }
@@ -880,6 +864,15 @@ func (c *Client) deleteRelayTLSForwardWithProtocol(gostServerIP string, listenPo
 		_, _ = c.DeleteService(gostServerIP, oldLegacyService)
 		_, _ = c.DeleteChain(gostServerIP, oldLegacyChain)
 	}
+	// 兼容旧 ws-relay-* 命名（443端口曾用 ws 前缀）
+	if protocolName == "tcp" {
+		oldWsService := fmt.Sprintf("ws-relay-%d", listenPort)
+		_, _ = c.DeleteService(gostServerIP, oldWsService)
+		_, _ = c.DeleteChain(gostServerIP, "chain-tls-"+oldWsService)
+		_, _ = c.DeleteChain(gostServerIP, "chain-wss-"+oldWsService)
+		_, _ = c.DeleteChain(gostServerIP, "chain-tcp-"+oldWsService)
+		_, _ = c.DeleteChain(gostServerIP, "chain-"+oldWsService)
+	}
 
 	// 删除 Service（不存在视为成功）
 	_, err := c.DeleteService(gostServerIP, serviceName)
@@ -918,11 +911,11 @@ func (c *Client) CreateMerchantForwards(gostServerIP string, basePort int, targe
 
 	var createdConfigs []MerchantPortConfig
 	for _, cfg := range MerchantPortConfigs {
-		listenPort := basePort + cfg.Offset
-		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, false, ip)
+		listenPort := cfg.SystemPort
+		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.MerchantPort, cfg.Name, false, ip)
 		if err != nil {
 			for _, created := range createdConfigs {
-				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name, ip)
+				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, created.SystemPort, created.Name, ip)
 			}
 			return fmt.Errorf("创建 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
@@ -946,11 +939,11 @@ func (c *Client) CreateMerchantForwardsWithTls(gostServerIP string, basePort int
 
 	var createdConfigs []MerchantPortConfig
 	for _, cfg := range MerchantPortConfigs {
-		listenPort := basePort + cfg.Offset
-		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, true, ip)
+		listenPort := cfg.SystemPort
+		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.MerchantPort, cfg.Name, true, ip)
 		if err != nil {
 			for _, created := range createdConfigs {
-				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name, ip)
+				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, created.SystemPort, created.Name, ip)
 			}
 			return fmt.Errorf("创建 TLS %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
@@ -974,7 +967,7 @@ func (c *Client) DeleteMerchantForwards(gostServerIP string, basePort int, bindI
 
 	var lastErr error
 	for _, cfg := range MerchantPortConfigs {
-		listenPort := basePort + cfg.Offset
+		listenPort := cfg.SystemPort
 		if err := c.deleteRelayTLSForwardWithProtocol(gostServerIP, listenPort, cfg.Name, ip); err != nil {
 			lastErr = fmt.Errorf("删除 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
@@ -1026,12 +1019,12 @@ func (c *Client) updateMerchantForwardsWithTargetPort(gostServerIP string, baseP
 
 	var createdConfigs []MerchantPortConfig
 	for i, cfg := range MerchantPortConfigs {
-		listenPort := basePort + cfg.Offset
+		listenPort := cfg.SystemPort
 		targetPort := targetBasePort + i
 		_, err := c.createRelayTLSForwardWithProtocol(gostServerIP, listenPort, targetIP, targetPort, cfg.Name, tlsListener, ip)
 		if err != nil {
 			for _, created := range createdConfigs {
-				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name, ip)
+				_ = c.deleteRelayTLSForwardWithProtocol(gostServerIP, created.SystemPort, created.Name, ip)
 			}
 			return fmt.Errorf("创建 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
@@ -1155,6 +1148,108 @@ func (c *Client) createMerchantLocalForward(merchantServerIP string, listenPort 
 	return serviceName, nil
 }
 
+// MerchantLocalTargets 多机模式下商户本地转发的自定义目标地址
+type MerchantLocalTargets struct {
+	IMAddr   string // WuKongIM TCP 地址，默认 127.0.0.1:5100
+	HTTPAddr string // tsdd-server HTTP 地址，默认 127.0.0.1:8090
+	FileAddr string // MinIO 地址，默认 127.0.0.1:9000（多机模式可能是远程 IP）
+}
+
+// CreateMerchantLocalForwardsWithTargets 在商户服务器上创建本地转发，支持自定义目标地址
+// 用于多机模式：MinIO 可能在远程节点
+func CreateMerchantLocalForwardsWithTargets(merchantServerIP string, targets MerchantLocalTargets) error {
+	return defaultClient.CreateMerchantLocalForwardsWithTargets(merchantServerIP, targets)
+}
+
+func (c *Client) CreateMerchantLocalForwardsWithTargets(merchantServerIP string, targets MerchantLocalTargets) error {
+	if targets.IMAddr == "" {
+		targets.IMAddr = fmt.Sprintf("127.0.0.1:%d", MerchantAppPortIM)
+	}
+	if targets.HTTPAddr == "" {
+		targets.HTTPAddr = fmt.Sprintf("127.0.0.1:%d", MerchantAppPortHTTP)
+	}
+	if targets.FileAddr == "" {
+		targets.FileAddr = fmt.Sprintf("127.0.0.1:%d", MerchantAppPortMinIO)
+	}
+
+	customConfigs := []struct {
+		GostPort int
+		Target   string
+		Name     string
+	}{
+		{MerchantGostPortIM, targets.IMAddr, "tcp"},
+		{MerchantGostPortHTTP, targets.HTTPAddr, "http"},
+		{MerchantGostPortFile, targets.FileAddr, "file"},
+	}
+
+	var createdNames []string
+	for _, cfg := range customConfigs {
+		name, err := c.createMerchantLocalForwardWithTarget(merchantServerIP, cfg.GostPort, cfg.Target, cfg.Name)
+		if err != nil {
+			for _, n := range createdNames {
+				_ = c.deleteMerchantLocalForwardByName(merchantServerIP, n)
+			}
+			return fmt.Errorf("创建商户本地转发 %s 端口(%d→%s)失败: %w", cfg.Name, cfg.GostPort, cfg.Target, err)
+		}
+		createdNames = append(createdNames, name)
+	}
+	return nil
+}
+
+// createMerchantLocalForwardWithTarget 创建单个商户本地转发，支持自定义目标地址
+func (c *Client) createMerchantLocalForwardWithTarget(merchantServerIP string, listenPort int, targetAddr string, protocolName string) (serviceName string, err error) {
+	serviceName = fmt.Sprintf("local-%s-%d", protocolName, listenPort)
+	listenAddr := fmt.Sprintf(":%d", listenPort)
+
+	service := &ServiceConfig{
+		Name: serviceName,
+		Addr: listenAddr,
+		Handler: &HandlerConfig{
+			Type:    "relay",
+			Retries: 3,
+			Metadata: map[string]any{
+				"keepalive":   true,
+				"ttl":         "15m",
+				"readTimeout": "0",
+			},
+		},
+		Listener: &ListenerConfig{
+			Type: "tls",
+			Metadata: map[string]any{
+				"keepalive":        true,
+				"keepalivePeriod":  "30s",
+				"keepaliveTimeout": "15s",
+			},
+		},
+		Forwarder: &ForwarderConfig{
+			Nodes: []ForwardNodeConfig{
+				{
+					Name: fmt.Sprintf("target-%s", protocolName),
+					Addr: targetAddr,
+				},
+			},
+		},
+	}
+
+	_, err = c.CreateService(merchantServerIP, service)
+	if err != nil && !isAlreadyExistsError(err) {
+		return "", fmt.Errorf("创建 Service 失败: %w", err)
+	}
+
+	_, err = c.SaveConfig(merchantServerIP, "yaml", "")
+	if err != nil {
+		return serviceName, fmt.Errorf("服务创建成功，但保存配置失败: %w", err)
+	}
+
+	return serviceName, nil
+}
+
+// deleteMerchantLocalForwardByName 按名称删除商户本地转发
+func (c *Client) deleteMerchantLocalForwardByName(merchantServerIP string, serviceName string) error {
+	_, err := c.DeleteService(merchantServerIP, serviceName)
+	return err
+}
+
 // deleteMerchantLocalForward 删除单个商户本地转发服务（内部方法）
 // 幂等操作：如果服务不存在，视为删除成功
 func (c *Client) deleteMerchantLocalForward(merchantServerIP string, listenPort int, protocolName string) error {
@@ -1209,7 +1304,7 @@ func (c *Client) UpdateMerchantLocalForwardsWithCustomPorts(merchantServerIP str
 // ========== PC 直连端口转发（商户服务器本地，普通 TCP） ==========
 
 // CreateMerchantPCDirectForwards 在商户服务器上创建 PC 直连端口（普通 TCP 转发）
-// 10000 → 5002 (WuKongIM TCP), 10002 → 5003 (tsdd-server HTTP)
+// Deprecated: PC 直连已废弃，MerchantPCDirectConfigs 为空
 func CreateMerchantPCDirectForwards(merchantServerIP string) error {
 	return defaultClient.CreateMerchantPCDirectForwards(merchantServerIP)
 }
@@ -1257,12 +1352,12 @@ func (c *Client) CreateMerchantPCDirectForwards(merchantServerIP string) error {
 
 // ========== 系统服务器 → 商户的直连转发函数（TCP 直转，不加密） ==========
 
-// MerchantDirectPortConfigs 商户直连端口配置列表（系统服务器 → 商户业务程序）
-// 直连模式跳过商户 GOST 层，直接转发到业务程序端口 5002/5200/5003
+// MerchantDirectPortConfigs 商户直连端口配置列表（系统服务器 → 商户 GOST）
+// Direct 模式用 TCP 直转（不加 relay 协议），端口映射与 MerchantPortConfigs 一致
 var MerchantDirectPortConfigs = []MerchantPortConfig{
-	{PortOffsetTCP, MerchantAppPortTCP, "tcp"},
-	{PortOffsetWS, MerchantAppPortWS, "ws"},
-	{PortOffsetHTTP, MerchantAppPortHTTP, "http"},
+	{SystemPortIM, MerchantGostPortIM, "tcp"},       // 443 → merchant:10443 → WuKongIM TCP:5100
+	{SystemPortHTTP, MerchantGostPortHTTP, "http"},  // 80 → merchant:10080 → tsdd-server:8090
+	{SystemPortFile, MerchantGostPortFile, "file"},  // 8080 → merchant:10800 → MinIO:9000
 }
 
 // createDirectForwardWithProtocol 创建 TCP 直连转发服务（内部方法）
@@ -1365,11 +1460,11 @@ func (c *Client) CreateMerchantDirectForwards(gostServerIP string, basePort int,
 
 	var createdConfigs []MerchantPortConfig
 	for _, cfg := range MerchantDirectPortConfigs {
-		listenPort := basePort + cfg.Offset
-		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, false, ip)
+		listenPort := cfg.SystemPort
+		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.MerchantPort, cfg.Name, false, ip)
 		if err != nil {
 			for _, created := range createdConfigs {
-				_ = c.deleteDirectForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name, ip)
+				_ = c.deleteDirectForwardWithProtocol(gostServerIP, created.SystemPort, created.Name, ip)
 			}
 			return fmt.Errorf("创建直连 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
@@ -1391,11 +1486,11 @@ func (c *Client) CreateMerchantDirectForwardsWithTls(gostServerIP string, basePo
 
 	var createdConfigs []MerchantPortConfig
 	for _, cfg := range MerchantDirectPortConfigs {
-		listenPort := basePort + cfg.Offset
-		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.TargetPort, cfg.Name, true, ip)
+		listenPort := cfg.SystemPort
+		_, err := c.createDirectForwardWithProtocol(gostServerIP, listenPort, targetIP, cfg.MerchantPort, cfg.Name, true, ip)
 		if err != nil {
 			for _, created := range createdConfigs {
-				_ = c.deleteDirectForwardWithProtocol(gostServerIP, basePort+created.Offset, created.Name, ip)
+				_ = c.deleteDirectForwardWithProtocol(gostServerIP, created.SystemPort, created.Name, ip)
 			}
 			return fmt.Errorf("创建 TLS 直连 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
@@ -1417,7 +1512,7 @@ func (c *Client) DeleteMerchantDirectForwards(gostServerIP string, basePort int,
 
 	var lastErr error
 	for _, cfg := range MerchantDirectPortConfigs {
-		listenPort := basePort + cfg.Offset
+		listenPort := cfg.SystemPort
 		if err := c.deleteDirectForwardWithProtocol(gostServerIP, listenPort, cfg.Name, ip); err != nil {
 			lastErr = fmt.Errorf("删除直连 %s 端口(%d)失败: %w", cfg.Name, listenPort, err)
 		}
@@ -1435,33 +1530,48 @@ func (c *Client) UpdateMerchantDirectForwards(gostServerIP string, basePort int,
 	return c.CreateMerchantDirectForwards(gostServerIP, basePort, targetIP, bindIP...)
 }
 
-// ========== 系统服务器 443 统一入口隧道 ==========
+// ========== 系统服务器 443 IM 入口隧道 ==========
 
-// CreateWSSRelayForward 在系统服务器上创建 443 统一入口隧道
-// V2: bindIP:443 (TLS) → relay+tls → merchantIP:10443 → nginx → 路径分发(WS/HTTP/S3)
-func CreateWSSRelayForward(gostServerIP string, merchantIP string, bindIP ...string) error {
+// CreateIMRelayForward 在系统服务器上创建 443 IM 入口隧道（TCP+TLS）
+// 链路: bindIP:443 (TLS) → relay+tls → merchantIP:10443 → WuKongIM TCP:5100
+func CreateIMRelayForward(gostServerIP string, merchantIP string, bindIP ...string) error {
 	ip := ""
 	if len(bindIP) > 0 {
 		ip = bindIP[0]
 	}
 	_, err := defaultClient.createRelayTLSForwardWithProtocol(
-		gostServerIP, SystemUnifiedPort, merchantIP, MerchantUnifiedPort, "wss", true, ip)
+		gostServerIP, SystemUnifiedPort, merchantIP, MerchantUnifiedPort, "tcp", true, ip)
 	return err
 }
 
-// DeleteWSSRelayForward 删除系统服务器上的 WSS 443 隧道
-func DeleteWSSRelayForward(gostServerIP string, bindIP ...string) error {
+// DeleteIMRelayForward 删除系统服务器上的 IM 443 隧道
+func DeleteIMRelayForward(gostServerIP string, bindIP ...string) error {
 	ip := ""
 	if len(bindIP) > 0 {
 		ip = bindIP[0]
 	}
-	return defaultClient.deleteRelayTLSForwardWithProtocol(gostServerIP, SystemWSSListenPort, "wss", ip)
+	return defaultClient.deleteRelayTLSForwardWithProtocol(gostServerIP, SystemWSSListenPort, "tcp", ip)
 }
 
-// UpdateWSSRelayForward 更新系统服务器上的 WSS 443 隧道（商户 IP 变更时）
+// UpdateIMRelayForward 更新系统服务器上的 IM 443 隧道（商户 IP 变更时）
+func UpdateIMRelayForward(gostServerIP string, merchantIP string, bindIP ...string) error {
+	_ = DeleteIMRelayForward(gostServerIP, bindIP...)
+	return CreateIMRelayForward(gostServerIP, merchantIP, bindIP...)
+}
+
+// Deprecated: 旧名称兼容，使用 CreateIMRelayForward 替代
+func CreateWSSRelayForward(gostServerIP string, merchantIP string, bindIP ...string) error {
+	return CreateIMRelayForward(gostServerIP, merchantIP, bindIP...)
+}
+
+// Deprecated: 旧名称兼容，使用 DeleteIMRelayForward 替代
+func DeleteWSSRelayForward(gostServerIP string, bindIP ...string) error {
+	return DeleteIMRelayForward(gostServerIP, bindIP...)
+}
+
+// Deprecated: 旧名称兼容，使用 UpdateIMRelayForward 替代
 func UpdateWSSRelayForward(gostServerIP string, merchantIP string, bindIP ...string) error {
-	_ = DeleteWSSRelayForward(gostServerIP, bindIP...)
-	return CreateWSSRelayForward(gostServerIP, merchantIP, bindIP...)
+	return UpdateIMRelayForward(gostServerIP, merchantIP, bindIP...)
 }
 
 // ========== 一键部署：简化转发配置 ==========
@@ -1716,14 +1826,13 @@ type TunnelStats struct {
 
 // GetServiceStats 获取所有隧道的连接统计
 func (c *Client) GetServiceStats(gostServerIP string) ([]TunnelStats, error) {
-	// 获取完整配置（含 status）
-	config, err := c.GetConfig(gostServerIP, "")
+	svcList, err := c.GetServiceList(gostServerIP)
 	if err != nil {
 		return nil, err
 	}
 
 	var results []TunnelStats
-	for _, svc := range config.Services {
+	for _, svc := range svcList.List {
 		ts := TunnelStats{
 			Name: svc.Name,
 		}
@@ -1778,12 +1887,12 @@ func (c *Client) getServiceStatus(ip, serviceName string) (*ServiceStatus, error
 func (c *Client) GetForwardStatus(gostServerIP string) (map[int]string, error) {
 	result := make(map[int]string)
 
-	config, err := c.GetConfig(gostServerIP, "")
+	svcList, err := c.GetServiceList(gostServerIP)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, svc := range config.Services {
+	for _, svc := range svcList.List {
 		// 匹配 fwd-XXXX 格式的服务名
 		if strings.HasPrefix(svc.Name, "fwd-") {
 			var port int

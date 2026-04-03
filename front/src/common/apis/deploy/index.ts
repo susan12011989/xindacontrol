@@ -320,6 +320,45 @@ export function deployTSDDWithAMI(data: Deploy.DeployTSDDWithAMIReq) {
   })
 }
 
+/** 集群节点部署（db/app/allinone） */
+export function deployNode(data: Deploy.DeployNodeReq) {
+  return request<Deploy.DeployNodeResponseData>({
+    url: "deploy/tsdd/deploy-node",
+    method: "post",
+    data,
+    timeout: 600000
+  })
+}
+
+/** 集群节点部署（带状态跟踪） */
+export function deployNodeTracked(data: Deploy.DeployNodeReq) {
+  return request<Deploy.DeployNodeResponseData>({
+    url: "deploy/tsdd/deploy-node-tracked",
+    method: "post",
+    data,
+    timeout: 600000
+  })
+}
+
+/** 获取商户集群拓扑 */
+export function getClusterTopology(merchant_id: number) {
+  return request<Deploy.ClusterTopologyResponseData>({
+    url: "deploy/tsdd/cluster-topology",
+    method: "get",
+    params: { merchant_id }
+  })
+}
+
+/** 重试失败的部署 */
+export function retryDeployApi(data: Deploy.RetryDeployReq) {
+  return request<Deploy.DeployNodeResponseData>({
+    url: "deploy/tsdd/retry-deploy",
+    method: "post",
+    data,
+    timeout: 600000
+  })
+}
+
 // ========== TSDD Docker 部署 ==========
 
 /** 部署 TSDD 到已注册服务器 */
@@ -367,6 +406,62 @@ export function deployGostServer(data: Deploy.DeployGostServerReq, onData: (chun
 export function setupGostDeploy(data: Deploy.SetupGostDeployReq, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
   return createStreamRequest({
     url: "deploy/gost/setup",
+    method: "post",
+    data,
+    timeout: 600000
+  }, onData, onError)
+}
+
+/** 批量重建所有商户 GOST 转发规则（流式） */
+export function rebuildAllMerchantGost(onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
+  return createStreamRequest({
+    url: "deploy/gost/rebuild-all",
+    method: "post",
+    data: {},
+    timeout: 600000
+  }, onData, onError)
+}
+
+/** 连接状态检测（全部商户） */
+export function connectionCheck() {
+  return request<any>({
+    url: "deploy/gost/connection-check",
+    method: "get",
+    timeout: 60000
+  })
+}
+
+/** 连接状态检测（单个商户） */
+export function connectionCheckByMerchant(merchantId: number) {
+  return request<any>({
+    url: `deploy/gost/connection-check/${merchantId}`,
+    method: "get",
+    timeout: 30000
+  })
+}
+
+/** 连接状态检测（单个系统服务器） */
+export function connectionCheckByServer(serverId: number) {
+  return request<any>({
+    url: `deploy/gost/server-check/${serverId}`,
+    method: "get",
+    timeout: 30000
+  })
+}
+
+/** 修复系统服务器 GOST 隧道（流式） */
+export function repairGostServer(serverId: number, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
+  return createStreamRequest({
+    url: `deploy/gost/repair/${serverId}`,
+    method: "post",
+    timeout: 600000
+  }, onData, onError)
+}
+
+/** 启用 Nginx 文件缓存（流式） */
+export function enableNginxCache(data: { server_ids: number[] }, onData: (chunk: any, isComplete?: boolean) => void, onError?: (err: any) => void) {
+  return createStreamRequest({
+    url: "deploy/gost/enable-cache",
     method: "post",
     data,
     timeout: 600000
@@ -541,7 +636,7 @@ export function batchRollbackTls(data?: Deploy.BatchTlsReq) {
 
 /** 获取服务器流量统计 */
 export function getTrafficStats(server_id: number) {
-  return request<Types.TrafficStatsResponseData>({
+  return request<Deploy.TrafficStatsResponseData>({
     url: "deploy/traffic",
     method: "get",
     params: { server_id },
@@ -551,7 +646,7 @@ export function getTrafficStats(server_id: number) {
 
 /** 批量获取流量统计 */
 export function getTrafficStatsBatch(server_ids: number[]) {
-  return request<Types.TrafficStatsBatchResponseData>({
+  return request<Deploy.TrafficStatsBatchResponseData>({
     url: "deploy/traffic/batch",
     method: "post",
     data: { server_ids },
@@ -560,7 +655,7 @@ export function getTrafficStatsBatch(server_ids: number[]) {
 }
 
 /** 封禁 IP */
-export function blockIP(data: Types.BlockIPReq) {
+export function blockIP(data: Deploy.BlockIPReq) {
   return request({
     url: "deploy/traffic/block-ip",
     method: "post",
@@ -579,7 +674,7 @@ export function unblockIP(server_id: number, ip: string) {
 
 /** 获取被封禁的 IP 列表 */
 export function getBlockedIPs(server_id: number) {
-  return request<Types.BlockedIPsResponseData>({
+  return request<Deploy.BlockedIPsResponseData>({
     url: "deploy/traffic/blocked-ips",
     method: "get",
     params: { server_id }
@@ -587,7 +682,7 @@ export function getBlockedIPs(server_id: number) {
 }
 
 /** 紧急限流 */
-export function emergencyRateLimit(data: Types.EmergencyRateLimitReq) {
+export function emergencyRateLimit(data: Deploy.EmergencyRateLimitReq) {
   return request({
     url: "deploy/traffic/rate-limit",
     method: "post",

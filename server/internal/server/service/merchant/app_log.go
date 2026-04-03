@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"server/pkg/entity"
+	"time"
 
 	"github.com/zeromicro/go-zero/core/logx"
 )
@@ -21,7 +22,7 @@ func QueryAppLogs(merchantNo string, page, size int, keyword string) (*entity.Ap
 		return &entity.AppLogQueryResp{Err: err.Error()}, nil
 	}
 
-	resp, err := doMerchantRequest("GET", url, nil)
+	resp, err := doMerchantRequestWithTimeout("GET", url, nil, 60*time.Second)
 	if err != nil {
 		logx.Errorf("查询商户应用日志失败: merchant=%s, err=%v", merchantNo, err)
 		return &entity.AppLogQueryResp{Err: fmt.Sprintf("请求失败: %v", err)}, nil

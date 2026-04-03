@@ -1,10 +1,10 @@
 <script lang="ts" setup>
-import type { ServerResp } from "@@/apis/deploy/type"
+import type { ServerResp, TlsCertificateResp, TlsStatusResp } from "@@/apis/deploy/type"
 import type { MerchantResp } from "@@/apis/merchant/type"
 import type { VxeFormInstance, VxeFormProps, VxeGridInstance, VxeGridProps, VxeModalInstance, VxeModalProps } from "vxe-table"
-import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus, getProgramConfig, updateProgramConfig, getNginxCacheStatus, clearNginxCache, persistGostConfig, getGostConfigSyncStatus, setupGostDeploy } from "@@/apis/deploy"
+import { createGostServiceByAPI, deleteGostServiceByAPI, getGostServiceDetail, getServerList, listGostChains, listGostServices, updateGostServiceDetail, setupGostForward, clearGostForward, getGostForwardStatus, getProgramConfig, updateProgramConfig, getNginxCacheStatus, clearNginxCache, persistGostConfig, getGostConfigSyncStatus, setupGostDeploy, rebuildAllMerchantGost, connectionCheck, connectionCheckByMerchant, connectionCheckByServer, repairGostServer, enableNginxCache, generateTlsCerts, getTlsCerts, disableTlsCerts, getTlsCertFingerprint, getTlsStatus, verifyTlsStatus, batchUpgradeTls, batchRollbackTls } from "@@/apis/deploy"
 import type { GostConfigSyncStatusResp } from "@@/apis/deploy/type"
-import { getMerchantList } from "@@/apis/merchant"
+import { getMerchantList, reorderMerchantGostServers, importOssFromTargets, syncMerchantGostIP } from "@@/apis/merchant"
 import { createStreamRequest } from "@/http/axios"
 
 defineOptions({
@@ -66,6 +66,242 @@ function startSetup() {
       isSettingUp.value = false
       setupLogs.value.push(`错误: ${error?.message || error}`)
       ElMessage.error("部署失败")
+    }
+  )
+}
+
+// ========== 批量重建 GOST 规则 ==========
+const rebuildDialogVisible = ref(false)
+const rebuildLogs = ref<string[]>([])
+const isRebuilding = ref(false)
+const rebuildLogRef = ref<HTMLDivElement>()
+
+function openRebuildDialog() {
+  rebuildLogs.value = []
+  rebuildDialogVisible.value = true
+}
+
+function startRebuild() {
+  isRebuilding.value = true
+  rebuildLogs.value = ["开始重建所有商户 GOST 规则..."]
+
+  rebuildAllMerchantGost(
+    (data: any, isComplete?: boolean) => {
+      if (data?.message) {
+        rebuildLogs.value.push(data.message)
+        nextTick(() => {
+          if (rebuildLogRef.value) {
+            rebuildLogRef.value.scrollTop = rebuildLogRef.value.scrollHeight
+          }
+        })
+      }
+      if (isComplete) {
+        isRebuilding.value = false
+        if (data?.success) {
+          ElMessage.success("重建完成!")
+          loadRecords()
+        } else {
+          ElMessage.error(data?.message || "重建失败")
+        }
+      }
+    },
+    (error: any) => {
+      isRebuilding.value = false
+      rebuildLogs.value.push(`错误: ${error?.message || error}`)
+      ElMessage.error("重建失败")
+    }
+  )
+}
+
+// ========== 连接状态检测 ==========
+const checkDialogVisible = ref(false)
+const checkLoading = ref(false)
+const checkResult = ref<any>(null)
+
+async function runConnectionCheck() {
+  checkDialogVisible.value = true
+  checkLoading.value = true
+  checkResult.value = null
+  try {
+    const res = await connectionCheck()
+    checkResult.value = res.data
+  } catch (e: any) {
+    ElMessage.error("检测失败: " + (e?.message || e))
+  } finally {
+    checkLoading.value = false
+  }
+}
+
+// ========== 单服务器检测 ==========
+const serverCheckLoading = ref(false)
+const serverCheckResult = ref<any>(null)
+const serverCheckDialogVisible = ref(false)
+
+async function runServerCheck() {
+  if (!selectedServerId.value) {
+    ElMessage.warning("请先选择系统服务器")
+    return
+  }
+  serverCheckDialogVisible.value = true
+  serverCheckLoading.value = true
+  serverCheckResult.value = null
+  try {
+    const res = await connectionCheckByServer(selectedServerId.value)
+    serverCheckResult.value = res.data
+  } catch (e: any) {
+    ElMessage.error("检测失败: " + (e?.message || e))
+  } finally {
+    serverCheckLoading.value = false
+  }
+}
+
+// ========== 隧道修复 ==========
+const repairDialogVisible = ref(false)
+const isRepairing = ref(false)
+const repairLogs = ref<string[]>([])
+const repairLogRef = ref<HTMLElement>()
+
+function startRepair() {
+  if (!selectedServerId.value) {
+    ElMessage.warning("请先选择系统服务器")
+    return
+  }
+  repairDialogVisible.value = true
+  repairLogs.value = []
+  isRepairing.value = true
+
+  repairGostServer(selectedServerId.value, (chunk: any, isComplete?: boolean) => {
+    if (chunk?.message) {
+      repairLogs.value.push(chunk.message)
+      nextTick(() => { repairLogRef.value?.scrollTo(0, repairLogRef.value.scrollHeight) })
+    }
+    if (isComplete) {
+      isRepairing.value = false
+      if (chunk?.success) {
+        ElMessage.success("修复完成")
+        loadRecords()
+        loadSyncStatus()
+      } else {
+        ElMessage.error("修复失败: " + (chunk?.message || "未知错误"))
+      }
+    }
+  }, (err: any) => {
+    isRepairing.value = false
+    repairLogs.value.push("错误: " + (err?.message || err))
+  })
+}
+
+function statusTag(s: string) {
+  if (s === "ok") return "success"
+  if (s === "protected") return "warning"
+  return "danger"
+}
+
+async function doImportOss(merchantId: number, merchantName: string) {
+  try {
+    const res = await importOssFromTargets(merchantId)
+    const count = res.data?.imported || 0
+    if (count > 0) {
+      ElMessage.success(`${merchantName}: 成功导入 ${count} 个 OSS 配置`)
+    } else {
+      ElMessage.info(`${merchantName}: 无新增（已全部导入或工具页无目标）`)
+    }
+  } catch (e: any) {
+    ElMessage.error(`导入失败: ${e?.message || e}`)
+  }
+}
+
+async function moveGostServer(merchantId: number, servers: any[], index: number, direction: "up" | "down") {
+  const newIndex = direction === "up" ? index - 1 : index + 1
+  if (newIndex < 0 || newIndex >= servers.length) return
+  // swap
+  const tmp = servers[index]
+  servers[index] = servers[newIndex]
+  servers[newIndex] = tmp
+  // 保存新顺序
+  const ids = servers.map((s: any) => s.relation_id || s.id)
+  try {
+    await reorderMerchantGostServers(merchantId, ids)
+    ElMessage.success("排序已保存，同步 IP 后生效")
+  } catch (e: any) {
+    ElMessage.error("排序保存失败: " + (e?.message || e))
+  }
+}
+
+// 单个商户检测中状态
+const merchantChecking = ref<Record<number, boolean>>({})
+const merchantSyncing = ref<Record<number, boolean>>({})
+
+async function checkSingleMerchant(merchantId: number) {
+  merchantChecking.value[merchantId] = true
+  try {
+    const res = await connectionCheckByMerchant(merchantId)
+    // 更新 checkResult 中对应商户的数据
+    if (checkResult.value) {
+      const idx = checkResult.value.merchants.findIndex((m: any) => m.merchant_id === merchantId)
+      if (idx >= 0) {
+        checkResult.value.merchants[idx] = res.data
+      }
+    }
+    ElMessage.success("检测完成")
+  } catch (e: any) {
+    ElMessage.error("检测失败: " + (e?.message || e))
+  } finally {
+    merchantChecking.value[merchantId] = false
+  }
+}
+
+async function syncSingleMerchantIP(merchantId: number, merchantName: string) {
+  merchantSyncing.value[merchantId] = true
+  try {
+    const res = await syncMerchantGostIP(merchantId)
+    const results = res.data?.results || []
+    const successCount = results.filter((r: any) => r.success).length
+    ElMessage.success(`${merchantName}: 同步完成 (${successCount}/${results.length} 个 OSS)`)
+  } catch (e: any) {
+    ElMessage.error(`${merchantName} 同步失败: ${e?.message || e}`)
+  } finally {
+    merchantSyncing.value[merchantId] = false
+  }
+}
+
+// ========== Nginx 文件缓存 ==========
+const cacheEnableDialogVisible = ref(false)
+const cacheEnableLogs = ref<string[]>([])
+const isCacheEnabling = ref(false)
+const cacheEnableLogRef = ref<HTMLDivElement>()
+
+function openCacheEnableDialog() {
+  cacheEnableLogs.value = []
+  cacheEnableDialogVisible.value = true
+}
+
+function startCacheEnable() {
+  const sysServerIds = serverList.value.map(s => s.id)
+  if (sysServerIds.length === 0) {
+    ElMessage.warning("无系统服务器")
+    return
+  }
+  isCacheEnabling.value = true
+  cacheEnableLogs.value = ["开始启用文件缓存..."]
+
+  enableNginxCache(
+    { server_ids: sysServerIds },
+    (data: any, isComplete?: boolean) => {
+      if (data?.message) {
+        cacheEnableLogs.value.push(data.message)
+        nextTick(() => {
+          if (cacheEnableLogRef.value) cacheEnableLogRef.value.scrollTop = cacheEnableLogRef.value.scrollHeight
+        })
+      }
+      if (isComplete) {
+        isCacheEnabling.value = false
+        if (data?.success) ElMessage.success("缓存启用完成!")
+      }
+    },
+    (error: any) => {
+      isCacheEnabling.value = false
+      cacheEnableLogs.value.push(`错误: ${error?.message || error}`)
     }
   )
 }
@@ -698,10 +934,151 @@ async function doPersistConfig() {
   }
 }
 
+// ========== TLS 证书管理（合并自 tls.vue） ==========
+const activeTab = ref("services")
+const tlsLoading = ref(false)
+const tlsCerts = ref<TlsCertificateResp[]>([])
+const tlsFingerprint = ref("")
+const tlsFingerprintExpires = ref("")
+const tlsStatus = ref<TlsStatusResp | null>(null)
+
+async function loadTlsCerts() {
+  tlsLoading.value = true
+  try {
+    const res = await getTlsCerts()
+    tlsCerts.value = Array.isArray(res.data) ? res.data : []
+  } catch {
+    tlsCerts.value = []
+  } finally {
+    tlsLoading.value = false
+  }
+}
+
+async function loadTlsFingerprint() {
+  try {
+    const res = await getTlsCertFingerprint()
+    tlsFingerprint.value = res.data.fingerprint || ""
+    tlsFingerprintExpires.value = res.data.expires_at || ""
+  } catch {
+    tlsFingerprint.value = ""
+  }
+}
+
+async function loadTlsStatus() {
+  try {
+    const res = await getTlsStatus()
+    tlsStatus.value = res.data
+  } catch {
+    tlsStatus.value = null
+  }
+}
+
+async function handleTlsGenerate() {
+  ElMessageBox.confirm(
+    "将生成新的 CA 根证书和服务器证书，旧证书将被停用。已部署的服务器需要重新升级 TLS。确定继续？",
+    "生成证书",
+    { type: "warning" }
+  ).then(async () => {
+    tlsLoading.value = true
+    try {
+      await generateTlsCerts({})
+      ElMessage.success("证书生成成功")
+      await loadTlsCerts()
+      await loadTlsFingerprint()
+    } catch (e: any) {
+      ElMessage.error(e.message || "证书生成失败")
+    } finally {
+      tlsLoading.value = false
+    }
+  })
+}
+
+async function handleTlsDisable() {
+  ElMessageBox.confirm("停用证书后，新部署的服务器将不会自动启用 TLS。确定停用？", "停用证书", { type: "warning" }).then(async () => {
+    tlsLoading.value = true
+    try {
+      await disableTlsCerts()
+      ElMessage.success("证书已停用")
+      await loadTlsCerts()
+      tlsFingerprint.value = ""
+    } catch (e: any) {
+      ElMessage.error(e.message || "停用失败")
+    } finally {
+      tlsLoading.value = false
+    }
+  })
+}
+
+function copyTlsFingerprint() {
+  if (!tlsFingerprint.value) return
+  navigator.clipboard.writeText(tlsFingerprint.value).then(() => {
+    ElMessage.success("指纹已复制到剪贴板")
+  })
+}
+
+async function handleTlsUpgrade() {
+  ElMessageBox.confirm("将所有系统服务器升级为 TLS 模式？", "批量升级", { type: "warning" }).then(async () => {
+    tlsLoading.value = true
+    try {
+      const res = await batchUpgradeTls({})
+      const { success, failed, total } = res.data
+      if (failed === 0) {
+        ElMessage.success(`升级完成，全部成功 (${success}/${total})`)
+      } else {
+        ElMessage.warning(`升级完成，成功 ${success}，失败 ${failed}`)
+      }
+      await loadTlsStatus()
+    } catch (e: any) {
+      ElMessage.error(e.message || "升级失败")
+    } finally {
+      tlsLoading.value = false
+    }
+  })
+}
+
+async function handleTlsRollback() {
+  ElMessageBox.confirm("将所有系统服务器回滚为 TCP 模式？", "批量回滚", { type: "warning" }).then(async () => {
+    tlsLoading.value = true
+    try {
+      const res = await batchRollbackTls({})
+      const { success, failed, total } = res.data
+      if (failed === 0) {
+        ElMessage.success(`回滚完成，全部成功 (${success}/${total})`)
+      } else {
+        ElMessage.warning(`回滚完成，成功 ${success}，失败 ${failed}`)
+      }
+      await loadTlsStatus()
+    } catch (e: any) {
+      ElMessage.error(e.message || "回滚失败")
+    } finally {
+      tlsLoading.value = false
+    }
+  })
+}
+
+async function handleTlsVerify() {
+  tlsLoading.value = true
+  try {
+    const res = await verifyTlsStatus()
+    tlsStatus.value = res.data
+    ElMessage.success("验证完成")
+  } catch (e: any) {
+    ElMessage.error(e.message || "验证失败")
+  } finally {
+    tlsLoading.value = false
+  }
+}
+
+// 切换到 TLS Tab 时懒加载
+watch(activeTab, (val) => {
+  if (val === "tls" && tlsCerts.value.length === 0) {
+    Promise.all([loadTlsCerts(), loadTlsFingerprint(), loadTlsStatus()])
+  }
+})
+
 // ========== 生命周期 ==========
 onMounted(() => {
   loadServerList()
-  // 加载商户下拉
   getMerchantList({ page: 1, size: 2000 }).then((res) => {
     merchantList.value = Array.isArray(res.data?.list) ? res.data.list : []
   })
@@ -710,6 +1087,9 @@ onMounted(() => {
 
 <template>
   <div class="app-container">
+    <el-tabs v-model="activeTab" type="border-card">
+      <el-tab-pane label="GOST 服务管理" name="services">
+
     <!-- 服务器选择 + 视图切换 -->
     <el-card class="server-select-card" shadow="never">
       <div class="flex items-center gap-4 flex-wrap">
@@ -767,6 +1147,12 @@ onMounted(() => {
         <el-button type="info" icon="Box" @click="openCacheDialog">缓存管理</el-button>
         <el-divider direction="vertical" />
         <el-button type="success" icon="Plus" @click="openSetupDialog">一键部署</el-button>
+        <el-button type="warning" icon="Refresh" @click="openRebuildDialog">批量重建</el-button>
+        <el-button type="danger" icon="MagicStick" @click="startRepair" :loading="isRepairing">隧道修复</el-button>
+        <el-divider direction="vertical" />
+        <el-button type="primary" icon="Monitor" @click="runServerCheck" :loading="serverCheckLoading">检测当前</el-button>
+        <el-button icon="Monitor" @click="runConnectionCheck">全部检测</el-button>
+        <el-button icon="Cpu" @click="openCacheEnableDialog">文件缓存</el-button>
       </div>
     </el-card>
 
@@ -790,10 +1176,14 @@ onMounted(() => {
 
         <!-- 商户列 -->
         <template #service-merchant="{ row }">
-          <template v-if="getMerchantByServiceName(row.name)">
+          <template v-if="row.merchant_name">
+            <div class="merchant-info">
+              <span class="merchant-name">{{ row.merchant_name }}</span>
+            </div>
+          </template>
+          <template v-else-if="getMerchantByServiceName(row.name)">
             <div class="merchant-info">
               <span class="merchant-name">{{ getMerchantByServiceName(row.name)?.name }}</span>
-              <span class="merchant-port text-xs text-gray-400">端口: {{ (getMerchantByServiceName(row.name) as any)?.port }}</span>
             </div>
           </template>
           <span v-else class="text-gray-400">-</span>
@@ -811,8 +1201,8 @@ onMounted(() => {
             <div class="truncate" :title="row.handler?.chain || '-'">
               {{ row.handler?.chain || '-' }}
             </div>
-            <div class="text-xs text-gray-500 truncate" :title="(chainMap[row.handler?.chain]?.hops?.[0]?.nodes?.map((n: any) => n.addr).join(', ')) || '-'">
-              {{ (chainMap[row.handler?.chain]?.hops?.[0]?.nodes?.map((n: any) => n.addr).join(', ')) || '-' }}
+            <div class="text-xs text-gray-500 truncate" :title="row.chain_target || (chainMap[row.handler?.chain]?.hops?.[0]?.nodes?.map((n: any) => n.addr).join(', ')) || '-'">
+              {{ row.chain_target || (chainMap[row.handler?.chain]?.hops?.[0]?.nodes?.map((n: any) => n.addr).join(', ')) || '-' }}
             </div>
           </div>
         </template>
@@ -823,6 +1213,108 @@ onMounted(() => {
         </template>
       </vxe-grid>
     </el-card>
+
+      </el-tab-pane>
+
+      <el-tab-pane label="TLS 证书" name="tls">
+        <!-- 证书管理 -->
+        <el-card v-loading="tlsLoading" shadow="never">
+          <template #header>
+            <div class="card-header">
+              <span class="font-bold text-base">TLS 证书</span>
+              <div>
+                <el-button type="primary" @click="handleTlsGenerate">生成证书</el-button>
+                <el-button type="danger" :disabled="tlsCerts.length === 0" @click="handleTlsDisable">停用证书</el-button>
+              </div>
+            </div>
+          </template>
+
+          <el-table v-if="tlsCerts.length > 0" :data="tlsCerts" border size="small">
+            <el-table-column prop="name" label="名称" width="160" />
+            <el-table-column label="类型" width="120">
+              <template #default="{ row }">
+                <el-tag :type="row.cert_type === 1 ? 'warning' : 'primary'" size="small">
+                  {{ row.cert_type === 1 ? 'CA 根证书' : '服务器证书' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" width="80">
+              <template #default="{ row }">
+                <el-tag :type="row.status === 1 ? 'success' : 'info'" size="small">
+                  {{ row.status === 1 ? '启用' : '停用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="fingerprint" label="指纹 (SHA-256)" show-overflow-tooltip />
+            <el-table-column prop="expires_at" label="过期时间" width="160" />
+            <el-table-column prop="created_at" label="创建时间" width="160" />
+          </el-table>
+          <el-empty v-else description="暂未生成证书，请点击「生成证书」" />
+        </el-card>
+
+        <!-- 证书指纹（App 端 Pinning） -->
+        <el-card v-if="tlsFingerprint" shadow="never" style="margin-top: 16px">
+          <template #header>
+            <span class="font-bold text-base">App 证书指纹 (Certificate Pinning)</span>
+          </template>
+          <el-descriptions :column="1" border size="small">
+            <el-descriptions-item label="SHA-256 指纹">
+              <code class="fingerprint-text">{{ tlsFingerprint }}</code>
+              <el-button type="primary" link size="small" style="margin-left: 8px" @click="copyTlsFingerprint">复制</el-button>
+            </el-descriptions-item>
+            <el-descriptions-item label="证书过期时间">{{ tlsFingerprintExpires }}</el-descriptions-item>
+          </el-descriptions>
+        </el-card>
+
+        <!-- 系统服务器 TLS 状态 -->
+        <el-card v-loading="tlsLoading" shadow="never" style="margin-top: 16px">
+          <template #header>
+            <div class="card-header">
+              <span class="font-bold text-base">系统服务器 TLS 状态</span>
+              <div>
+                <el-button @click="handleTlsVerify">验证连接</el-button>
+                <el-button type="warning" @click="handleTlsRollback">批量回滚 TCP</el-button>
+                <el-button type="success" :disabled="tlsCerts.length === 0" @click="handleTlsUpgrade">批量升级 TLS</el-button>
+              </div>
+            </div>
+          </template>
+
+          <div v-if="tlsStatus">
+            <el-descriptions :column="3" border size="small" style="margin-bottom: 16px">
+              <el-descriptions-item label="总数">{{ tlsStatus.total }}</el-descriptions-item>
+              <el-descriptions-item label="TLS">
+                <el-tag type="success" size="small">{{ tlsStatus.tls_count }}</el-tag>
+              </el-descriptions-item>
+              <el-descriptions-item label="TCP">
+                <el-tag type="info" size="small">{{ tlsStatus.tcp_count }}</el-tag>
+              </el-descriptions-item>
+            </el-descriptions>
+
+            <el-table :data="tlsStatus.servers" border size="small">
+              <el-table-column prop="server_name" label="服务器" width="160" />
+              <el-table-column prop="host" label="IP" width="140" />
+              <el-table-column label="TLS" width="80">
+                <template #default="{ row }">
+                  <el-tag :type="row.tls_enabled === 1 ? 'success' : 'info'" size="small">
+                    {{ row.tls_enabled === 1 ? 'TLS' : 'TCP' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="验证" width="120">
+                <template #default="{ row }">
+                  <el-tag v-if="row.tls_verified" type="success" size="small">通过</el-tag>
+                  <el-tag v-else-if="row.verify_error" type="danger" size="small">失败</el-tag>
+                  <span v-else class="text-gray-400">-</span>
+                </template>
+              </el-table-column>
+              <el-table-column prop="verify_error" label="错误详情" show-overflow-tooltip />
+              <el-table-column prop="tls_deployed_at" label="部署时间" width="160" />
+            </el-table>
+          </div>
+          <el-empty v-else description="暂无系统服务器" />
+        </el-card>
+      </el-tab-pane>
+    </el-tabs>
 
     <!-- 编辑弹窗（JSON） -->
     <vxe-modal ref="xModalDom" v-bind="xModalOpt">
@@ -871,6 +1363,148 @@ onMounted(() => {
         <el-button type="primary" @click="startSetup" :loading="isSettingUp">
           {{ isSettingUp ? '部署中...' : '开始部署' }}
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量重建弹窗 -->
+    <el-dialog v-model="rebuildDialogVisible" title="批量重建 GOST 规则" width="700px" :close-on-click-modal="false">
+      <el-alert type="warning" :closable="false" style="margin-bottom: 12px">
+        将清除所有系统服务器上的 GOST 转发规则，然后按商户关联关系重新创建。确保所有 GOST 服务器在线。
+      </el-alert>
+      <div ref="rebuildLogRef" style="height: 400px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 4px; font-family: monospace; font-size: 13px; line-height: 1.6">
+        <div v-for="(log, i) in rebuildLogs" :key="i">{{ log }}</div>
+      </div>
+      <template #footer>
+        <el-button @click="rebuildDialogVisible = false" :disabled="isRebuilding">关闭</el-button>
+        <el-button type="warning" @click="startRebuild" :loading="isRebuilding" :disabled="isRebuilding">
+          {{ isRebuilding ? "重建中..." : "开始重建" }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 文件缓存弹窗 -->
+    <el-dialog v-model="cacheEnableDialogVisible" title="启用文件缓存 (Nginx)" width="700px" :close-on-click-modal="false">
+      <el-alert type="info" :closable="false" style="margin-bottom: 12px">
+        在所有系统服务器上安装 Nginx 并配置 8080 端口文件缓存，加速图片/文件加载。
+      </el-alert>
+      <div ref="cacheEnableLogRef" style="height: 350px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 4px; font-family: monospace; font-size: 13px; line-height: 1.6">
+        <div v-for="(log, i) in cacheEnableLogs" :key="i">{{ log }}</div>
+      </div>
+      <template #footer>
+        <el-button @click="cacheEnableDialogVisible = false" :disabled="isCacheEnabling">关闭</el-button>
+        <el-button type="primary" @click="startCacheEnable" :loading="isCacheEnabling">
+          {{ isCacheEnabling ? "启用中..." : "开始启用" }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 单服务器检测弹窗 -->
+    <el-dialog v-model="serverCheckDialogVisible" title="服务器状态检测" width="500px" :close-on-click-modal="false">
+      <div v-loading="serverCheckLoading">
+        <div v-if="serverCheckResult">
+          <el-descriptions :column="2" border size="small">
+            <el-descriptions-item label="名称">{{ serverCheckResult.server_name }}</el-descriptions-item>
+            <el-descriptions-item label="IP">{{ serverCheckResult.host }}</el-descriptions-item>
+            <el-descriptions-item label="GOST API">
+              <el-tag :type="statusTag(serverCheckResult.gost_api)" size="small">{{ serverCheckResult.gost_api }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="服务/链">{{ serverCheckResult.service_count }}/{{ serverCheckResult.chain_count }}</el-descriptions-item>
+            <el-descriptions-item label="443">
+              <el-tag :type="statusTag(serverCheckResult.port_443)" size="small">{{ serverCheckResult.port_443 }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="80">
+              <el-tag :type="statusTag(serverCheckResult.port_80)" size="small">{{ serverCheckResult.port_80 }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="8080">
+              <el-tag :type="statusTag(serverCheckResult.port_8080)" size="small">{{ serverCheckResult.port_8080 }}</el-tag>
+            </el-descriptions-item>
+          </el-descriptions>
+          <div v-if="serverCheckResult.service_count === 0 || serverCheckResult.port_443 === 'fail'" style="margin-top: 12px">
+            <el-alert type="warning" :closable="false">检测到异常，建议使用「隧道修复」功能修复</el-alert>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="serverCheckDialogVisible = false">关闭</el-button>
+        <el-button type="primary" @click="runServerCheck" :loading="serverCheckLoading">刷新</el-button>
+        <el-button type="danger" icon="MagicStick" @click="serverCheckDialogVisible = false; startRepair()" v-if="serverCheckResult && (serverCheckResult.service_count === 0 || serverCheckResult.port_443 === 'fail')">修复</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 隧道修复弹窗 -->
+    <el-dialog v-model="repairDialogVisible" title="隧道修复" width="700px" :close-on-click-modal="false">
+      <div ref="repairLogRef" style="height: 400px; overflow-y: auto; background: #1e1e1e; color: #d4d4d4; padding: 12px; border-radius: 4px; font-family: monospace; font-size: 13px; line-height: 1.6">
+        <div v-for="(log, i) in repairLogs" :key="i">{{ log }}</div>
+        <div v-if="repairLogs.length === 0 && !isRepairing" style="color: #666">点击「开始修复」自动诊断并修复当前服务器的 GOST 隧道问题</div>
+      </div>
+      <template #footer>
+        <el-button @click="repairDialogVisible = false" :disabled="isRepairing">关闭</el-button>
+        <el-button type="danger" icon="MagicStick" @click="startRepair" :loading="isRepairing">
+          {{ isRepairing ? "修复中..." : "开始修复" }}
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 连接检测弹窗 -->
+    <el-dialog v-model="checkDialogVisible" title="连接状态检测" width="900px" :close-on-click-modal="false">
+      <div v-loading="checkLoading">
+        <div v-if="checkResult" v-for="m in checkResult.merchants" :key="m.merchant_id" style="margin-bottom: 20px">
+          <el-divider content-position="left">
+            {{ m.merchant_name }} ({{ m.server_ip }})
+            <el-button size="small" type="primary" link @click="checkSingleMerchant(m.merchant_id)" :loading="merchantChecking[m.merchant_id]" style="margin-left: 12px">单独检测</el-button>
+            <el-button size="small" type="success" link @click="syncSingleMerchantIP(m.merchant_id, m.merchant_name)" :loading="merchantSyncing[m.merchant_id]">同步 IP 到 OSS</el-button>
+            <el-button size="small" type="primary" link @click="doImportOss(m.merchant_id, m.merchant_name)">导入 OSS</el-button>
+          </el-divider>
+
+          <div style="margin-bottom: 8px; font-weight: bold; font-size: 13px">商户服务端口</div>
+          <el-space wrap>
+            <el-tag v-for="svc in m.services" :key="svc.port" :type="statusTag(svc.status)" size="default">
+              {{ svc.name }}:{{ svc.port }} {{ svc.status === "ok" ? "✓" : "✗" }}
+            </el-tag>
+          </el-space>
+
+          <div v-if="m.gost_servers.length > 0" style="margin-top: 12px">
+            <div style="margin-bottom: 8px; font-weight: bold; font-size: 13px">GOST 系统服务器</div>
+            <el-table :data="m.gost_servers" size="small" border stripe>
+              <el-table-column label="#" width="40">
+                <template #default="{ $index }">{{ $index + 1 }}</template>
+              </el-table-column>
+              <el-table-column prop="server_name" label="名称" width="140" />
+              <el-table-column prop="host" label="IP" width="120" />
+              <el-table-column label="API" width="70">
+                <template #default="{ row }">
+                  <el-tag :type="statusTag(row.gost_api)" size="small">{{ row.gost_api }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="服务/链" width="70">
+                <template #default="{ row }">{{ row.service_count }}/{{ row.chain_count }}</template>
+              </el-table-column>
+              <el-table-column label="443" width="55">
+                <template #default="{ row }"><el-tag :type="statusTag(row.port_443)" size="small">{{ row.port_443 }}</el-tag></template>
+              </el-table-column>
+              <el-table-column label="80" width="55">
+                <template #default="{ row }"><el-tag :type="statusTag(row.port_80)" size="small">{{ row.port_80 }}</el-tag></template>
+              </el-table-column>
+              <el-table-column label="8080" width="55">
+                <template #default="{ row }"><el-tag :type="statusTag(row.port_8080)" size="small">{{ row.port_8080 }}</el-tag></template>
+              </el-table-column>
+              <el-table-column label="排序" width="90" v-if="m.gost_servers.length > 1">
+                <template #default="{ $index }">
+                  <el-button-group size="small">
+                    <el-button :disabled="$index === 0" @click="moveGostServer(m.merchant_id, m.gost_servers, $index, 'up')">↑</el-button>
+                    <el-button :disabled="$index === m.gost_servers.length - 1" @click="moveGostServer(m.merchant_id, m.gost_servers, $index, 'down')">↓</el-button>
+                  </el-button-group>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+          <el-alert v-else type="warning" :closable="false" style="margin-top: 8px">无关联系统服务器</el-alert>
+        </div>
+        <el-empty v-if="checkResult && checkResult.merchants.length === 0" description="无有效商户" />
+      </div>
+      <template #footer>
+        <el-button @click="checkDialogVisible = false">关闭</el-button>
+        <el-button type="primary" @click="runConnectionCheck" :loading="checkLoading">刷新</el-button>
       </template>
     </el-dialog>
 
@@ -1070,5 +1704,18 @@ onMounted(() => {
 
 .merchant-port {
   color: #909399;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.fingerprint-text {
+  font-family: monospace;
+  font-size: 12px;
+  color: #303133;
+  word-break: break-all;
 }
 </style>

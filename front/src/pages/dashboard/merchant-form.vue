@@ -4,7 +4,6 @@ import type { CreateOrEditMerchantRequestData, Merchant } from "./apis/type"
 import { request } from "@/http/axios"
 import { getCloudAccountList } from "@@/apis/cloud_account"
 import { deployTSDDWithAMI } from "@@/apis/deploy"
-import { checkPortAvailable, port2Enterprise } from "@@/apis/utils"
 import { getAwsRegions } from "@@/constants/aws-regions"
 import { useFullscreenLoading } from "@@/composables/useFullscreenLoading"
 import { cloneDeep } from "lodash-es"
@@ -32,7 +31,6 @@ const formData = ref<CreateOrEditMerchantRequestData>({
   logo_url: "",
   icon_url: "",
   no: "",
-  port: 0,
   server_ip: "",
   status: 1,
   expired_at: "",
@@ -40,7 +38,9 @@ const formData = ref<CreateOrEditMerchantRequestData>({
     dau_limit: 100,
     register_limit: 100,
     group_member_limit: 100,
-    turn_server: "8.218.153.228:3478"
+    turn_server: "8.218.153.228:3478",
+    turn_username: "imuserxh",
+    turn_credential: "imuserxh123"
   },
   aws_access_key_id: "",
   aws_access_key_secret: ""
@@ -55,8 +55,14 @@ const removeFromSystem = ref(false)
 const systemServers = ref<Array<{ id: number, name: string, host: string }>>([])
 const selectedServers = ref<number[]>([])
 
+// 部署模式: 仅单机，多机部署请使用 cluster-wizard
+const deployMode = ref<"single">("single")
+
 // 服务器来源模式: manual=手动填写IP, ami=从AWS AMI部署
-const serverSourceMode = ref<"manual" | "ami">("manual")
+const serverSourceMode = computed(() => singleSourceMode.value)
+const singleSourceMode = ref<"manual" | "ami">("manual")
+
+// 多机部署已迁移到 cluster-wizard
 
 // AMI 部署配置
 const awsRegions = getAwsRegions("cn")
@@ -160,7 +166,6 @@ async function loadMerchantDetail() {
       logo_url: data.logo_url || "",
       icon_url: data.icon_url || "",
       no: data.no,
-      port: data.port,
       server_ip: data.server_ip,
       status: data.status,
       expired_at: data.expired_at,
@@ -170,7 +175,9 @@ async function loadMerchantDetail() {
             dau_limit: 100,
             register_limit: 100,
             group_member_limit: 100,
-            turn_server: ""
+            turn_server: "",
+            turn_username: "",
+            turn_credential: ""
           },
       aws_access_key_id: "",
       aws_access_key_secret: ""
@@ -202,9 +209,8 @@ async function loadMerchantDetail() {
 // 表单校验规则
 const formRules = computed<FormRules>(() => ({
   name: [{ required: true, message: "请输入商户名称", trigger: "blur" }],
-  port: [{ required: !isEdit.value, message: "请输入端口", trigger: "blur" }],
-  // 手动模式时需要填写 IP，AMI 模式时不需要
-  server_ip: [{ required: !isEdit.value && serverSourceMode.value === "manual", message: "请输入服务器IP", trigger: "blur" }],
+  // 仅单机+手动模式时需要填写 IP
+  server_ip: [{ required: !isEdit.value && deployMode.value === "single" && singleSourceMode.value === "manual", message: "请输入服务器IP", trigger: "blur" }],
   expired_at: [{ required: true, message: "请选择服务过期时间", trigger: "blur" }]
 }))
 
@@ -226,24 +232,6 @@ function onSelectSystemAccount(accountId: number | undefined) {
   }
 }
 
-// 端口变化时计算企业号
-function onPortChange(val: number | undefined) {
-  if (!val || isEdit.value) return
-  formData.value.port = val
-  port2Enterprise({ port: val })
-    .then(({ data }) => {
-      formData.value.no = data.enterprise
-    })
-    .catch((err) => {
-      console.error("获取企业号失败", err)
-    })
-}
-
-// 端口失焦（端口唯一性检查已移除，每个商户配独立隧道）
-function onPortBlur() {
-  // no-op
-}
-
 // 提交表单
 async function onSubmit() {
   const valid = await formRef.value?.validate()
@@ -253,7 +241,7 @@ async function onSubmit() {
   }
 
   // AMI 模式额外校验
-  if (!isEdit.value && serverSourceMode.value === "ami") {
+  if (!isEdit.value && deployMode.value === "single" && singleSourceMode.value === "ami") {
     if (!amiDeployConfig.cloud_account_id) {
       ElMessage.error("请选择 AWS 云账号")
       return
@@ -271,7 +259,7 @@ async function onSubmit() {
   // 规范化数据
   const payload = cloneDeep(formData.value)
   // AMI 模式：自动使用 AMI 配置的 AWS 账号作为商户云账号
-  if (!isEdit.value && serverSourceMode.value === "ami" && amiDeployConfig.cloud_account_id) {
+  if (!isEdit.value && deployMode.value === "single" && singleSourceMode.value === "ami" && amiDeployConfig.cloud_account_id) {
     payload.selected_aws_account_id = amiDeployConfig.cloud_account_id
     payload.remove_from_system = false // 复制一份，不移除系统账号
   } else if (selectedSystemAccountId.value) {
@@ -300,7 +288,7 @@ async function onSubmit() {
         delete payload.id
 
         // AMI 部署模式
-        if (serverSourceMode.value === "ami") {
+        if (deployMode.value === "single" && singleSourceMode.value === "ami") {
           // 先创建商户（IP 暂时为空或占位）
           payload.server_ip = "pending-ami-deploy"
           const createRes = await createMerchantApi(payload)
@@ -371,7 +359,7 @@ async function onSubmit() {
       ElMessage.error(isEdit.value ? "修改失败" : "添加失败")
       return false
     }
-  }, { text: serverSourceMode.value === "ami" ? "创建商户并部署服务器中..." : "保存中，请稍候..." })
+  }, { text: singleSourceMode.value === "ami" ? "创建商户并部署服务器中..." : "保存中，请稍候..." })
 
   await runWithLoading()
 }
@@ -454,35 +442,36 @@ onMounted(() => {
           服务器配置
         </el-divider>
 
-        <!-- 端口 -->
-        <el-form-item label="端口" prop="port">
-          <el-input-number
-            v-model="formData.port"
-            :min="1"
-            :max="65535"
-            :disabled="isEdit"
-            style="width: 200px"
-            @change="onPortChange"
-            @blur="onPortBlur"
-          />
-          <span class="ml-2 text-gray-500">{{ isEdit ? "编辑时不可修改端口" : "用于自动化部署和GOST配置" }}</span>
+        <!-- 部署模式（仅新增模式） -->
+        <el-form-item v-if="!isEdit" label="部署模式">
+          <el-radio-group v-model="deployMode" size="large">
+            <el-radio-button value="single">
+              单机部署
+            </el-radio-button>
+          </el-radio-group>
+          <el-button type="primary" link style="margin-left: 16px" @click="router.push({ name: 'MerchantCreateCluster' })">
+            多机部署请使用集群向导 →
+          </el-button>
+          <div class="form-tip" style="margin-top: 4px">
+            单机模式：所有服务部署在一台服务器上。多机部署（DB + MinIO + App 三台）请使用集群向导。
+          </div>
         </el-form-item>
 
-        <!-- 服务器来源（仅新增模式） -->
-        <el-form-item v-if="!isEdit" label="服务器来源">
-          <el-radio-group v-model="serverSourceMode">
+        <!-- 单机模式: 服务器来源 -->
+        <el-form-item v-if="!isEdit && deployMode === 'single'" label="服务器来源">
+          <el-radio-group v-model="singleSourceMode">
             <el-radio value="manual">手动填写 IP</el-radio>
             <el-radio value="ami">从 AWS AMI 部署</el-radio>
           </el-radio-group>
         </el-form-item>
 
         <!-- 手动模式：服务器IP -->
-        <el-form-item v-if="isEdit || serverSourceMode === 'manual'" label="服务器IP" prop="server_ip">
+        <el-form-item v-if="isEdit || (deployMode === 'single' && singleSourceMode === 'manual')" label="服务器IP" prop="server_ip">
           <el-input v-model="formData.server_ip" placeholder="请输入服务器IP" />
         </el-form-item>
 
         <!-- AMI 部署模式 -->
-        <template v-if="!isEdit && serverSourceMode === 'ami'">
+        <template v-if="!isEdit && deployMode === 'single' && singleSourceMode === 'ami'">
           <el-card class="ami-deploy-card" shadow="never">
             <template #header>
               <span class="ami-card-title">AWS AMI 部署配置</span>
@@ -632,6 +621,8 @@ onMounted(() => {
           </el-card>
         </template>
 
+        <!-- 多机部署已迁移到集群向导 (/merchant/create-cluster) -->
+
         <!-- 过期时间 -->
         <el-form-item label="过期时间" prop="expired_at">
           <el-date-picker
@@ -689,12 +680,28 @@ onMounted(() => {
           </div>
         </el-form-item>
 
-        <el-divider v-if="isEdit || serverSourceMode !== 'ami'" content-position="left">
+        <!-- TURN凭证 -->
+        <el-form-item label="TURN用户名">
+          <el-input
+            v-model="formData.package_configuration!.turn_username"
+            placeholder="TURN服务器用户名"
+          />
+        </el-form-item>
+
+        <el-form-item label="TURN密码">
+          <el-input
+            v-model="formData.package_configuration!.turn_credential"
+            placeholder="TURN服务器密码"
+            show-password
+          />
+        </el-form-item>
+
+        <el-divider v-if="isEdit || deployMode === 'single'" content-position="left">
           AWS 云账号
         </el-divider>
 
         <!-- 创建模式：选择系统AWS账号（AMI模式下自动使用AMI配置的账号，无需手动选择） -->
-        <template v-if="!isEdit && serverSourceMode !== 'ami'">
+        <template v-if="!isEdit && deployMode === 'single' && singleSourceMode !== 'ami'">
           <el-form-item label="选择系统账号">
             <el-select
               v-model="selectedSystemAccountId"
@@ -728,7 +735,7 @@ onMounted(() => {
           </el-divider>
         </template>
 
-        <template v-if="isEdit || serverSourceMode !== 'ami'">
+        <template v-if="isEdit || (deployMode === 'single' && singleSourceMode !== 'ami')">
           <el-row :gutter="12">
             <el-col :span="12">
               <el-form-item label="AccessKey">

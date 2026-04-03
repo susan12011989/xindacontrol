@@ -42,6 +42,7 @@ type ControlCfg struct {
 var C struct {
 	service.ServiceConf
 	ListenOn    string
+	ExternalURL string          // 外网可访问的 Control URL（如 http://16.163.223.214:58181），用于拼接资源路径
 	Mysql       *dbs.MysqlCfg
 	Redis       *dbs.RedisCfg
 	MerchantAPI *MerchantAPICfg // 商户API认证配置

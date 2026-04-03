@@ -1,5 +1,11 @@
 // IP嵌入上传类型定义
 
+/** 服务器关联的商户信息 */
+export interface SystemIPMerchantItem {
+  merchant_id: number
+  merchant_name: string
+}
+
 /** 系统IP项 */
 export interface SystemIPItem {
   server_id: number
@@ -7,8 +13,9 @@ export interface SystemIPItem {
   ip: string
   auxiliary_ip: string // 辅助IP
   status: number
-  merchant_id: number   // 关联商户ID
-  merchant_name: string // 商户名称
+  merchant_id: number   // 主商户ID（兼容旧逻辑）
+  merchant_name: string // 主商户名称（兼容旧逻辑）
+  merchants: SystemIPMerchantItem[] // 关联的所有商户
 }
 
 /** 获取系统IP响应 */
