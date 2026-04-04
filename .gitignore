@@ -10,6 +10,8 @@ server/apps/server/server
 server/apps/server/control-server-linux
 server/bin/control-server
 server/control
+server/tsdd-control
+server/tsdd-control-*
 
 # Logs
 server/logs/

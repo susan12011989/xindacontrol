@@ -1475,12 +1475,12 @@ func getAliyunAccountBalance(c *gin.Context) {
 		result.GErr(c, fmt.Errorf("merchant_id或cloud_account_id必须提供一个"))
 		return
 	}
-	bal, err := cloud_aliyun.GetAccountBalance(req.MerchantId, req.CloudAccountId)
+	bal, err := cloud_aliyun.GetAccountBalanceDetail(req.MerchantId, req.CloudAccountId)
 	if err != nil {
 		result.GErr(c, err)
 		return
 	}
-	result.GOK(c, gin.H{"balance": bal})
+	result.GOK(c, bal)
 }
 
 // ========== 镜像管理相关 ==========

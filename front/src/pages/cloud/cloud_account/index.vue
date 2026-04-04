@@ -396,7 +396,7 @@ const crudStore = reactive({
 // 余额弹窗状态（阿里云）
 const balanceDialogVisible = ref(false)
 const balanceDialogLoading = ref(false)
-const balanceDialogValue = ref<string>("")
+const balanceDialogData = ref<any>(null)
 
 // 腾讯云余额弹窗
 const tencentBalanceDialog = reactive({
@@ -415,8 +415,9 @@ function onShowBalance(row: CloudAccountResp) {
   if (row.cloud_type === "aliyun") {
     balanceDialogVisible.value = true
     balanceDialogLoading.value = true
+    balanceDialogData.value = null
     getAliyunBalance(buildBalanceParams(row)).then((res) => {
-      balanceDialogValue.value = res.data.balance
+      balanceDialogData.value = res.data
     }).finally(() => {
       balanceDialogLoading.value = false
     })
@@ -663,11 +664,20 @@ function getCloudTypeText(type: string) {
     </vxe-modal>
 
     <!-- 阿里云余额弹窗 -->
-    <el-dialog v-model="balanceDialogVisible" title="阿里云账户余额" width="360px">
-      <div style="min-height: 60px; display: flex; align-items: center;">
-        <el-skeleton v-if="balanceDialogLoading" :rows="1" animated />
-        <div v-else>余额：<b>{{ balanceDialogValue || '-' }}</b></div>
+    <el-dialog v-model="balanceDialogVisible" title="阿里云账户余额" width="450px">
+      <div v-if="balanceDialogLoading" style="min-height: 120px">
+        <el-skeleton :rows="3" animated />
       </div>
+      <div v-else-if="balanceDialogData">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="现金余额">
+            <span style="font-size: 18px; font-weight: bold; color: #409eff">{{ balanceDialogData.available_cash_amount || '0' }} {{ balanceDialogData.currency || '' }}</span>
+          </el-descriptions-item>
+          <el-descriptions-item label="信用额度">{{ balanceDialogData.credit_amount || '0' }} {{ balanceDialogData.currency || '' }}</el-descriptions-item>
+          <el-descriptions-item label="可用额度（含信用）">{{ balanceDialogData.available_amount || '0' }} {{ balanceDialogData.currency || '' }}</el-descriptions-item>
+        </el-descriptions>
+      </div>
+      <div v-else>查询失败</div>
       <template #footer>
         <el-button @click="balanceDialogVisible = false">关闭</el-button>
       </template>

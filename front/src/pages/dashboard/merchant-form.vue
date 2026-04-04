@@ -689,6 +689,27 @@ onMounted(() => {
           </div>
         </el-form-item>
 
+        <el-row :gutter="16">
+          <el-col :span="12">
+            <el-form-item label="TURN用户名">
+              <el-input
+                v-model="formData.package_configuration!.turn_username"
+                placeholder="TURN 认证用户名（可选）"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="TURN密码">
+              <el-input
+                v-model="formData.package_configuration!.turn_credential"
+                placeholder="TURN 认证密码（可选）"
+                type="password"
+                show-password
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
+
         <el-divider v-if="isEdit || serverSourceMode !== 'ami'" content-position="left">
           AWS 云账号
         </el-divider>

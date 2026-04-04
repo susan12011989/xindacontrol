@@ -58,7 +58,10 @@ export interface CloudAccountResp {
 
 // 阿里云账户余额响应
 export interface AliyunBalanceResp {
-  balance: string
+  available_amount: string // 可用额度（含信用额度）
+  available_cash_amount: string // 现金余额（真实余额）
+  credit_amount: string // 信用额度
+  currency: string // 币种
 }
 
 // 腾讯云账户余额响应

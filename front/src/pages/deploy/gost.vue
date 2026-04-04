@@ -174,11 +174,15 @@ const selectedMerchantId = ref<number | undefined>(undefined)
 
 // 根据 GOST 服务名称获取关联的商户
 function getMerchantByServiceName(serviceName: string): MerchantResp | undefined {
-  // 服务名称格式: tcp-relay-{port}
-  const match = serviceName.match(/^tcp-relay-(\d+)$/)
+  // 服务名称格式: tcp-relay-{port}, ws-relay-{port+1}, http-relay-{port+2}, minio-relay-{port+3}, wss-relay-443
+  const match = serviceName.match(/^(?:tcp|ws|http|minio)-relay-(\d+)$/)
   if (!match) return undefined
   const port = parseInt(match[1], 10)
-  return merchantList.value.find(m => (m as any).port === port)
+  // tcp 用 basePort 直接匹配，ws/http/minio 需要反算 basePort
+  const offsets: Record<string, number> = { "tcp": 0, "ws": 1, "http": 2, "minio": 3 }
+  const prefix = serviceName.split("-relay-")[0]
+  const basePort = port - (offsets[prefix] ?? 0)
+  return merchantList.value.find(m => (m as any).port === basePort)
 }
 
 function buildColumns() {
@@ -253,12 +257,19 @@ async function loadRecords() {
     })
     chainMap.value = map
     records.value = Array.isArray(svcRes.data?.list) ? svcRes.data.list : []
-    // 若选择了商户，则过滤出名称为 tcp-relay-{port} 的 service
+    // 若选择了商户，过滤出该商户相关的所有转发规则（base port 段 + wss-443）
     if (selectedMerchantId.value) {
       const m = merchantList.value.find(m => m.id === selectedMerchantId.value)
       if (m && (m as any).port) {
-        const targetName = `tcp-relay-${(m as any).port}`
-        records.value = records.value.filter((s: any) => s.name === targetName)
+        const basePort = (m as any).port as number
+        const relatedNames = new Set([
+          `tcp-relay-${basePort}`,
+          `ws-relay-${basePort + 1}`,
+          `http-relay-${basePort + 2}`,
+          `minio-relay-${basePort + 3}`,
+          `wss-relay-443`
+        ])
+        records.value = records.value.filter((s: any) => relatedNames.has(s.name))
       }
     }
     pagination.total = svcRes.data.count || 0
